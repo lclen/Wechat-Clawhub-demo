@@ -12,7 +12,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
 
     gateway_parser = subparsers.add_parser("run-gateway")
-    gateway_parser.add_argument("--port", type=int, default=8000)
+    gateway_parser.add_argument("--port", type=int, default=8300)
 
     subparsers.add_parser("run-node")
 
@@ -30,7 +30,7 @@ def run_gateway(port: int) -> None:
     repo_root = resource_root()
     gateway_root = repo_root / "apps" / "gateway"
     sys.path.insert(0, str(gateway_root))
-    uvicorn.run("app.main:app", host="127.0.0.1", port=port, log_level="info")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, log_level="info")
 
 
 def run_node() -> None:
@@ -48,7 +48,7 @@ def run_launcher() -> None:
 
     profile = load_profile()
     app = create_app(open_browser=True)
-    uvicorn.run(app, host="127.0.0.1", port=profile.launcher_port or 8765, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=profile.launcher_port or 8765, log_level="info")
 
 
 if __name__ == "__main__":

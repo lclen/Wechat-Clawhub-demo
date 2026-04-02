@@ -60,6 +60,12 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("console_only", profile.completed_roles)
         self.assertIn("gateway_host_console", profile.completed_roles)
 
+    async def test_profile_defaults_console_gateway_to_preferred_address(self) -> None:
+        profile = self.service.get_profile()
+
+        self.assertEqual(profile.preferred_gateway_base_url, profile.console.gateway_base_url)
+        self.assertTrue(profile.console.gateway_base_url.startswith("http://"))
+
     async def test_gateway_console_setup_partial_failure_keeps_gateway_config(self) -> None:
         self.service._probe_console_gateway = AsyncMock(side_effect=RuntimeError("gateway unreachable"))
         gateway_config = build_gateway_config()

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 
 type ModelStatus = { configured: boolean; base_url: string; model: string };
-type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; timestamp: string };
+type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; gateway_bind_host: string; preferred_lan_ip: string | null; preferred_gateway_base_url: string; timestamp: string };
 type ModelCheck = { ok: boolean; configured_model: string; available_models: string[]; configured_model_available: boolean };
 type WeChatStatus = { configured: boolean; running: boolean; base_url: string; has_token: boolean; last_error: string | null; received_messages: number; sent_messages: number };
 type SessionStatus = "bot_active" | "handoff_pending" | "human_active" | "closing";
@@ -26,7 +26,7 @@ type ConsoleSetupConfig = { gateway_base_url: string };
 type PairingStatus = "pending" | "paired" | "auth_failed" | "already_paired" | "offline";
 type DiscoveredNodeRecord = { discovery_id: string; node_id: string | null; pairing_label: string | null; hostname: string; lan_ip: string | null; platform: string | null; node_version: string | null; capabilities: string[]; advertised_address: string | null; pairing_required: boolean; already_paired: boolean; pairing_port: number; last_seen_at: string };
 type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "discovery_scan" | "discovery_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
-type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
+type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; preferred_gateway_base_url: string; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
 type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boolean; applied_runtime: string[] };
 type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };
 type SetupTaskEnvelope = { task: SetupTaskResult };
@@ -72,7 +72,7 @@ const DEFAULT_GATEWAY_SETUP: GatewaySetupConfig = {
 
 const DEFAULT_WORKER_SETUP: WorkerNodeSetupConfig = {
   node_id: "claw-node-local-1",
-  gateway_base_url: "http://127.0.0.1:8300",
+  gateway_base_url: "",
   node_token: "",
   pairing_key: "",
   dify_base_url: "",
@@ -85,15 +85,23 @@ const DEFAULT_WORKER_SETUP: WorkerNodeSetupConfig = {
 };
 
 const DEFAULT_CONSOLE_SETUP: ConsoleSetupConfig = {
-  gateway_base_url: "http://127.0.0.1:8300",
+  gateway_base_url: "",
 };
 
 const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope OpenAI Compatible（默认 qwen3.5-plus）";
+const GATEWAY_NODE_TOKEN_LOCATION = "apps/gateway/.env → WCH_NODE_TOKENS";
 
 async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, { headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }, ...init });
   if (!response.ok) throw new Error((await response.text()) || `Request failed: ${response.status}`);
   return (await response.json()) as T;
+}
+
+function resolvePreferredGatewayBaseUrl(
+  profile?: Pick<SetupProfileResponse, "preferred_gateway_base_url" | "console"> | null,
+  system?: Pick<SystemStatus, "preferred_gateway_base_url"> | null,
+): string {
+  return profile?.preferred_gateway_base_url || profile?.console.gateway_base_url || system?.preferred_gateway_base_url || window.location.origin;
 }
 
 export function App() {
@@ -136,6 +144,7 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("正在读取主网关状态。");
   const [now, setNow] = useState(Date.now());
+  const [workerPairingKeyVisible, setWorkerPairingKeyVisible] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -231,15 +240,16 @@ export function App() {
           requestJson<SetupProfileResponse>("/api/setup/profile"),
         ]);
         if (cancelled) return;
+        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
         setSetupProfile(profile);
         setWorkspace(profile.recommended_workspace);
         setSetupTask(profile.last_task);
         setSetupMode(profile.setup_completed ? "status" : "role");
         setGatewaySetup(profile.gateway);
-        setConsoleSetup(profile.console);
+        setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
         setWorkerSetup((current) => ({
           ...current,
-          gateway_base_url: profile.console.gateway_base_url || current.gateway_base_url,
+          gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl || current.gateway_base_url,
           dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
           dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
         }));
@@ -440,12 +450,17 @@ export function App() {
     setSetupMode(setupProfile?.setup_completed ? "status" : "role");
   }
   function resetCurrentSetupDraft() {
+    const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(setupProfile, systemStatus);
     setGatewaySetup(setupProfile?.gateway ?? DEFAULT_GATEWAY_SETUP);
-    setConsoleSetup(setupProfile?.console ?? DEFAULT_CONSOLE_SETUP);
+    setConsoleSetup(
+      setupProfile?.console
+        ? { ...setupProfile.console, gateway_base_url: setupProfile.console.gateway_base_url || preferredGatewayBaseUrl }
+        : { ...DEFAULT_CONSOLE_SETUP, gateway_base_url: preferredGatewayBaseUrl },
+    );
     setWorkerSetup((current) => ({
       ...DEFAULT_WORKER_SETUP,
       ...current,
-      gateway_base_url: setupProfile?.console.gateway_base_url || DEFAULT_WORKER_SETUP.gateway_base_url,
+      gateway_base_url: setupProfile?.console.gateway_base_url || preferredGatewayBaseUrl,
       dify_base_url: setupProfile?.gateway.dify_base_url || DEFAULT_WORKER_SETUP.dify_base_url,
       dify_api_key: setupProfile?.gateway.dify_api_key || DEFAULT_WORKER_SETUP.dify_api_key,
     }));
@@ -457,12 +472,13 @@ export function App() {
   }
   async function refreshSetupProfile() {
     const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
+    const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, systemStatus);
     setSetupProfile(profile);
     setGatewaySetup(profile.gateway);
-    setConsoleSetup(profile.console);
+    setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
     setWorkerSetup((current) => ({
       ...current,
-      gateway_base_url: profile.console.gateway_base_url || current.gateway_base_url,
+      gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl || current.gateway_base_url,
       dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
       dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
     }));
@@ -476,13 +492,14 @@ export function App() {
         requestJson<WeChatStatus>("/api/wechat/onboard/status"),
         requestJson<NodeListResponse>("/api/nodes"),
       ]);
+      const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
       setSetupProfile(profile);
       setSetupTask(profile.last_task);
       setGatewaySetup(profile.gateway);
-      setConsoleSetup(profile.console);
+      setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
       setWorkerSetup((current) => ({
         ...current,
-        gateway_base_url: profile.console.gateway_base_url || current.gateway_base_url,
+        gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl || current.gateway_base_url,
         dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
         dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
       }));
@@ -750,17 +767,29 @@ export function App() {
   }
   async function confirmReconfigure() {
     try {
+      const stoppedActions: string[] = [];
       if (wechatStatus?.running) {
         const status = await withBusy("reconfigure-disconnect-wechat", () =>
           requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" }),
         );
         setWechatStatus(status);
+        stoppedActions.push("已断开微信连接");
+      }
+      if (launcherAvailable && launcherStatus?.components?.some((item) => item.name === "local-node" && item.state === "running")) {
+        await withBusy("reconfigure-stop-local-node", () =>
+          requestJson<LauncherStatusResponse>("/local/bootstrap/stop", {
+            method: "POST",
+            body: JSON.stringify({ component: "local-node" }),
+          }),
+        );
+        await refreshLauncherStatus();
+        stoppedActions.push("已停止本机节点");
       }
       setReconfigureConfirmOpen(false);
       setSetupRole(null);
       setSetupTask(null);
       setSetupMode("role");
-      setNotice(wechatStatus?.running ? "已断开微信连接，进入重新配置。" : "已进入重新配置流程。");
+      setNotice(`${stoppedActions.length ? `${stoppedActions.join("，")}，` : ""}已进入重新配置流程。`);
     } catch (error) {
       setNotice(`进入重新配置失败：${(error as Error).message}`);
     }
@@ -773,6 +802,11 @@ export function App() {
   }
   function updateConsoleSetup<K extends keyof ConsoleSetupConfig>(key: K, value: ConsoleSetupConfig[K]) {
     setConsoleSetup((current) => ({ ...current, [key]: value }));
+  }
+  function applyPreferredGatewayBaseUrlToWorker() {
+    const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(setupProfile, systemStatus);
+    updateWorkerSetup("gateway_base_url", preferredGatewayBaseUrl);
+    setNotice(`已为工作节点填入主网关地址：${preferredGatewayBaseUrl}`);
   }
 
   const selectedSession = useMemo(() => sessions.find((session) => session.session_id === selectedSessionId) ?? activeSession, [sessions, selectedSessionId, activeSession]);
@@ -821,12 +855,34 @@ export function App() {
   const reconfigureWarnings = useMemo(() => {
     const warnings: string[] = [];
     if (wechatStatus?.running) warnings.push("微信当前处于轮询中；继续后会先断开微信连接，再进入重新配置。");
+    if (launcherStatus?.components?.some((item) => item.name === "local-node" && item.state === "running")) {
+      warnings.push("本机 Claw 节点当前仍在运行；继续后会先停止本机节点，避免它继续带着旧配置回连。");
+    }
     if (setupProfile?.console.gateway_base_url) warnings.push(`当前控制台目标为 ${setupProfile.console.gateway_base_url}；继续后新的配置会覆盖该地址，但不会执行解绑。`);
-    if (setupCompletedRoles.has("gateway_host") || setupCompletedRoles.has("gateway_host_console")) warnings.push("主机网关基础配置仍会保留，继续后仅覆盖配置项，不会回滚或清空历史配置。");
+    if (setupCompletedRoles.has("gateway_host") || setupCompletedRoles.has("gateway_host_console")) warnings.push("主机网关进程不会在这里直接停止；否则当前快速配置接口会一起失效。继续后仅覆盖网关配置项，不会回滚或清空历史配置。");
     if (nodes.length) warnings.push(`当前有 ${nodes.length} 个在线节点；继续后不会自动解绑已纳管节点，节点仍可能继续使用原配置。`);
     if (!warnings.length) warnings.push("当前没有需要先断开的活动连接，确认后将直接进入重新配置。");
     return warnings;
-  }, [nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, wechatStatus?.running]);
+  }, [launcherStatus?.components, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, wechatStatus?.running]);
+  const workerCredentialRows = useMemo<Array<{ label: string; value: string }>>(() => ([
+    {
+      label: "当前状态",
+      value: setupCompletedRoles.has("worker_node")
+        ? "当前机器已完成工作节点配置。"
+        : "当前机器还没有完成“工作节点”角色配置，所以这里只能先告诉你查看位置，暂时没有可回显的本机节点凭据。",
+    },
+    { label: "节点 ID", value: workerSetup.node_id || "未填写" },
+    {
+      label: "节点 Token 状态",
+      value: workerSetup.node_token.trim() ? "当前草稿已填写，可直接复制；若节点已纳管，网关侧也有保存。" : "当前草稿未填写；已纳管节点请到网关配置查看。",
+    },
+    {
+      label: "配对密钥状态",
+      value: workerSetup.pairing_key.trim() ? "当前草稿已填写，可通过“显示密钥”临时查看。" : "当前草稿未填写；若已安装节点，请到节点本机 .env 查看或重新设置。",
+    },
+    { label: "网关侧查看位置", value: GATEWAY_NODE_TOKEN_LOCATION },
+    { label: "节点侧查看位置", value: workerEnvLocations(workerSetup.install_dir) },
+  ]), [setupCompletedRoles, workerSetup.install_dir, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
 
   return (
     <div className="console-app">
@@ -948,6 +1004,15 @@ export function App() {
                       <InfoRow label="模型配置" value={modelStatus?.configured ? `${modelStatus.model || "-"} / ${modelStatus.base_url || "-"}` : DEFAULT_BUILTIN_MODEL_LABEL} multiline />
                       <InfoRow label="节点状态" value={nodes.length ? `${nodes.length} 个在线节点，最近任务：${latestSetupSummary}` : latestSetupSummary} multiline />
                     </div>
+                    <section className="surface surface-subsection">
+                      <div className="section-head">
+                        <div><div className="section-kicker">节点凭据</div><h3>查看 Token 与配对密钥状态</h3></div>
+                      </div>
+                      <div className="info-stack">
+                        {workerCredentialRows.map((item) => <InfoRow key={item.label} label={item.label} value={item.value} multiline />)}
+                      </div>
+                      {workerSetup.node_token.trim() ? <SnippetBlock label="当前草稿中的节点 Token" content={workerSetup.node_token} /> : null}
+                    </section>
                     {reconfigureConfirmOpen ? (
                       <section className="surface surface-subsection reconfigure-panel">
                         <div className="section-head">
@@ -1043,19 +1108,45 @@ export function App() {
                             </section>
                           </>
                         ) : setupRole === "worker_node" ? (
-                          <div className="form-grid">
-                            <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
-                            <label><span>主网关地址</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} /></label>
-                            <label><span>节点 Token</span><textarea value={workerSetup.node_token} onChange={(event) => updateWorkerSetup("node_token", event.target.value)} /></label>
-                            <label><span>配对密钥</span><textarea value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="给局域网自动连接使用，和 node token 分开。" /></label>
-                            <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
-                            <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
-                            <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
-                            <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
-                            <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
-                            <label><span>启用局域网发现</span><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /></label>
-                            <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则使用默认 dist/claw-node-bundle.zip" /></label>
-                          </div>
+                          <>
+                            <div className="form-grid">
+                              <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
+                              <label>
+                                <span>主网关地址</span>
+                                <div className="field-with-action">
+                                  <input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="建议填写主机局域网地址，例如 http://192.168.0.17:8300" />
+                                  <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>使用当前主机地址</button>
+                                </div>
+                              </label>
+                              <label><span>节点 Token</span><textarea value={workerSetup.node_token} onChange={(event) => updateWorkerSetup("node_token", event.target.value)} placeholder="将写入节点本机 .env，同时主网关会在 WCH_NODE_TOKENS 中保存该节点 token。" /></label>
+                              <label>
+                                <span>配对密钥</span>
+                                <div className="field-with-action">
+                                  <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="给局域网自动连接使用，节点与网关需要保持一致。" autoComplete="new-password" />
+                                  <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>{workerPairingKeyVisible ? "隐藏密钥" : "显示密钥"}</button>
+                                </div>
+                              </label>
+                              <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
+                              <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
+                              <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
+                              <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
+                              <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
+                              <label><span>启用局域网发现</span><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /></label>
+                              <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则使用默认 dist/claw-node-bundle.zip" /></label>
+                            </div>
+                            <section className="surface surface-subsection">
+                              <div className="section-head">
+                                <div><div className="section-kicker">凭据与查看位置</div><h3>安装前确认节点凭据保存位置</h3></div>
+                              </div>
+                              <div className="inline-tip">
+                                节点连接主机时，通常只需要把“主网关地址”填成主机局域网地址，并让这里的配对密钥与网关配对时输入的密钥保持一致。
+                              </div>
+                              <div className="info-stack">
+                                {workerCredentialRows.map((item) => <InfoRow key={item.label} label={item.label} value={item.value} multiline />)}
+                              </div>
+                              {workerSetup.node_token.trim() ? <SnippetBlock label="当前节点 Token" content={workerSetup.node_token} /> : null}
+                            </section>
+                          </>
                         ) : (
                           <div className="form-grid">
                             <label><span>目标网关地址</span><input value={consoleSetup.gateway_base_url} onChange={(event) => updateConsoleSetup("gateway_base_url", event.target.value)} /></label>
@@ -1346,6 +1437,13 @@ function roleAction(role: SetupRole) {
   if (role === "gateway_host_console") return "会先写入网关配置，再串行校验控制台目标网关地址，并把该地址保存为后续默认值。";
   if (role === "worker_node") return "会调用 install-claw-node.ps1，并把配对密钥/发现端口写入本机配置。";
   return "会验证目标主网关健康状态，不会安装任何服务。";
+}
+function workerEnvLocations(installDir: string) {
+  if (!installDir.trim()) return "节点安装目录下的 bundle\\claw-node\\.env（或 bundle\\claw-node\\services\\claw-node\\.env）";
+  return [
+    `${installDir}\\bundle\\claw-node\\.env`,
+    `${installDir}\\bundle\\claw-node\\services\\claw-node\\.env`,
+  ].join("\n");
 }
 function previewContent(role: SetupRole, gateway: GatewaySetupConfig, worker: WorkerNodeSetupConfig, consoleConfig: ConsoleSetupConfig) {
   if (role === "gateway_host") return [

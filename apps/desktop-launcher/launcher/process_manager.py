@@ -3,10 +3,12 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 from launcher.models import ComponentState, LauncherComponentStatus, LauncherNodeCachePolicy, LauncherProfile
+from launcher.network import launcher_cors_origins, preferred_gateway_base_url
 from launcher.profile_store import LauncherWorkdirLayout
 from launcher.redis_runtime import write_redis_config
 from launcher.runtime import resource_root
@@ -89,6 +91,7 @@ class ProcessManager:
     def start_gateway(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         env = os.environ.copy()
         node_tokens = {}
+        gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
         if profile.enable_local_node and not profile.dispatch_mode_enabled:
             node_tokens["local-node"] = env.get("CLAW_NODE_TOKEN", "local-node-token")
         env.update(
@@ -99,8 +102,8 @@ class ProcessManager:
                 "WCH_MEMORY_DIR": layout.memory_dir,
                 "WCH_RUNTIME_ROOT": layout.runtime_dir,
                 "WCH_DISPATCH_MODE_ENABLED": "true" if profile.dispatch_mode_enabled else "false",
-                "WCH_CORS_ALLOW_ORIGINS": f'["http://127.0.0.1:{profile.launcher_port}","http://localhost:{profile.launcher_port}"]',
-                "WCH_NODE_TOKENS": __import__("json").dumps(node_tokens, ensure_ascii=False),
+                "WCH_CORS_ALLOW_ORIGINS": json.dumps(launcher_cors_origins(profile.launcher_port), ensure_ascii=False),
+                "WCH_NODE_TOKENS": json.dumps(node_tokens, ensure_ascii=False),
             }
         )
         log_path = Path(layout.log_dir) / "gateway.log"
@@ -109,15 +112,16 @@ class ProcessManager:
             ["run-gateway", "--port", str(profile.gateway_port)],
             env=env,
             log_path=log_path,
-            detail=f"http://127.0.0.1:{profile.gateway_port}",
+            detail=gateway_base_url,
         )
 
     def start_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         env = os.environ.copy()
+        gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
         env.update(
             {
                 "CLAW_NODE_ID": "local-node",
-                "CLAW_GATEWAY_BASE_URL": f"http://127.0.0.1:{profile.gateway_port}",
+                "CLAW_GATEWAY_BASE_URL": gateway_base_url,
                 "CLAW_NODE_TOKEN": env.get("CLAW_NODE_TOKEN", "local-node-token"),
                 "CLAW_PAIRING_KEY": env.get("CLAW_PAIRING_KEY", "local-pairing-key"),
                 "CLAW_DISCOVERY_ENABLED": "true",

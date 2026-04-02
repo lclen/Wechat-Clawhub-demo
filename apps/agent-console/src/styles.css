@@ -391,6 +391,17 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .qr-meta { display: grid; gap: 12px; }
 .qr-status-line { display: flex; justify-content: space-between; gap: 12px; padding: 14px 16px; border-radius: 18px; background: rgba(255, 255, 255, 0.72); border: 1px solid var(--line); }
 .form-grid { display: grid; gap: 16px; margin-bottom: 16px; }
+.field-with-action { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.field-with-action .ghost-button { white-space: nowrap; }
+.inline-tip {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(52, 100, 236, 0.06);
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
 
 .session-workspace {
   display: grid;

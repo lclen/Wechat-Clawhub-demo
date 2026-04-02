@@ -15,6 +15,7 @@ from app.services.session_manager import SessionManager
 from app.services.node_registry import NodeRegistry
 from app.services.redis_store import RedisStore
 from app.services.transcript_writer import TranscriptWriter
+from app.services.user_data_store import UserDataStore
 
 
 @asynccontextmanager
@@ -27,7 +28,8 @@ async def lifespan(app: FastAPI):
     redis_store = RedisStore(settings.redis_url)
     node_registry = NodeRegistry(redis_store, settings)
     transcript_writer = TranscriptWriter(settings.transcript_dir)
-    session_manager = SessionManager(redis_store, transcript_writer, settings)
+    user_data_store = UserDataStore(identity_dir=settings.identity_dir, memory_dir=settings.memory_dir)
+    session_manager = SessionManager(redis_store, transcript_writer, user_data_store, settings)
     scheduler = DispatchScheduler(node_registry, settings)
     wechat_bot = WeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
     outgoing_dispatcher = OutgoingDispatcher(wechat_bot=wechat_bot, transcript_writer=transcript_writer)

@@ -18,6 +18,7 @@ from app.models.session import (
 from app.services.redis_store import RedisStore
 from app.services.session_keys import build_session_id
 from app.services.transcript_writer import TranscriptWriter
+from app.services.user_data_store import UserDataStore
 
 
 class SessionManagerError(RuntimeError):
@@ -35,10 +36,12 @@ class SessionManager:
         self,
         store: RedisStore,
         transcript_writer: TranscriptWriter,
+        user_data_store: UserDataStore,
         settings: Settings,
     ) -> None:
         self._store = store
         self._transcript_writer = transcript_writer
+        self._user_data_store = user_data_store
         self._settings = settings
 
     def _session_meta_key(self, session_id: str) -> str:
@@ -171,7 +174,9 @@ class SessionManager:
             await self._store.hset_many(self._session_meta_key(session.session_id), meta)
         except RedisError as exc:
             raise SessionManagerError("Failed to update dispatch state") from exc
-        return self._parse_session(meta, session.context_summary)
+        parsed = self._parse_session(meta, session.context_summary)
+        self._user_data_store.persist_session(parsed)
+        return parsed
 
     async def clear_dispatch_state(self, session_id: str, *, expected_task_id: str | None = None) -> SessionRecord:
         session = await self.get_session(session_id)
@@ -193,7 +198,9 @@ class SessionManager:
             await self._store.hset_many(self._session_meta_key(session.session_id), meta)
         except RedisError as exc:
             raise SessionManagerError("Failed to clear dispatch state") from exc
-        return self._parse_session(meta, session.context_summary)
+        parsed = self._parse_session(meta, session.context_summary)
+        self._user_data_store.persist_session(parsed)
+        return parsed
 
     async def _get_or_create_session(self, *, channel: str, user_id: str, agent_id: str) -> SessionRecord:
         session_id = build_session_id(channel, user_id)
@@ -238,7 +245,9 @@ class SessionManager:
                 actor_id="gateway",
                 payload={"channel": channel, "user_id": user_id, "agent_id": agent_id},
             )
-            return self._parse_session(meta, "")
+            parsed = self._parse_session(meta, "")
+            self._user_data_store.persist_session(parsed)
+            return parsed
         except RedisError as exc:
             raise SessionManagerError("Failed to create session") from exc
 
@@ -273,7 +282,9 @@ class SessionManager:
             )
         except RedisError as exc:
             raise SessionManagerError("Failed to append message") from exc
-        return self._parse_session(meta, session.context_summary)
+        parsed = self._parse_session(meta, session.context_summary)
+        self._user_data_store.persist_session(parsed)
+        return parsed
 
     def _parse_session(self, raw: dict[str, str], summary: str | None) -> SessionRecord:
         last_dispatch_raw = raw.get("last_dispatch_at") or None

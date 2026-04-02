@@ -57,7 +57,7 @@ class LauncherRedisInstallState(BaseModel):
 
 class LauncherProfile(BaseModel):
     workdir: str = ""
-    gateway_port: int = 8000
+    gateway_port: int = 8300
     launcher_port: int = 8765
     host_redis_port: int = 6379
     node_cache_redis_port: int = 6380

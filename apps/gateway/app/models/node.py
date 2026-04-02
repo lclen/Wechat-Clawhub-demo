@@ -91,4 +91,7 @@ class SystemStatusResponse(BaseModel):
     wechat_configured: bool
     active_nodes: int
     dispatch_mode_enabled: bool = False
+    gateway_bind_host: str = "0.0.0.0"
+    preferred_lan_ip: str | None = None
+    preferred_gateway_base_url: str
     timestamp: datetime

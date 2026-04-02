@@ -42,10 +42,10 @@ cd apps/gateway
 python -m venv .venv
 .venv\Scripts\activate
 pip install -e .
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8300
 ```
 
-默认监听 `http://127.0.0.1:8300`。如果你同时运行 `apps/agent-console` 的 Vite 开发服务器，默认代理地址就是这个端口。
+默认监听 `http://0.0.0.0:8300`。局域网部署时，控制台与节点默认优先使用主机的局域网地址，例如 `http://192.168.1.23:8300`。如果你同时运行 `apps/agent-console` 的 Vite 开发服务器，默认代理地址就是这个端口。
 
 ## 与前端联调
 
@@ -55,8 +55,8 @@ npm install
 npm run dev
 ```
 
-- 默认开发地址：`http://127.0.0.1:5174`
-- Vite 已代理 `/api` 到 `http://127.0.0.1:8300`
+- 默认开发地址：`http://0.0.0.0:5174`
+- Vite 已代理 `/api` 到 `http://localhost:8300`
 - 网关也已开放默认 CORS 白名单：`http://127.0.0.1:5174`、`http://localhost:5174`
 
 ## 环境变量

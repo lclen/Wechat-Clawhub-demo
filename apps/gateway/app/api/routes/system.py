@@ -16,6 +16,7 @@ from app.models.node import SystemStatusResponse
 from app.access.wechat_bot import WeChatBotService
 from app.services.node_registry import NodeRegistry
 from app.services.redis_store import RedisStore
+from app.utils.network import DEFAULT_GATEWAY_HOST, detect_lan_ip, preferred_gateway_base_url
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -49,5 +50,8 @@ async def get_system_status(
         wechat_configured=wechat_configured,
         active_nodes=active_nodes,
         dispatch_mode_enabled=settings.dispatch_mode_enabled,
+        gateway_bind_host=DEFAULT_GATEWAY_HOST,
+        preferred_lan_ip=detect_lan_ip(),
+        preferred_gateway_base_url=preferred_gateway_base_url(),
         timestamp=datetime.now(UTC),
     )

@@ -64,9 +64,12 @@ Gateway Service
 - `context.store`
   - 统一读写 Redis 中的上下文和状态
 - `scheduler`
-  - 根据节点健康状态、并发上限、会话亲和性做分发
+  - 根据节点健康状态、并发上限、通道槽位占用、会话亲和性做分发
 - `handoff.manager`
   - 管理转人工、认领、释放、人工回复
+- `dispatch.queue`
+  - 维护会话到 `node_id + slot_id` 的租约关系
+  - 支持自动切换、手动切换、超时释放
 - `transcript.writer`
   - 记录消息、系统事件、节点切换、人工接管事件
 - `api.http`
@@ -112,10 +115,12 @@ Gateway Service
   - 查看模型状态
   - 查看微信接入状态
   - 查看已接入节点、节点 ID、hostname、局域网 IP、上报地址、平台、版本、负载
+  - 切换分发模式
 - `会话观察台`
   - 左侧会话列表
   - 中间聊天时间线
   - 右侧会话记忆抽屉
+  - 查看当前节点、当前槽位、路由模式并手动切换节点
 
 ### 3.4 基础设施 `infra`
 
@@ -155,8 +160,12 @@ session_id = "wechat:{user_id}"
 - `agent_id`
 - `status`
 - `assigned_node_id`
+- `assigned_slot_id`
 - `context_summary`
 - `recent_messages`
+- `routing_mode`
+- `slot_bound_at`
+- `slot_expires_at`
 - `handoff_ticket_id`
 - `claimed_by`
 - `last_message_at`
@@ -209,7 +218,7 @@ Redis 采用明确的命名空间，避免后续混乱。
 
 - `wch:node:{node_id}:meta`
   - Hash
-  - 保存节点地址、并发上限、当前占用、状态、最近心跳
+  - 保存节点地址、并发上限、当前占用、状态、最近心跳、通道容量
 
 - `wch:nodes:active`
   - Set
@@ -218,6 +227,10 @@ Redis 采用明确的命名空间，避免后续混乱。
 - `wch:node:{node_id}:leases`
   - Set
   - 保存该节点正在处理的会话 ID
+
+- `wch:node:{node_id}:slots`
+  - Hash
+  - 保存 `slot_id -> session_id` 的活动槽位占用关系
 
 ### 5.3 人工接管相关
 
@@ -485,7 +498,20 @@ human_active -> closing
 ### 10.5 系统状态
 
 - `GET /api/system/status`
-  - 返回网关、Redis、Dify、微信连接状态
+  - 返回网关、Redis、Dify、微信连接状态，以及 `dispatch_mode_enabled`
+
+### 10.6 会话切换
+
+- `POST /api/sessions/{session_id}/switch-node`
+  - 手动释放当前会话槽位并切到新的可用节点/槽位
+
+### 10.7 快速配置 / 分发模式
+
+- `GET /api/setup/profile`
+  - 返回快速配置当前状态、已完成角色、最近一次任务
+
+- `POST /api/setup/gateway/dispatch-mode`
+  - 切换宿主机本机节点是否参与调度
 
 ## 11. WebSocket 事件设计
 
@@ -596,6 +622,7 @@ GET /ws/console
 - 将节点标记为 `offline`
 - 不再给该节点分发新请求
 - 用户后续消息切换到其他健康节点
+- 若节点仍在运行但注册记录丢失，`claw-node` 在心跳收到 `404` 后会自动重新注册
 
 ### 14.2 Redis 短暂不可用
 
@@ -644,6 +671,31 @@ GET /ws/console
 - 微信端 typing 提示发送与清除
 
 这些能力已经进入实际运行链路，但 typing 的最终展示效果仍取决于 iLink 返回的 `typing_ticket` 与 token 有效性。
+
+## 14.7 当前 `/switch` 行为边界
+
+当前 `/switch` 与控制台“切换节点”已进入正式链路，但其行为边界需要明确：
+
+- 当前切换逻辑会避开当前节点，并优先选择新的**可用**节点/槽位
+- 当前策略更偏向“受控重分配”，不是严格随机选点
+- 切换成功后只更换执行资源，不重建主会话
+- transcript 已记录以下事件：
+  - `dispatch_switch_requested`
+  - `dispatch_slot_acquired`
+  - `dispatch_slot_released`
+  - `dispatch_node_switched`
+  - `dispatch_switch_timeout_release`
+
+## 14.8 当前模型检测口径
+
+- `接入中心 -> 检测模型` 当前检测的是**网关内置模型配置**
+- 它依赖以下三项同时存在：
+  - `WCH_BUILTIN_MODEL_BASE_URL`
+  - `WCH_BUILTIN_MODEL_API_KEY`
+  - `WCH_BUILTIN_MODEL_NAME`
+- 因此当前可能出现：
+  - 节点模型已配置，微信消息可以正常回复
+  - 但如果网关未配置内置模型 Key，模型检测仍然失败
 
 ## 15. 首版目录建议
 

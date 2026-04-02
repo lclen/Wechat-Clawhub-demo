@@ -64,7 +64,7 @@ npm run dev -- --host 0.0.0.0 --port 5174
 
 打开：
 
-- `http://127.0.0.1:5174`
+- `http://0.0.0.0:5174`
 - 或局域网访问 `http://<电脑A局域网IP>:5174`
 
 ### 3.4 主机烟雾检查
@@ -73,7 +73,7 @@ npm run dev -- --host 0.0.0.0 --port 5174
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
--GatewayBaseUrl http://127.0.0.1:8300 `
+-GatewayBaseUrl http://<电脑A局域网IP>:8300 `
   -ExpectedNodeId node-b
 ```
 
@@ -148,7 +148,7 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-check-node.ps1 `
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
--GatewayBaseUrl http://127.0.0.1:8300 `
+-GatewayBaseUrl http://<电脑A局域网IP>:8300 `
   -ExpectedNodeId node-b `
   -RunDiscoveryScan
 ```

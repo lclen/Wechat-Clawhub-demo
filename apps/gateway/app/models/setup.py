@@ -68,6 +68,7 @@ class SetupProfileResponse(BaseModel):
     available_roles: list[SetupRole] = Field(
         default_factory=lambda: ["gateway_host", "gateway_host_console", "worker_node", "console_only"]
     )
+    preferred_gateway_base_url: str
     gateway: GatewaySetupConfig
     console: ConsoleSetupConfig
     last_task: SetupTaskResult | None = None

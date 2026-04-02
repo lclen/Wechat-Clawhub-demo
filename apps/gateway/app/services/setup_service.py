@@ -28,6 +28,7 @@ from app.models.setup import (
     WorkerNodeSetupConfig,
     utcnow,
 )
+from app.utils.network import preferred_gateway_base_url
 
 
 @dataclass
@@ -65,7 +66,7 @@ class SetupService:
         self._wechat_bot = wechat_bot
         self._tasks: dict[str, SetupTaskState] = {}
         self._last_task_id: str | None = None
-        self._console_gateway_base_url = "http://127.0.0.1:8300"
+        self._console_gateway_base_url = preferred_gateway_base_url()
         self._console_setup_completed = False
         self._gateway_env_path = Path(__file__).resolve().parents[2] / ".env"
         self._repo_root = Path(__file__).resolve().parents[4]
@@ -105,6 +106,7 @@ class SetupService:
             recommended_workspace=recommended_workspace,  # type: ignore[arg-type]
             setup_completed=setup_completed,
             completed_roles=completed_roles,  # type: ignore[arg-type]
+            preferred_gateway_base_url=self._console_gateway_base_url,
             gateway=gateway,
             console=console,
             last_task=last_task,
