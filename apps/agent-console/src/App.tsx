@@ -613,15 +613,26 @@ export function App() {
       setNotice(`保存网关配置失败：${(error as Error).message}`);
     }
   }
-  async function runWorkerSetup() {
+  async function runWorkerSetup(options?: { showResultScreen?: boolean }) {
+    const showResultScreen = options?.showResultScreen ?? true;
     try {
       const result = await withBusy(
         "setup-worker",
         () => requestJson<SetupTaskEnvelope>("/api/setup/node/install", { method: "POST", body: JSON.stringify({ config: workerSetup }) }),
       );
       setSetupTask(result.task);
-      setSetupMode("result");
-      setNotice("工作节点安装任务已启动，正在读取执行日志。");
+      if (showResultScreen) setSetupMode("result");
+      setWorkerSetup((current) => ({
+        ...current,
+        gateway_base_url: result.task.metadata.gateway_base_url || current.gateway_base_url,
+        node_token: result.task.metadata.node_token || current.node_token,
+      }));
+      await refreshSetupProfile();
+      setNotice(
+        result.task.metadata.node_token_source === "generated"
+          ? "工作节点安装任务已启动，已自动生成节点 Token 并写入网关。"
+          : "工作节点安装任务已启动，正在读取执行日志。",
+      );
     } catch (error) {
       setNotice(`启动工作节点安装失败：${(error as Error).message}`);
     }
@@ -668,6 +679,13 @@ export function App() {
       setSetupTask(result.task);
       setDiscoveredNodes(result.nodes);
       setPairingStatuses(Object.fromEntries(result.nodes.map((item) => [item.discovery_id, item.already_paired ? "already_paired" : "pending"])));
+      setPairingSecrets((current) => {
+        const next = { ...current };
+        for (const item of result.nodes) {
+          if (!next[item.discovery_id] && workerSetup.pairing_key.trim()) next[item.discovery_id] = workerSetup.pairing_key.trim();
+        }
+        return next;
+      });
       setNotice(result.task.summary || `已发现 ${result.nodes.length} 台局域网候选机器。`);
     } catch (error) {
       setNotice(`搜索局域网节点失败：${(error as Error).message}`);
@@ -816,7 +834,7 @@ export function App() {
           body: JSON.stringify({
             discovery_id: discovered.discovery_id,
             pairing_key: pairingKey,
-            gateway_base_url: consoleSetup.gateway_base_url || window.location.origin,
+            gateway_base_url: currentGatewayBaseUrl,
             node_id: discovered.node_id || undefined,
           }),
         }),
@@ -961,6 +979,7 @@ export function App() {
     { label: "网关侧查看位置", value: GATEWAY_NODE_TOKEN_LOCATION },
     { label: "节点侧查看位置", value: workerEnvLocations(workerSetup.install_dir) },
   ]), [setupCompletedRoles, workerSetup.install_dir, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
+  const currentGatewayBaseUrl = consoleSetup.gateway_base_url || window.location.origin;
 
   return (
     <div className="console-app">
@@ -1345,8 +1364,77 @@ export function App() {
                     </div>
                   )}
                 </section>
+                <section className="surface">
+                  <div className="section-head">
+                    <div><div className="section-kicker">节点纳管</div><h3>网关配置后继续添加工作节点</h3></div>
+                    <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>主网关地址写入草稿</button>
+                  </div>
+                  <div className="inline-tip">
+                    这里复用同一套安装与配对接口，适合网关已经保存完成后继续扩容、重装节点或做联调。
+                  </div>
+                  <div className="form-grid">
+                    <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
+                    <label><span>主网关地址</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="建议填写主机局域网地址，例如 http://192.168.0.17:8300" /></label>
+                    <label><span>节点 Token（可留空）</span><textarea value={workerSetup.node_token} onChange={(event) => updateWorkerSetup("node_token", event.target.value)} placeholder="留空会自动生成并同步保存到网关的 WCH_NODE_TOKENS。" /></label>
+                    <label>
+                      <span>配对密钥</span>
+                      <div className="field-with-action">
+                        <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="后续扫描配对时可直接复用这串密钥。" autoComplete="new-password" />
+                        <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>{workerPairingKeyVisible ? "隐藏密钥" : "显示密钥"}</button>
+                      </div>
+                    </label>
+                    <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
+                    <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
+                    <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
+                    <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
+                    <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
+                    <label><span>启用局域网发现</span><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /></label>
+                    <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则使用默认 dist/claw-node-bundle.zip" /></label>
+                  </div>
+                  <div className="info-stack">
+                    {workerCredentialRows.map((item) => <InfoRow key={`connection-${item.label}`} label={item.label} value={item.value} multiline />)}
+                  </div>
+                  {workerSetup.node_token.trim() ? <SnippetBlock label="当前工作节点 Token" content={workerSetup.node_token} /> : null}
+                  <div className="inline-actions">
+                    <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>{busy === "setup-worker" ? "安装中..." : "安装这个工作节点"}</button>
+                  </div>
+                </section>
               </div>
               <div className="connection-action-column">
+                <section className="surface">
+                  <div className="section-head">
+                    <div><div className="section-kicker">节点配对</div><h3>扫描并纳管局域网工作节点</h3></div>
+                    <button type="button" onClick={scanLanNodes} disabled={busy !== null}>{busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}</button>
+                  </div>
+                  <div className="inline-tip">
+                    当前网关回连地址：{currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
+                  </div>
+                  {!discoveredNodes.length ? <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div> : (
+                    <div className="discovery-list">
+                      {discoveredNodes.map((item) => (
+                        <div key={item.discovery_id} className="discovery-card">
+                          <div className="discovery-card-top">
+                            <div>
+                              <div className="node-card-title">{item.pairing_label || item.hostname}</div>
+                              <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
+                            </div>
+                            <span className={`session-badge session-badge-${pairingStatuses[item.discovery_id] === "paired" ? "human" : pairingStatuses[item.discovery_id] === "auth_failed" ? "queued" : item.already_paired ? "typing" : "idle"}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
+                          </div>
+                          <div className="node-card-grid">
+                            <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
+                            <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
+                            <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
+                            <div><div className="node-card-label">正式节点 ID</div><div className="node-card-value">{item.node_id || "配对时自动生成"}</div></div>
+                          </div>
+                          <div className="discovery-actions">
+                            <input value={pairingSecrets[item.discovery_id] || ""} onChange={(event) => setPairingSecrets((current) => ({ ...current, [item.discovery_id]: event.target.value }))} placeholder="输入该机器的配对密钥" />
+                            <button type="button" onClick={() => pairLanNode(item)} disabled={busy !== null}>{busy === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
                 <section className="surface surface-feature">
                   <div className="section-head"><div><div className="section-kicker">扫码接入</div><h3>连接微信 Bot</h3></div><div className="inline-actions"><button onClick={startQrFlow} disabled={busy !== null}>{busy === "wechat-qr" ? "生成中..." : "生成二维码"}</button><button onClick={pollQrStatus} disabled={!qr || busy !== null}>{busy === "wechat-poll" ? "轮询中..." : "轮询状态"}</button></div></div>
                   <div className="qr-stage">

@@ -66,6 +66,7 @@ class SetupService:
         self._wechat_bot = wechat_bot
         self._tasks: dict[str, SetupTaskState] = {}
         self._last_task_id: str | None = None
+        self._worker_setup_completed = False
         self._console_gateway_base_url = preferred_gateway_base_url()
         self._console_setup_completed = False
         self._gateway_env_path = Path(__file__).resolve().parents[2] / ".env"
@@ -92,9 +93,8 @@ class SetupService:
         console_completed = self._console_setup_completed
         if gateway_completed:
             completed_roles.append("gateway_host")
-        if self._last_task_id and self._tasks[self._last_task_id].kind == "node_install":
-            if self._tasks[self._last_task_id].status == "succeeded":
-                completed_roles.append("worker_node")
+        if self._worker_setup_completed:
+            completed_roles.append("worker_node")
         if console_completed:
             completed_roles.append("console_only")
         if gateway_completed and console_completed:
@@ -153,8 +153,16 @@ class SetupService:
 
     async def start_node_install(self, config: WorkerNodeSetupConfig) -> SetupTaskResult:
         task = self._create_task("node_install", f"安装工作节点 {config.node_id}")
+        normalized = self._prepare_worker_install_config(config, task)
+        task.metadata = {
+            "node_id": normalized.node_id,
+            "install_dir": normalized.install_dir,
+            "gateway_base_url": normalized.gateway_base_url,
+            "node_token": normalized.node_token,
+            "node_token_source": "provided" if config.node_token.strip() else "generated",
+        }
         self._append_log(task, "已创建节点安装任务。")
-        asyncio.create_task(self._run_node_install(task.task_id, config))
+        asyncio.create_task(self._run_node_install(task.task_id, normalized))
         return task.to_result()
 
     async def scan_discovery(self, timeout_ms: int | None = None) -> DiscoveryScanResponse:
@@ -479,17 +487,51 @@ class SetupService:
             for line in chunk.splitlines():
                 if line.strip():
                     self._append_log(task, line.strip())
-        task.metadata = {
-            "node_id": config.node_id,
-            "install_dir": config.install_dir,
-            "gateway_base_url": config.gateway_base_url,
-        }
+        task.metadata.update(
+            {
+                "node_id": config.node_id,
+                "install_dir": config.install_dir,
+                "gateway_base_url": config.gateway_base_url,
+                "node_token": config.node_token,
+            }
+        )
         if process.returncode == 0:
             task.summary = f"工作节点 {config.node_id} 安装完成。"
+            self._worker_setup_completed = True
             self._finish_task(task, "succeeded")
         else:
             task.summary = f"工作节点 {config.node_id} 安装失败，退出码 {process.returncode}。"
             self._finish_task(task, "failed")
+
+    def _prepare_worker_install_config(
+        self,
+        config: WorkerNodeSetupConfig,
+        task: SetupTaskState,
+    ) -> WorkerNodeSetupConfig:
+        resolved_node_id = config.node_id.strip()
+        existing_token = self._settings.node_tokens.get(resolved_node_id, "").strip()
+        provided_token = config.node_token.strip()
+        resolved_token = provided_token or existing_token or f"node-{uuid4().hex}"
+        if provided_token:
+            self._append_log(task, "沿用表单填写的节点 token，并同步写入网关节点凭据。")
+        elif existing_token:
+            self._append_log(task, "未填写节点 token，沿用网关当前已保存的节点 token。")
+        else:
+            self._append_log(task, "未填写节点 token，已自动生成新的节点 token，并写入网关节点凭据。")
+        self._settings.node_tokens[resolved_node_id] = resolved_token
+        self._persist_node_tokens()
+        return config.model_copy(
+            update={
+                "node_id": resolved_node_id,
+                "gateway_base_url": config.gateway_base_url.strip().rstrip("/"),
+                "node_token": resolved_token,
+                "pairing_key": config.pairing_key.strip(),
+                "dify_base_url": config.dify_base_url.strip(),
+                "dify_api_key": config.dify_api_key.strip(),
+                "install_dir": config.install_dir.strip(),
+                "bundle_path": config.bundle_path.strip(),
+            }
+        )
 
     def _write_env_updates(self, path: Path, updates: dict[str, str]) -> None:
         existing_lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []

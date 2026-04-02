@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.core.config import Settings
-from app.models.setup import ConsoleSetupConfig, GatewaySetupConfig
+from app.models.setup import ConsoleSetupConfig, GatewaySetupConfig, WorkerNodeSetupConfig
 from app.services.setup_service import SetupService
 
 
@@ -27,6 +27,24 @@ def build_gateway_config() -> GatewaySetupConfig:
 
 def build_console_config() -> ConsoleSetupConfig:
     return ConsoleSetupConfig(gateway_base_url="http://127.0.0.1:8300")
+
+
+def build_worker_config(**overrides: object) -> WorkerNodeSetupConfig:
+    payload = {
+        "node_id": "node-b",
+        "gateway_base_url": "http://127.0.0.1:8300",
+        "node_token": "",
+        "pairing_key": "pairing-secret",
+        "dify_base_url": "",
+        "dify_api_key": "",
+        "max_concurrency": 1,
+        "install_dir": "C:\\wechat-claw-node",
+        "bundle_path": "",
+        "discovery_enabled": True,
+        "discovery_port": 9531,
+    }
+    payload.update(overrides)
+    return WorkerNodeSetupConfig(**payload)
 
 
 class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -176,6 +194,28 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("Dify API Key 未填写，已保留当前已保存的值。" in line for line in task.logs))
         self.assertTrue(any("内置模型 API Key 未填写，已保留当前已保存的值。" in line for line in task.logs))
         self.assertTrue(any("微信 Token 未填写，已保留当前已保存的值。" in line for line in task.logs))
+
+    async def test_prepare_worker_install_config_generates_and_persists_node_token(self) -> None:
+        task = self.service._create_task("node_install", "安装工作节点 node-b")
+
+        config = self.service._prepare_worker_install_config(build_worker_config(), task)
+
+        self.assertEqual(config.node_id, "node-b")
+        self.assertTrue(config.node_token.startswith("node-"))
+        self.assertEqual(self.settings.node_tokens["node-b"], config.node_token)
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("node-b", env_text)
+        self.assertIn(config.node_token, env_text)
+        self.assertTrue(any("已自动生成新的节点 token" in line for line in task.logs))
+
+    async def test_prepare_worker_install_config_reuses_existing_gateway_token(self) -> None:
+        self.settings.node_tokens["node-b"] = "existing-node-token"
+        task = self.service._create_task("node_install", "安装工作节点 node-b")
+
+        config = self.service._prepare_worker_install_config(build_worker_config(), task)
+
+        self.assertEqual(config.node_token, "existing-node-token")
+        self.assertTrue(any("沿用网关当前已保存的节点 token" in line for line in task.logs))
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ class GatewaySetupConfig(BaseModel):
 class WorkerNodeSetupConfig(BaseModel):
     node_id: str = Field(min_length=1)
     gateway_base_url: str = Field(min_length=1)
-    node_token: str = Field(min_length=1)
+    node_token: str = ""
     pairing_key: str = ""
     dify_base_url: str = ""
     dify_api_key: str = ""
