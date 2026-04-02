@@ -310,6 +310,9 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 }
 .surface-tight { padding: 16px; }
 .surface-feature { background: linear-gradient(180deg, rgba(255, 250, 244, 0.96) 0%, rgba(250, 245, 238, 0.92) 100%); }
+.node-role-surface {
+  background: linear-gradient(180deg, rgba(243, 247, 255, 0.96) 0%, rgba(249, 251, 255, 0.92) 100%);
+}
 .section-head { align-items: center; justify-content: space-between; margin-bottom: 16px; }
 .compact-head { margin-bottom: 12px; }
 
@@ -321,6 +324,9 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .connection-status-column, .connection-action-column, .prep-strip-list, .info-stack, .snippet-stack {
   display: grid;
   gap: 16px;
+}
+.connection-action-column:empty {
+  display: none;
 }
 .node-cards {
   display: grid;

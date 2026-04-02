@@ -113,6 +113,47 @@ const DEFAULT_MANUAL_PAIR: ManualPairDraft = {
 const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope OpenAI Compatible（默认 qwen3.5-plus）";
 const GATEWAY_NODE_TOKEN_LOCATION = "apps/gateway/.env → WCH_NODE_TOKENS";
 
+function loadSetupDraft() {
+  if (typeof window === "undefined") {
+    return {
+      role: null as SetupRole | null,
+      gateway: DEFAULT_GATEWAY_SETUP,
+      worker: DEFAULT_WORKER_SETUP,
+      console: DEFAULT_CONSOLE_SETUP,
+    };
+  }
+  try {
+    const raw = window.localStorage.getItem(SETUP_DRAFT_KEY);
+    if (!raw) {
+      return {
+        role: null as SetupRole | null,
+        gateway: DEFAULT_GATEWAY_SETUP,
+        worker: DEFAULT_WORKER_SETUP,
+        console: DEFAULT_CONSOLE_SETUP,
+      };
+    }
+    const parsed = JSON.parse(raw) as {
+      role?: SetupRole;
+      gateway?: GatewaySetupConfig;
+      worker?: WorkerNodeSetupConfig;
+      console?: ConsoleSetupConfig;
+    };
+    return {
+      role: parsed.role ?? null,
+      gateway: { ...DEFAULT_GATEWAY_SETUP, ...(parsed.gateway ?? {}) },
+      worker: { ...DEFAULT_WORKER_SETUP, ...(parsed.worker ?? {}) },
+      console: { ...DEFAULT_CONSOLE_SETUP, ...(parsed.console ?? {}) },
+    };
+  } catch {
+    return {
+      role: null as SetupRole | null,
+      gateway: DEFAULT_GATEWAY_SETUP,
+      worker: DEFAULT_WORKER_SETUP,
+      console: DEFAULT_CONSOLE_SETUP,
+    };
+  }
+}
+
 async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, { headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }, ...init });
   if (!response.ok) throw new Error((await response.text()) || `Request failed: ${response.status}`);
@@ -135,17 +176,46 @@ function roleComponentsToStop(role: SetupRole): LauncherComponentName[] {
   if (role === "worker_node") return ["gateway", "node-cache-redis", "host-redis"];
   return [];
 }
+function resolveEffectiveRole(currentRole: SetupRole | null, completedRoles: SetupRole[]): SetupRole | null {
+  if (currentRole) return currentRole;
+  if (completedRoles.includes("worker_node")) return "worker_node";
+  if (completedRoles.includes("gateway_host_console")) return "gateway_host_console";
+  if (completedRoles.includes("gateway_host")) return "gateway_host";
+  if (completedRoles.includes("console_only")) return "console_only";
+  return null;
+}
+function isGatewayRole(role: SetupRole | null) {
+  return role === "gateway_host" || role === "gateway_host_console";
+}
+function isWorkerRole(role: SetupRole | null) {
+  return role === "worker_node";
+}
+function isConsoleRole(role: SetupRole | null) {
+  return role === "console_only";
+}
+function resolveWorkerGatewayBaseUrl(
+  currentValue: string,
+  profile?: Pick<SetupProfileResponse, "console" | "preferred_gateway_base_url" | "last_task"> | null,
+  system?: Pick<SystemStatus, "preferred_gateway_base_url"> | null,
+) {
+  const trimmedCurrent = currentValue.trim();
+  if (trimmedCurrent) return trimmedCurrent;
+  const taskGatewayBaseUrl = profile?.last_task?.kind === "node_install" ? profile.last_task.metadata.gateway_base_url?.trim() : "";
+  if (taskGatewayBaseUrl) return taskGatewayBaseUrl;
+  return resolvePreferredGatewayBaseUrl(profile, system);
+}
 
 export function App() {
+  const initialDraft = loadSetupDraft();
   const [workspace, setWorkspace] = useState<WorkspaceTab>("quick_setup");
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [setupProfile, setSetupProfile] = useState<SetupProfileResponse | null>(null);
-  const [setupRole, setSetupRole] = useState<SetupRole | null>(null);
-  const [setupMode, setSetupMode] = useState<SetupMode>("role");
-  const [gatewaySetup, setGatewaySetup] = useState<GatewaySetupConfig>(DEFAULT_GATEWAY_SETUP);
-  const [workerSetup, setWorkerSetup] = useState<WorkerNodeSetupConfig>(DEFAULT_WORKER_SETUP);
-  const [consoleSetup, setConsoleSetup] = useState<ConsoleSetupConfig>(DEFAULT_CONSOLE_SETUP);
+  const [setupRole, setSetupRole] = useState<SetupRole | null>(initialDraft.role);
+  const [setupMode, setSetupMode] = useState<SetupMode>(initialDraft.role ? "config" : "role");
+  const [gatewaySetup, setGatewaySetup] = useState<GatewaySetupConfig>(initialDraft.gateway);
+  const [workerSetup, setWorkerSetup] = useState<WorkerNodeSetupConfig>(initialDraft.worker);
+  const [consoleSetup, setConsoleSetup] = useState<ConsoleSetupConfig>(initialDraft.console);
   const [setupTask, setSetupTask] = useState<SetupTaskResult | null>(null);
   const [discoveredNodes, setDiscoveredNodes] = useState<DiscoveredNodeRecord[]>([]);
   const [pairingSecrets, setPairingSecrets] = useState<Record<string, string>>({});
@@ -180,28 +250,6 @@ export function App() {
   const [now, setNow] = useState(Date.now());
   const [workerPairingKeyVisible, setWorkerPairingKeyVisible] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(SETUP_DRAFT_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw) as {
-        role?: SetupRole;
-        gateway?: GatewaySetupConfig;
-        worker?: WorkerNodeSetupConfig;
-        console?: ConsoleSetupConfig;
-      };
-      if (parsed.role) {
-        setSetupRole(parsed.role);
-        setSetupMode("config");
-      }
-      if (parsed.gateway) setGatewaySetup((current) => ({ ...current, ...parsed.gateway }));
-      if (parsed.worker) setWorkerSetup((current) => ({ ...current, ...parsed.worker }));
-      if (parsed.console) setConsoleSetup((current) => ({ ...current, ...parsed.console }));
-    } catch {
-      // ignore invalid local draft
-    }
-  }, []);
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -288,7 +336,7 @@ export function App() {
         setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
         setWorkerSetup((current) => ({
           ...current,
-          gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl || current.gateway_base_url,
+          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
           dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
           dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
         }));
@@ -610,7 +658,7 @@ export function App() {
     setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
     setWorkerSetup((current) => ({
       ...current,
-      gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl || current.gateway_base_url,
+      gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
       dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
       dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
     }));
@@ -631,7 +679,7 @@ export function App() {
       setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
       setWorkerSetup((current) => ({
         ...current,
-        gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl || current.gateway_base_url,
+        gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
         dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
         dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
       }));
@@ -1039,7 +1087,7 @@ export function App() {
   function applyPreferredGatewayBaseUrlToWorker() {
     const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(setupProfile, systemStatus);
     updateWorkerSetup("gateway_base_url", preferredGatewayBaseUrl);
-    setNotice(`已为工作节点填入主网关地址：${preferredGatewayBaseUrl}`);
+    setNotice(`已为工作节点填入默认网关地址：${preferredGatewayBaseUrl}`);
   }
 
   const selectedSession = useMemo(() => sessions.find((session) => session.session_id === selectedSessionId) ?? activeSession, [sessions, selectedSessionId, activeSession]);
@@ -1055,40 +1103,74 @@ export function App() {
     [nodes, gatewaySetup.dispatch_mode_enabled],
   );
   const setupCompletedRoles = useMemo(() => new Set(setupProfile?.completed_roles ?? []), [setupProfile]);
+  const effectiveRole = useMemo(() => resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []), [setupProfile?.completed_roles, setupRole]);
+  const currentRoleIsGateway = isGatewayRole(effectiveRole);
+  const currentRoleIsWorker = isWorkerRole(effectiveRole);
+  const currentRoleIsConsole = isConsoleRole(effectiveRole);
   const currentRoleDisplay = useMemo(
     () => setupRole ? roleName(setupRole) : (setupProfile?.completed_roles.length ? setupProfile.completed_roles.map(roleName).join(" / ") : "未选择"),
     [setupProfile?.completed_roles, setupRole],
   );
   const latestSetupSummary = useMemo(
-    () => setupTask?.summary || setupProfile?.last_task?.summary || (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。"),
-    [nodes.length, setupProfile?.last_task?.summary, setupTask?.summary],
+    () => setupTask?.summary || setupProfile?.last_task?.summary || (currentRoleIsWorker ? "暂无最近节点安装或回连记录。" : (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。")),
+    [currentRoleIsWorker, nodes.length, setupProfile?.last_task?.summary, setupTask?.summary],
   );
-  const quickSetupStatusRows = useMemo<Array<{ title: string; value: string; tone: "good" | "warn"; detail: string }>>(() => ([
-    {
-      title: "微信连接",
-      value: wechatStatus?.running ? "轮询中" : (wechatStatus?.has_token ? "已保存未连接" : "未连接"),
-      tone: wechatStatus?.running ? "good" : "warn",
-      detail: wechatStatus?.base_url || gatewaySetup.wechat_base_url || "未配置",
-    },
-    {
-      title: "控制台目标",
-      value: setupProfile?.console.gateway_base_url || "未配置",
-      tone: setupProfile?.console.gateway_base_url ? "good" : "warn",
-      detail: "重新配置时会覆盖该地址，不会自动解绑。",
-    },
-    {
-      title: "网关运行",
-      value: systemStatus?.redis_ok ? "Redis 正常" : "待检查",
-      tone: systemStatus?.redis_ok ? "good" : "warn",
-      detail: modelStatus?.configured ? `模型 ${modelStatus.model || "-"} 已配置` : "模型尚未完成检测或配置",
-    },
-    {
-      title: "节点纳管",
-      value: nodes.length ? `${nodes.length} 个在线节点` : "暂无在线节点",
-      tone: nodes.length ? "good" : "warn",
-      detail: latestSetupSummary,
-    },
-  ]), [gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running]);
+  const quickSetupStatusRows = useMemo<Array<{ title: string; value: string; tone: "good" | "warn"; detail: string }>>(() => {
+    if (currentRoleIsWorker) {
+      return [
+        {
+          title: "节点配置",
+          value: setupCompletedRoles.has("worker_node") ? "已完成" : "待配置",
+          tone: setupCompletedRoles.has("worker_node") ? "good" : "warn",
+          detail: workerSetup.node_id || "尚未填写节点 ID",
+        },
+        {
+          title: "主网关回连",
+          value: workerSetup.gateway_base_url || "未配置",
+          tone: workerSetup.gateway_base_url ? "good" : "warn",
+          detail: workerSetup.gateway_base_url ? "节点将连接这个局域网网关地址。" : "建议填写局域网内目标网关地址。",
+        },
+        {
+          title: "节点凭据",
+          value: workerSetup.node_token.trim() ? "Token 已填写" : "Token 待处理",
+          tone: workerSetup.node_token.trim() ? "good" : "warn",
+          detail: workerSetup.pairing_key.trim() ? "配对密钥已准备" : "配对密钥尚未填写",
+        },
+        {
+          title: "发现响应",
+          value: workerSetup.discovery_enabled ? "已启用" : "已关闭",
+          tone: workerSetup.discovery_enabled ? "good" : "warn",
+          detail: workerSetup.discovery_enabled ? `UDP ${workerSetup.discovery_port}` : "关闭后不会响应局域网发现",
+        },
+      ];
+    }
+    return [
+      {
+        title: "微信连接",
+        value: wechatStatus?.running ? "轮询中" : (wechatStatus?.has_token ? "已保存未连接" : "未连接"),
+        tone: wechatStatus?.running ? "good" : "warn",
+        detail: wechatStatus?.base_url || gatewaySetup.wechat_base_url || "未配置",
+      },
+      {
+        title: "控制台目标",
+        value: setupProfile?.console.gateway_base_url || "未配置",
+        tone: setupProfile?.console.gateway_base_url ? "good" : "warn",
+        detail: "重新配置时会覆盖该地址，不会自动解绑。",
+      },
+      {
+        title: "网关运行",
+        value: systemStatus?.redis_ok ? "Redis 正常" : "待检查",
+        tone: systemStatus?.redis_ok ? "good" : "warn",
+        detail: modelStatus?.configured ? `模型 ${modelStatus.model || "-"} 已配置` : "模型尚未完成检测或配置",
+      },
+      {
+        title: "节点纳管",
+        value: nodes.length ? `${nodes.length} 个在线节点` : "暂无在线节点",
+        tone: nodes.length ? "good" : "warn",
+        detail: latestSetupSummary,
+      },
+    ];
+  }, [currentRoleIsWorker, gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.gateway_base_url, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
   const reconfigureWarnings = useMemo(() => {
     const warnings: string[] = [];
     if (wechatStatus?.running) warnings.push("微信当前处于轮询中；继续后会先断开微信连接，再进入重新配置。");
@@ -1158,7 +1240,7 @@ export function App() {
           <section className="workspace-frame quick-setup-workspace">
             <div className="workspace-heading">
               <div><div className="section-kicker">首次启动向导</div><h2>先选角色，再用最短路径把本机跑起来</h2></div>
-              <div className="workspace-caption">首版支持当前这台机器上的受控执行：保存网关配置、组合完成“网关主机+控制台”、单独校验控制台目标，以及调用现有工作节点安装脚本。</div>
+              <div className="workspace-caption">{currentRoleIsWorker ? "当前按工作节点视角收敛界面，只展示节点安装、回连和凭据相关能力。" : currentRoleIsConsole ? "当前按控制台视角收敛界面，只保留控制台连接与观察相关能力。" : "首版支持当前这台机器上的受控执行：保存网关配置、组合完成“网关主机+控制台”、单独校验控制台目标，以及调用现有工作节点安装脚本。"}</div>
             </div>
 
             <div className="quick-setup-layout">
@@ -1186,7 +1268,7 @@ export function App() {
                 {launcherAvailable ? (
                   <section className="surface surface-subsection">
                     <div className="section-head">
-                      <div><div className="section-kicker">桌面启动器</div><h3>单机一体化运行与存储库目录</h3></div>
+                      <div><div className="section-kicker">桌面启动器</div><h3>{currentRoleIsWorker ? "本机节点运行环境" : "单机一体化运行与存储库目录"}</h3></div>
                       <div className="inline-actions">
                         <button type="button" className="ghost-button" onClick={chooseLauncherWorkdir} disabled={busy !== null}>{busy === "launcher-select-workdir" ? "选择中..." : "选择存储库目录"}</button>
                         <button type="button" className="ghost-button" onClick={refreshLauncherStatus}>刷新状态</button>
@@ -1198,7 +1280,7 @@ export function App() {
                       <InfoRow label="身份信息目录" value={launcherStatus?.layout.identity_dir || "-"} multiline />
                       <InfoRow label="记忆目录" value={launcherStatus?.layout.memory_dir || "-"} multiline />
                       <InfoRow label="节点缓存策略" value={launcherStatus?.profile.node_cache_policy === "disabled" ? "关闭" : "已启用可选节点缓存 Redis"} />
-                      <InfoRow label="分发模式" value={gatewaySetup.dispatch_mode_enabled ? "已开启（主机只分发）" : "已关闭（本机节点可处理）"} />
+                      {!currentRoleIsWorker ? <InfoRow label="分发模式" value={gatewaySetup.dispatch_mode_enabled ? "已开启（主机只分发）" : "已关闭（本机节点可处理）"} /> : null}
                     </div>
                     <section className="surface surface-subsection">
                       <div className="section-head">
@@ -1213,9 +1295,9 @@ export function App() {
                       </div>
                     </section>
                     <div className="inline-actions quick-setup-actions">
-                      <button type="button" onClick={() => installLauncherRedis("host", launcherStatus?.profile.redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-host" ? "下载中..." : "安装主机 Redis"}</button>
+                      {!currentRoleIsWorker ? <button type="button" onClick={() => installLauncherRedis("host", launcherStatus?.profile.redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-host" ? "下载中..." : "安装主机 Redis"}</button> : null}
                       <button type="button" className="ghost-button" onClick={() => startLauncherStack({ enableLocalNode: !(launcherStatus?.profile.enable_local_node ?? true) })} disabled={busy !== null}>{launcherStatus?.profile.enable_local_node ? "关闭本机 Claw 节点" : "启用本机 Claw 节点"}</button>
-                      <button type="button" className="ghost-button" onClick={() => applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button>
+                      {!currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={() => applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button> : null}
                       <button type="button" className="ghost-button" onClick={() => toggleLauncherNodeCache(launcherStatus?.profile.node_cache_policy === "disabled")} disabled={busy !== null}>{launcherStatus?.profile.node_cache_policy === "disabled" ? "启用节点缓存 Redis" : "关闭节点缓存 Redis"}</button>
                       {launcherStatus?.profile.node_cache_policy !== "disabled" ? <button type="button" className="ghost-button" onClick={() => installLauncherRedis("node-cache", launcherStatus?.profile.node_cache_redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-node-cache" ? "下载中..." : "安装节点缓存 Redis"}</button> : null}
                       <button type="button" onClick={() => void startLauncherStack()} disabled={busy !== null}>{busy === "launcher-start" ? "启动中..." : "一键启动"}</button>
@@ -1258,14 +1340,25 @@ export function App() {
                     </div>
                     <div className="info-stack">
                       <InfoRow label="当前角色" value={currentRoleDisplay} multiline />
-                      <InfoRow label="微信 Base URL" value={wechatStatus?.base_url || gatewaySetup.wechat_base_url || "-"} multiline />
-                      <InfoRow label="控制台目标网关" value={setupProfile?.console.gateway_base_url || "-"} multiline />
-                      <InfoRow label="模型配置" value={modelStatus?.configured ? `${modelStatus.model || "-"} / ${modelStatus.base_url || "-"}` : DEFAULT_BUILTIN_MODEL_LABEL} multiline />
-                      <InfoRow label="节点状态" value={nodes.length ? `${nodes.length} 个在线节点，最近任务：${latestSetupSummary}` : latestSetupSummary} multiline />
+                      {currentRoleIsWorker ? (
+                        <>
+                          <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "-"} multiline />
+                          <InfoRow label="节点安装目录" value={workerSetup.install_dir || "-"} multiline />
+                          <InfoRow label="发现响应" value={workerSetup.discovery_enabled ? `已启用 · UDP ${workerSetup.discovery_port}` : "已关闭"} multiline />
+                          <InfoRow label="最近任务" value={latestSetupSummary} multiline />
+                        </>
+                      ) : (
+                        <>
+                          <InfoRow label="微信 Base URL" value={wechatStatus?.base_url || gatewaySetup.wechat_base_url || "-"} multiline />
+                          <InfoRow label="控制台目标网关" value={setupProfile?.console.gateway_base_url || "-"} multiline />
+                          <InfoRow label="模型配置" value={modelStatus?.configured ? `${modelStatus.model || "-"} / ${modelStatus.base_url || "-"}` : DEFAULT_BUILTIN_MODEL_LABEL} multiline />
+                          <InfoRow label="节点状态" value={nodes.length ? `${nodes.length} 个在线节点，最近任务：${latestSetupSummary}` : latestSetupSummary} multiline />
+                        </>
+                      )}
                     </div>
                     <section className="surface surface-subsection">
                       <div className="section-head">
-                        <div><div className="section-kicker">节点凭据</div><h3>查看 Token 与配对密钥状态</h3></div>
+                        <div><div className="section-kicker">节点凭据</div><h3>{currentRoleIsWorker ? "当前节点凭据与回连信息" : "查看 Token 与配对密钥状态"}</h3></div>
                       </div>
                       <div className="info-stack">
                         {workerCredentialRows.map((item) => <InfoRow key={item.label} label={item.label} value={item.value} multiline />)}
@@ -1371,10 +1464,10 @@ export function App() {
                             <div className="form-grid">
                               <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
                               <label>
-                                <span>主网关地址</span>
+                                <span>目标网关地址（局域网网关）</span>
                                 <div className="field-with-action">
-                                  <input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="建议填写主机局域网地址，例如 http://192.168.0.17:8300" />
-                                  <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>使用当前主机地址</button>
+                                  <input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="填写局域网内实际要连接的网关地址，例如 http://192.168.0.18:8300" />
+                                  <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前主机地址</button>
                                 </div>
                               </label>
                               <label><span>节点 Token</span><textarea value={workerSetup.node_token} onChange={(event) => updateWorkerSetup("node_token", event.target.value)} placeholder="将写入节点本机 .env，同时主网关会在 WCH_NODE_TOKENS 中保存该节点 token。" /></label>
@@ -1391,14 +1484,14 @@ export function App() {
                               <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
                               <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
                               <label><span>启用局域网发现</span><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /></label>
-                              <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则使用默认 dist/claw-node-bundle.zip" /></label>
+                              <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找常见 bundle 位置，并在缺失时尝试现打包" /></label>
                             </div>
                             <section className="surface surface-subsection">
                               <div className="section-head">
                                 <div><div className="section-kicker">凭据与查看位置</div><h3>安装前确认节点凭据保存位置</h3></div>
                               </div>
                               <div className="inline-tip">
-                                节点连接主机时，通常只需要把“主网关地址”填成主机局域网地址，并让这里的配对密钥与网关配对时输入的密钥保持一致。
+                                如果网关部署在局域网内另一台机器，请把这里填写成那台网关机器的实际访问地址；只有当当前机器本身就是网关时，才使用“填入当前主机地址”。
                               </div>
                               <div className="info-stack">
                                 {workerCredentialRows.map((item) => <InfoRow key={item.label} label={item.label} value={item.value} multiline />)}
@@ -1439,11 +1532,12 @@ export function App() {
         ) : workspace === "connection" ? (
           <section className="workspace-frame connection-workspace">
             <div className="workspace-heading">
-              <div><div className="section-kicker">接入中心</div><h2>连接前先确认模型、微信和节点都已就绪</h2></div>
-              <div className="workspace-caption">保留原有 API，不改协议，只重组桌面工作流。</div>
+              <div><div className="section-kicker">{currentRoleIsWorker ? "节点工作台" : "接入中心"}</div><h2>{currentRoleIsWorker ? "聚焦本机节点安装、回连与发现响应" : "连接前先确认模型、微信和节点都已就绪"}</h2></div>
+              <div className="workspace-caption">{currentRoleIsWorker ? "当前角色不会展示网关纳管、微信接入和分发模式操作。" : "保留原有 API，不改协议，只重组桌面工作流。"}</div>
             </div>
             <div className="connection-grid">
               <div className="connection-status-column">
+                {!currentRoleIsWorker ? (
                 <section className="surface surface-tight">
                   <div className="section-head"><div><div className="section-kicker">准备流程</div><h3>接入状态</h3></div><button onClick={runModelCheck} disabled={busy !== null}>{busy === "model-check" ? "检测中..." : "检测模型"}</button></div>
                   <div className="prep-strip-list">
@@ -1452,7 +1546,17 @@ export function App() {
                     <PrepStrip label="节点在线" detail={`${systemStatus?.active_nodes ?? 0} 个节点`} tone={(systemStatus?.active_nodes ?? 0) > 0 ? "good" : "warn"} />
                   </div>
                 </section>
-                <section className="surface">
+                ) : (
+                <section className="surface surface-tight">
+                  <div className="section-head"><div><div className="section-kicker">节点工作台</div><h3>当前节点状态</h3></div></div>
+                  <div className="prep-strip-list">
+                    <PrepStrip label="节点配置" detail={setupCompletedRoles.has("worker_node") ? "本机工作节点已完成配置" : "尚未完成工作节点配置"} tone={setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
+                    <PrepStrip label="目标网关地址" detail={workerSetup.gateway_base_url || "未填写局域网网关地址"} tone={workerSetup.gateway_base_url ? "good" : "warn"} />
+                    <PrepStrip label="发现响应" detail={workerSetup.discovery_enabled ? `已启用 UDP ${workerSetup.discovery_port}` : "当前已关闭"} tone={workerSetup.discovery_enabled ? "good" : "warn"} />
+                  </div>
+                </section>
+                )}
+                {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head"><div><div className="section-kicker">运行摘要</div><h3>系统状态</h3></div><button type="button" className="ghost-button" onClick={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button></div>
                   <div className="status-grid">
                     <Metric title="环境" value={systemStatus?.environment || "-"} />
@@ -1462,8 +1566,8 @@ export function App() {
                     <Metric title="分发模式" value={systemStatus?.dispatch_mode_enabled ? "主机只分发" : "本机可处理"} />
                   </div>
                   {gatewaySetup.dispatch_mode_enabled && availableDispatchNodes === 0 ? <div className="topbar-notice dispatch-warning">当前已开启分发模式，但还没有可用的远端处理节点；网关会继续接收微信消息，但无法完成实际回复。</div> : null}
-                </section>
-                <section className="surface">
+                </section> : null}
+                {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head"><div><div className="section-kicker">检测回显</div><h3>模型与网关</h3></div></div>
                   <div className="info-stack">
                     <InfoRow label="主网关 Redis" value={systemStatus?.redis_ok ? "正常" : "未就绪"} />
@@ -1472,9 +1576,9 @@ export function App() {
                     <InfoRow label="模型检测" value={modelCheck ? (modelCheck.configured_model_available ? "可用" : "未命中模型列表") : "尚未检测"} />
                     <InfoRow label="最近错误" value={wechatStatus?.last_error || "无"} multiline />
                   </div>
-                </section>
+                </section> : null}
 
-                <section className="surface">
+                {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head">
                     <div><div className="section-kicker">节点清单</div><h3>已接入节点</h3></div>
                     <span className="small-note">{nodes.length} 个节点</span>
@@ -1524,18 +1628,18 @@ export function App() {
                       ))}
                     </div>
                   )}
-                </section>
+                </section> : null}
                 <section className="surface">
                   <div className="section-head">
-                    <div><div className="section-kicker">节点纳管</div><h3>网关配置后继续添加工作节点</h3></div>
-                    <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>主网关地址写入草稿</button>
+                    <div><div className="section-kicker">{currentRoleIsWorker ? "节点安装" : "节点纳管"}</div><h3>{currentRoleIsWorker ? "安装或重装本机工作节点" : "网关配置后继续添加工作节点"}</h3></div>
+                    <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前主机地址</button>
                   </div>
                   <div className="inline-tip">
-                    这里复用同一套安装与配对接口，适合网关已经保存完成后继续扩容、重装节点或做联调。
+                    {currentRoleIsWorker ? "这里聚焦本机节点安装、回连主网关和发现响应配置，不提供网关纳管动作。" : "这里复用同一套安装与配对接口，适合网关已经保存完成后继续扩容、重装节点或做联调。"}
                   </div>
                   <div className="form-grid">
                     <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
-                    <label><span>主网关地址</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="建议填写主机局域网地址，例如 http://192.168.0.17:8300" /></label>
+                    <label><span>目标网关地址（局域网网关）</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="填写局域网内实际要连接的网关地址，例如 http://192.168.0.18:8300" /></label>
                     <label><span>节点 Token（可留空）</span><textarea value={workerSetup.node_token} onChange={(event) => updateWorkerSetup("node_token", event.target.value)} placeholder="留空会自动生成并同步保存到网关的 WCH_NODE_TOKENS。" /></label>
                     <label>
                       <span>配对密钥</span>
@@ -1550,7 +1654,7 @@ export function App() {
                     <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
                     <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
                     <label><span>启用局域网发现</span><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /></label>
-                    <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则使用默认 dist/claw-node-bundle.zip" /></label>
+                    <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找常见 bundle 位置，并在缺失时尝试现打包" /></label>
                   </div>
                   <div className="info-stack">
                     {workerCredentialRows.map((item) => <InfoRow key={`connection-${item.label}`} label={item.label} value={item.value} multiline />)}
@@ -1562,7 +1666,7 @@ export function App() {
                 </section>
               </div>
               <div className="connection-action-column">
-                <section className="surface">
+                {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head">
                     <div><div className="section-kicker">直连配对</div><h3>按地址直接纳管工作节点</h3></div>
                   </div>
@@ -1612,6 +1716,17 @@ export function App() {
                       ))}
                     </div>
                   )}
+                </section> : (
+                <section className="surface node-role-surface">
+                  <div className="section-head"><div><div className="section-kicker">节点说明</div><h3>当前角色不显示网关纳管能力</h3></div></div>
+                  <div className="inline-tip">
+                    你当前选择的是工作节点角色，这里只保留节点安装、回连、凭据和发现响应相关功能；扫描并纳管其它节点需要切换回网关角色。
+                  </div>
+                  <div className="info-stack">
+                    <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
+                    <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
+                    <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
+                  </div>
                 </section>
                 <section className="surface">
                   <div className="section-head">
@@ -1639,21 +1754,21 @@ export function App() {
                     </div>
                   )}
                 </section>
-                <section className="surface surface-feature">
+                {!currentRoleIsWorker ? <section className="surface surface-feature">
                   <div className="section-head"><div><div className="section-kicker">扫码接入</div><h3>连接微信 Bot</h3></div><div className="inline-actions"><button onClick={startQrFlow} disabled={busy !== null}>{busy === "wechat-qr" ? "生成中..." : "生成二维码"}</button><button onClick={pollQrStatus} disabled={!qr || busy !== null}>{busy === "wechat-poll" ? "轮询中..." : "轮询状态"}</button></div></div>
                   <div className="qr-stage">
                     <div className="qr-frame">{qrImageSrc ? <img className="qr-image" src={qrImageSrc} alt="WeChat QR code" /> : <div className="qr-placeholder">点击“生成二维码”后，这里会显示扫码图。</div>}</div>
                     <div className="qr-meta"><div className="qr-status-line"><span>当前状态</span><strong>{pollState?.status ?? "未开始"}</strong></div><div className="small-note">支持扫码自动接入，也支持复制 token 做手动连接测试。</div></div>
                   </div>
-                </section>
-                <section className="surface">
+                </section> : null}
+                {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head"><div><div className="section-kicker">手动模式</div><h3>Token 连接</h3></div></div>
                   <div className="form-grid">
                     <label><span>WeChat Base URL</span><input value={wechatBaseUrl} onChange={(event) => setWechatBaseUrl(event.target.value)} placeholder="https://ilinkai.weixin.qq.com" /></label>
                     <label><span>手动 Token</span><textarea value={manualToken} onChange={(event) => setManualToken(event.target.value)} placeholder="也可以先扫码，扫码确认后会自动填入并接入。" /></label>
                   </div>
                   <div className="inline-actions"><button onClick={connectManualToken} disabled={busy !== null}>{busy === "wechat-connect" ? "连接中..." : "使用当前 Token 连接"}</button><button onClick={disconnectWeChat} disabled={busy !== null}>断开连接</button></div>
-                </section>
+                </section> : null}
               </div>
             </div>
           </section>
@@ -1804,13 +1919,13 @@ function isPairingTaskKind(kind: SetupTaskResult["kind"]) {
 function roleDescription(role: SetupRole) {
   if (role === "gateway_host") return "保存网关基础配置，并主动搜索局域网里已经运行的可配对节点。";
   if (role === "gateway_host_console") return "一次完成网关配置保存与控制台目标校验，适合本机同时承担主网关和运维控制台。";
-  if (role === "worker_node") return "复用现有 PowerShell 安装脚本，把这台机器部署成可接单且可被自动发现的 Claw 节点。";
+  if (role === "worker_node") return "把这台机器配置成工作节点，重点完成节点安装、回连主网关、凭据维护与发现响应设置。";
   return "校验控制台要连接的主网关地址，适合纯观察和接管机器。";
 }
 function roleAction(role: SetupRole) {
   if (role === "gateway_host") return "会写入网关 .env、刷新微信运行配置，并通过 UDP 广播搜索候选节点。";
   if (role === "gateway_host_console") return "会先写入网关配置，再串行校验控制台目标网关地址，并把该地址保存为后续默认值。";
-  if (role === "worker_node") return "会调用 install-claw-node.ps1，并把配对密钥/发现端口写入本机配置。";
+  if (role === "worker_node") return "会调用 install-claw-node.ps1，并把主网关地址、节点凭据、配对密钥和发现端口写入本机配置。";
   return "会验证目标主网关健康状态，不会安装任何服务。";
 }
 function workerEnvLocations(installDir: string) {
@@ -1842,13 +1957,14 @@ function previewContent(role: SetupRole, gateway: GatewaySetupConfig, worker: Wo
     "执行时会先保存网关配置，再校验控制台目标网关；若校验失败，不回滚已保存的网关配置。",
   ].join("\n");
   if (role === "worker_node") return [
-    `调用节点安装脚本，节点 ID=${worker.node_id}`,
-    `主网关地址=${worker.gateway_base_url}`,
+    `安装本机工作节点，节点 ID=${worker.node_id}`,
+    `连接局域网网关=${worker.gateway_base_url || "未填写"}`,
     `安装目录=${worker.install_dir}`,
     `最大并发=${worker.max_concurrency}`,
+    `节点 Token=${worker.node_token ? "已填写" : "未填写（执行时可自动生成）"}`,
     `配对密钥=${worker.pairing_key ? "已填写" : "未填写"}`,
-    `自动发现=${worker.discovery_enabled ? `开启（UDP ${worker.discovery_port}）` : "关闭"}`,
-    `Bundle=${worker.bundle_path || "使用默认路径"}`,
+    `发现响应=${worker.discovery_enabled ? `开启（UDP ${worker.discovery_port}）` : "关闭"}`,
+    `Bundle=${worker.bundle_path || "自动查找常见路径；缺失时尝试现打包"}`,
   ].join("\n");
   return [
     `校验控制台目标网关=${consoleConfig.gateway_base_url}`,
@@ -1858,7 +1974,7 @@ function previewContent(role: SetupRole, gateway: GatewaySetupConfig, worker: Wo
 function previewOutcome(role: SetupRole) {
   if (role === "gateway_host") return "保存后的配置会体现在快速配置档案中；部分运行时配置会即时应用，仍建议重启网关确认最终状态。";
   if (role === "gateway_host_console") return "成功后会同时记录网关配置和控制台默认网关地址；若控制台校验失败，会保留已保存的网关配置并在结果页提示失败原因。";
-  if (role === "worker_node") return "成功后会返回服务安装日志、节点 ID、安装目录等结果；失败时保留错误摘要，便于重试。";
+  if (role === "worker_node") return "成功后会返回本机节点安装日志、节点 ID、主网关回连信息和安装目录；失败时保留错误摘要，便于重试。";
   return "成功后会记录控制台默认网关地址，并可继续进入接入中心或会话观察台。";
 }
 function pairingStatusLabel(status: PairingStatus) { return status === "paired" ? "已配对" : status === "auth_failed" ? "密钥错误" : status === "already_paired" ? "已纳管" : status === "offline" ? "离线" : "待连接"; }
