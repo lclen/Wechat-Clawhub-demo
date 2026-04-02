@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     node_registry = NodeRegistry(redis_store, settings)
     transcript_writer = TranscriptWriter(settings.transcript_dir)
     session_manager = SessionManager(redis_store, transcript_writer, settings)
-    scheduler = DispatchScheduler(node_registry)
+    scheduler = DispatchScheduler(node_registry, settings)
     wechat_bot = WeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
     outgoing_dispatcher = OutgoingDispatcher(wechat_bot=wechat_bot, transcript_writer=transcript_writer)
     dispatch_queue = DispatchQueue(

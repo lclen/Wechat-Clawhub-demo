@@ -48,5 +48,6 @@ async def get_system_status(
         dify_configured=bool(settings.dify_base_url and settings.dify_api_key),
         wechat_configured=wechat_configured,
         active_nodes=active_nodes,
+        dispatch_mode_enabled=settings.dispatch_mode_enabled,
         timestamp=datetime.now(UTC),
     )

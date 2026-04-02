@@ -26,7 +26,7 @@ def build_gateway_config() -> GatewaySetupConfig:
 
 
 def build_console_config() -> ConsoleSetupConfig:
-    return ConsoleSetupConfig(gateway_base_url="http://127.0.0.1:8000")
+    return ConsoleSetupConfig(gateway_base_url="http://127.0.0.1:8300")
 
 
 class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -52,9 +52,9 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(task.kind, "gateway_console_setup")
         self.assertEqual(task.status, "succeeded")
-        self.assertIn("http://127.0.0.1:8000", task.summary)
+        self.assertIn("http://127.0.0.1:8300", task.summary)
         self.assertTrue(any("开始写入网关配置" in line for line in task.logs))
-        self.assertTrue(any("开始校验 http://127.0.0.1:8000" in line for line in task.logs))
+        self.assertTrue(any("开始校验 http://127.0.0.1:8300" in line for line in task.logs))
         profile = self.service.get_profile()
         self.assertIn("gateway_host", profile.completed_roles)
         self.assertIn("console_only", profile.completed_roles)
@@ -100,6 +100,76 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("gateway_host", profile.completed_roles)
         self.assertIn("console_only", profile.completed_roles)
         self.assertNotIn("gateway_host_console", profile.completed_roles)
+
+    async def test_set_dispatch_mode_updates_settings_and_env(self) -> None:
+        task = await self.service.set_dispatch_mode(True)
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertTrue(self.settings.dispatch_mode_enabled)
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("WCH_DISPATCH_MODE_ENABLED=true", env_text)
+
+    async def test_save_gateway_config_defaults_to_builtin_model_when_model_fields_empty(self) -> None:
+        gateway_config = GatewaySetupConfig(
+            redis_url="redis://localhost:6379/0",
+            default_agent_id="default-agent",
+            dify_base_url="",
+            dify_api_key="",
+            builtin_model_base_url="",
+            builtin_model_api_key="",
+            builtin_model_name="",
+            wechat_base_url="https://ilinkai.weixin.qq.com",
+            wechat_token="",
+        )
+
+        task, _ = await self.service.save_gateway_config(gateway_config)
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertEqual(
+            self.settings.builtin_model_base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
+        self.assertEqual(self.settings.builtin_model_name, "qwen3.5-plus")
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn(
+            "WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+            env_text,
+        )
+        self.assertIn("WCH_BUILTIN_MODEL_NAME=qwen3.5-plus", env_text)
+        self.assertTrue(any("默认沿用内置模型 qwen3.5-plus" in line for line in task.logs))
+
+    async def test_save_gateway_config_preserves_existing_secret_fields_when_left_empty(self) -> None:
+        self.settings.dify_api_key = "existing-dify-key"
+        self.settings.builtin_model_api_key = "existing-builtin-key"
+        self.settings.wechat_token = "existing-wechat-token"
+        self.settings.builtin_model_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        self.settings.builtin_model_name = "qwen3.5-plus"
+
+        gateway_config = GatewaySetupConfig(
+            redis_url="redis://localhost:6379/0",
+            default_agent_id="default-agent",
+            dify_base_url="",
+            dify_api_key="",
+            builtin_model_base_url="",
+            builtin_model_api_key="",
+            builtin_model_name="",
+            wechat_base_url="https://ilinkai.weixin.qq.com",
+            wechat_token="",
+        )
+
+        task, _ = await self.service.save_gateway_config(gateway_config)
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertEqual(self.settings.dify_api_key, "existing-dify-key")
+        self.assertEqual(self.settings.builtin_model_api_key, "existing-builtin-key")
+        self.assertEqual(self.settings.wechat_token, "existing-wechat-token")
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("WCH_DIFY_API_KEY=existing-dify-key", env_text)
+        self.assertIn("WCH_BUILTIN_MODEL_API_KEY=existing-builtin-key", env_text)
+        self.assertIn("WCH_WECHAT_TOKEN=existing-wechat-token", env_text)
+        self.assertTrue(any("Dify API Key 未填写，已保留当前已保存的值。" in line for line in task.logs))
+        self.assertTrue(any("内置模型 API Key 未填写，已保留当前已保存的值。" in line for line in task.logs))
+        self.assertTrue(any("微信 Token 未填写，已保留当前已保存的值。" in line for line in task.logs))
 
 
 if __name__ == "__main__":

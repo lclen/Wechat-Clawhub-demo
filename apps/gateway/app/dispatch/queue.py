@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
 from uuid import uuid4
 
@@ -9,13 +9,14 @@ from redis.exceptions import RedisError
 from app.core.config import Settings
 from app.dispatch.scheduler import DispatchScheduler
 from app.models.dispatch import DispatchTask, TaskFailureRequest, TaskResultRequest
-from app.models.session import MessageRecord, QueueStatus, SessionRecord, SessionStatus
+from app.models.session import MessageRecord, QueueStatus, RoutingMode, SessionRecord, SessionStatus
+from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager
 from app.services.transcript_writer import TranscriptWriter
-from app.services.outgoing_dispatcher import OutgoingDispatcher
 
 logger = logging.getLogger(__name__)
+SLOT_ID_PREFIX = "slot-"
 
 
 class DispatchQueueError(RuntimeError):
@@ -49,6 +50,9 @@ class DispatchQueue:
     def _node_queue_key(self, node_id: str) -> str:
         return f"wch:dispatch:node:{node_id}"
 
+    def _node_slots_key(self, node_id: str) -> str:
+        return f"wch:node:{node_id}:slots"
+
     def _inflight_key(self, task_id: str) -> str:
         return f"wch:dispatch:inflight:{task_id}"
 
@@ -62,6 +66,9 @@ class DispatchQueue:
     ) -> DispatchTask | None:
         if session.status != SessionStatus.BOT_ACTIVE:
             return None
+
+        session = await self._release_expired_slot_if_needed(session)
+        session = await self._recover_stale_dispatch_if_needed(session)
         if session.active_task_id or session.queue_status != QueueStatus.NONE:
             self._transcript_writer.append_event(
                 session_id=session.session_id,
@@ -72,8 +79,8 @@ class DispatchQueue:
             )
             return None
 
-        node = await self._scheduler.select_node(session)
-        if node is None:
+        allocation = await self._ensure_slot_assignment(session, routing_mode=session.routing_mode)
+        if allocation is None:
             self._transcript_writer.append_event(
                 session_id=session.session_id,
                 event_type="dispatch_node_unavailable",
@@ -82,53 +89,15 @@ class DispatchQueue:
                 payload={"message_id": message.message_id},
             )
             return None
-
+        session, _, _ = allocation
         recent_messages = await self._session_manager.get_messages(session.session_id)
-        task = DispatchTask(
-            task_id=f"task_{uuid4().hex}",
-            session_id=session.session_id,
-            node_id=node.node_id,
-            agent_id=session.agent_id,
-            user_id=session.user_id,
-            context_summary=session.context_summary,
-            recent_messages=recent_messages,
+        task = await self._enqueue_task(
+            session=session,
             message=message,
-            context_version=session.context_version,
-            created_at=self._utcnow(),
-        )
-
-        try:
-            await self._store.set(self._task_key(task.task_id), task.model_dump_json())
-            await self._store.rpush(self._node_queue_key(node.node_id), task.task_id)
-            await self._store.set(self._session_task_key(session.session_id), task.task_id)
-        except RedisError as exc:
-            raise DispatchQueueError("Failed to enqueue dispatch task") from exc
-
-        await self._session_manager.set_dispatch_state(
-            session_id=session.session_id,
-            assigned_node_id=node.node_id,
-            active_task_id=task.task_id,
-            queue_status="pending",
-            last_dispatch_at=task.created_at,
-        )
-        self._transcript_writer.append_event(
-            session_id=session.session_id,
-            event_type="dispatch_enqueued",
-            actor_type="system",
-            actor_id="gateway",
-            node_id=node.node_id,
-            payload={
-                "task_id": task.task_id,
-                "message_id": message.message_id,
-                "context_version": task.context_version,
-            },
-        )
-        logger.info(
-            "[dispatch] enqueued task_id=%s session=%s node=%s context_version=%s",
-            task.task_id,
-            task.session_id,
-            node.node_id,
-            task.context_version,
+            recent_messages=recent_messages,
+            context_summary=session.context_summary,
+            context_version=message.metadata.get("context_version") and int(message.metadata["context_version"]) or session.context_version,
+            retry_count=0,
         )
         return task
 
@@ -152,6 +121,7 @@ class DispatchQueue:
         await self._session_manager.set_dispatch_state(
             session_id=task.session_id,
             assigned_node_id=node_id,
+            assigned_slot_id=task.slot_id,
             active_task_id=task.task_id,
             queue_status="inflight",
             last_dispatch_at=task.created_at,
@@ -162,11 +132,12 @@ class DispatchQueue:
             actor_type="system",
             actor_id=node_id,
             node_id=node_id,
-            payload={"task_id": task.task_id, "context_version": task.context_version},
+            payload={"task_id": task.task_id, "context_version": task.context_version, "slot_id": task.slot_id},
         )
         logger.info(
-            "[dispatch] node=%s pulled task_id=%s session=%s context_version=%s",
+            "[dispatch] node=%s slot=%s pulled task_id=%s session=%s context_version=%s",
             node_id,
+            task.slot_id,
             task.task_id,
             task.session_id,
             task.context_version,
@@ -193,13 +164,19 @@ class DispatchQueue:
             actor_type="system",
             actor_id=payload.node_id,
             node_id=payload.node_id,
-            payload={"task_id": payload.task_id, "context_version": payload.context_version},
+            payload={
+                "task_id": payload.task_id,
+                "context_version": payload.context_version,
+                "slot_id": task.slot_id,
+                "retry_count": task.retry_count,
+            },
         )
         logger.info(
-            "[dispatch] completed task_id=%s session=%s node=%s context_version=%s",
+            "[dispatch] completed task_id=%s session=%s node=%s slot=%s context_version=%s",
             payload.task_id,
             task.session_id,
             payload.node_id,
+            task.slot_id,
             payload.context_version,
         )
         await self._cleanup_task(task)
@@ -221,19 +198,418 @@ class DispatchQueue:
                 "error_code": payload.error_code,
                 "error_message": payload.error_message,
                 "retryable": payload.retryable,
+                "slot_id": task.slot_id,
+                "retry_count": task.retry_count,
             },
         )
         logger.warning(
-            "[dispatch] failed task_id=%s session=%s node=%s error=%s retryable=%s",
+            "[dispatch] failed task_id=%s session=%s node=%s slot=%s error=%s retryable=%s",
             payload.task_id,
             task.session_id,
             payload.node_id,
+            task.slot_id,
             payload.error_message,
             payload.retryable,
         )
         await self._outgoing_dispatcher.clear_processing_indicator(session)
         await self._cleanup_task(task)
-        return session
+        released_session = await self._release_slot(
+            session,
+            event_type="dispatch_slot_released",
+            actor_id=payload.node_id,
+            reason="task_failure",
+            clear_assigned_node=False,
+        )
+        if task.retry_count >= 1:
+            return released_session
+        switched = await self._switch_session(
+            released_session.session_id,
+            requested_by=payload.node_id,
+            reason="task_failure",
+            routing_mode=RoutingMode.AUTO,
+            exclude_node_ids={payload.node_id},
+            allow_active_task_cleanup=False,
+        )
+        if not switched.assigned_node_id or not switched.assigned_slot_id:
+            return switched
+        await self._enqueue_task(
+            session=switched,
+            message=task.message,
+            recent_messages=task.recent_messages,
+            context_summary=task.context_summary,
+            context_version=task.context_version,
+            retry_count=task.retry_count + 1,
+        )
+        return await self._session_manager.get_session(switched.session_id)
+
+    async def switch_session_target(
+        self,
+        session_id: str,
+        *,
+        requested_by: str,
+        reason: str,
+    ) -> tuple[SessionRecord, str]:
+        session = await self._switch_session(
+            session_id,
+            requested_by=requested_by,
+            reason=reason,
+            routing_mode=RoutingMode.MANUAL,
+            exclude_node_ids=None,
+            allow_active_task_cleanup=True,
+        )
+        if session.assigned_node_id and session.assigned_slot_id:
+            detail = f"已切换到 {session.assigned_node_id} / {session.assigned_slot_id}"
+        else:
+            detail = "当前没有可用 claw 节点或可分配通道。"
+        return session, detail
+
+    async def _switch_session(
+        self,
+        session_id: str,
+        *,
+        requested_by: str,
+        reason: str,
+        routing_mode: RoutingMode,
+        exclude_node_ids: set[str] | None,
+        allow_active_task_cleanup: bool,
+    ) -> SessionRecord:
+        session = await self._session_manager.get_session(session_id)
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="dispatch_switch_requested",
+            actor_type="system",
+            actor_id=requested_by,
+            node_id=session.assigned_node_id,
+            payload={
+                "reason": reason,
+                "from_node_id": session.assigned_node_id,
+                "from_slot_id": session.assigned_slot_id,
+                "routing_mode": routing_mode.value,
+            },
+        )
+        if allow_active_task_cleanup and session.active_task_id:
+            session = await self._abandon_active_task(session, requested_by=requested_by, reason=reason)
+        released = await self._release_slot(
+            session,
+            event_type="dispatch_slot_released",
+            actor_id=requested_by,
+            reason=reason,
+            clear_assigned_node=False,
+        )
+        excluded = set(exclude_node_ids or set())
+        if released.assigned_node_id:
+            excluded.add(released.assigned_node_id)
+        allocation = await self._ensure_slot_assignment(
+            released,
+            routing_mode=routing_mode,
+            exclude_node_ids=excluded or None,
+            allow_existing_slot=False,
+        )
+        if allocation is None:
+            return await self._session_manager.set_dispatch_state(
+                session_id=released.session_id,
+                assigned_node_id=released.assigned_node_id,
+                assigned_slot_id=None,
+                active_task_id=None,
+                queue_status=QueueStatus.NONE,
+                last_dispatch_at=released.last_dispatch_at,
+                routing_mode=routing_mode,
+                slot_bound_at=None,
+                slot_expires_at=None,
+            )
+        switched, previous_node_id, previous_slot_id = allocation
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="dispatch_node_switched",
+            actor_type="system",
+            actor_id=requested_by,
+            node_id=switched.assigned_node_id,
+            payload={
+                "reason": reason,
+                "from_node_id": previous_node_id,
+                "from_slot_id": previous_slot_id,
+                "to_node_id": switched.assigned_node_id,
+                "to_slot_id": switched.assigned_slot_id,
+                "routing_mode": routing_mode.value,
+            },
+        )
+        return switched
+
+    async def _abandon_active_task(self, session: SessionRecord, *, requested_by: str, reason: str) -> SessionRecord:
+        if not session.active_task_id:
+            return session
+        try:
+            await self._store.delete(
+                self._task_key(session.active_task_id),
+                self._inflight_key(session.active_task_id),
+                self._session_task_key(session.session_id),
+            )
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to abandon active dispatch task") from exc
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type="dispatch_node_switched",
+            actor_type="system",
+            actor_id=requested_by,
+            node_id=session.assigned_node_id,
+            payload={
+                "reason": reason,
+                "abandoned_task_id": session.active_task_id,
+                "from_node_id": session.assigned_node_id,
+                "from_slot_id": session.assigned_slot_id,
+            },
+        )
+        return await self._session_manager.clear_dispatch_state(session.session_id, expected_task_id=session.active_task_id)
+
+    async def _enqueue_task(
+        self,
+        *,
+        session: SessionRecord,
+        message: MessageRecord,
+        recent_messages: list[MessageRecord],
+        context_summary: str,
+        context_version: int,
+        retry_count: int,
+    ) -> DispatchTask:
+        if not session.assigned_node_id or not session.assigned_slot_id:
+            raise DispatchQueueError("No node slot is assigned for this session")
+        task = DispatchTask(
+            task_id=f"task_{uuid4().hex}",
+            session_id=session.session_id,
+            node_id=session.assigned_node_id,
+            slot_id=session.assigned_slot_id,
+            agent_id=session.agent_id,
+            user_id=session.user_id,
+            context_summary=context_summary,
+            recent_messages=recent_messages,
+            message=message,
+            context_version=context_version,
+            retry_count=retry_count,
+            created_at=self._utcnow(),
+        )
+        try:
+            await self._store.set(self._task_key(task.task_id), task.model_dump_json())
+            await self._store.rpush(self._node_queue_key(task.node_id), task.task_id)
+            await self._store.set(self._session_task_key(task.session_id), task.task_id)
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to enqueue dispatch task") from exc
+
+        await self._session_manager.set_dispatch_state(
+            session_id=session.session_id,
+            assigned_node_id=task.node_id,
+            assigned_slot_id=task.slot_id,
+            active_task_id=task.task_id,
+            queue_status="pending",
+            last_dispatch_at=task.created_at,
+            routing_mode=session.routing_mode,
+            slot_bound_at=session.slot_bound_at,
+            slot_expires_at=session.slot_expires_at,
+        )
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type="dispatch_enqueued",
+            actor_type="system",
+            actor_id="gateway",
+            node_id=task.node_id,
+            payload={
+                "task_id": task.task_id,
+                "message_id": message.message_id,
+                "context_version": task.context_version,
+                "slot_id": task.slot_id,
+                "retry_count": retry_count,
+            },
+        )
+        logger.info(
+            "[dispatch] enqueued task_id=%s session=%s node=%s slot=%s context_version=%s retry=%s",
+            task.task_id,
+            task.session_id,
+            task.node_id,
+            task.slot_id,
+            task.context_version,
+            retry_count,
+        )
+        return task
+
+    async def _ensure_slot_assignment(
+        self,
+        session: SessionRecord,
+        *,
+        routing_mode: RoutingMode,
+        exclude_node_ids: set[str] | None = None,
+        allow_existing_slot: bool = True,
+    ) -> tuple[SessionRecord, str | None, str | None] | None:
+        previous_node_id = session.assigned_node_id
+        previous_slot_id = session.assigned_slot_id
+        if allow_existing_slot and session.assigned_node_id and session.assigned_slot_id:
+            owned_session_id = await self._store.hget(self._node_slots_key(session.assigned_node_id), session.assigned_slot_id)
+            if owned_session_id == session.session_id:
+                now = self._utcnow()
+                expires_at = now + timedelta(seconds=self._settings.session_slot_idle_timeout_seconds)
+                updated = await self._session_manager.set_dispatch_state(
+                    session_id=session.session_id,
+                    assigned_node_id=session.assigned_node_id,
+                    assigned_slot_id=session.assigned_slot_id,
+                    active_task_id=session.active_task_id,
+                    queue_status=session.queue_status,
+                    last_dispatch_at=session.last_dispatch_at,
+                    routing_mode=routing_mode,
+                    slot_bound_at=session.slot_bound_at or now,
+                    slot_expires_at=expires_at,
+                )
+                return updated, previous_node_id, previous_slot_id
+
+        candidates = await self._scheduler.rank_nodes(session, exclude_node_ids=exclude_node_ids)
+        for candidate in candidates:
+            slot_id = await self._acquire_free_slot(candidate.node_id, candidate.channel_capacity, session.session_id)
+            if slot_id is None:
+                continue
+            now = self._utcnow()
+            expires_at = now + timedelta(seconds=self._settings.session_slot_idle_timeout_seconds)
+            updated = await self._session_manager.set_dispatch_state(
+                session_id=session.session_id,
+                assigned_node_id=candidate.node_id,
+                assigned_slot_id=slot_id,
+                active_task_id=session.active_task_id,
+                queue_status=session.queue_status,
+                last_dispatch_at=session.last_dispatch_at,
+                routing_mode=routing_mode,
+                slot_bound_at=now,
+                slot_expires_at=expires_at,
+            )
+            self._transcript_writer.append_event(
+                session_id=session.session_id,
+                event_type="dispatch_slot_acquired",
+                actor_type="system",
+                actor_id="gateway",
+                node_id=candidate.node_id,
+                payload={
+                    "slot_id": slot_id,
+                    "channel_capacity": candidate.channel_capacity,
+                    "routing_mode": routing_mode.value,
+                },
+            )
+            return updated, previous_node_id, previous_slot_id
+        return None
+
+    async def _acquire_free_slot(self, node_id: str, channel_capacity: int, session_id: str) -> str | None:
+        slots_key = self._node_slots_key(node_id)
+        try:
+            current = await self._store.hgetall(slots_key)
+            if session_id in current.values():
+                for slot_id, current_session_id in current.items():
+                    if current_session_id == session_id:
+                        return slot_id
+            used_slot_ids = {
+                slot_number
+                for slot_number in (self._parse_slot_number(slot_id) for slot_id in current.keys())
+                if slot_number is not None
+            }
+            for slot_number in range(1, channel_capacity + 1):
+                if slot_number in used_slot_ids:
+                    continue
+                slot_id = self._build_slot_id(slot_number)
+                await self._store.hset(slots_key, slot_id, session_id)
+                return slot_id
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to acquire node slot") from exc
+        return None
+
+    async def _release_expired_slot_if_needed(self, session: SessionRecord) -> SessionRecord:
+        if not session.assigned_slot_id or not session.slot_expires_at:
+            return session
+        if self._utcnow() < session.slot_expires_at:
+            return session
+        released = await self._release_slot(
+            session,
+            event_type="dispatch_switch_timeout_release",
+            actor_id="gateway",
+            reason="idle_timeout",
+            clear_assigned_node=False,
+        )
+        return released
+
+    async def _recover_stale_dispatch_if_needed(self, session: SessionRecord) -> SessionRecord:
+        if not session.active_task_id:
+            return session
+        try:
+            encoded = await self._store.get(self._task_key(session.active_task_id))
+            inflight_owner = await self._store.get(self._inflight_key(session.active_task_id))
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to inspect dispatch task state") from exc
+        if not encoded:
+            return await self._session_manager.clear_dispatch_state(session.session_id, expected_task_id=session.active_task_id)
+        task = DispatchTask.model_validate_json(encoded)
+        task_age = (self._utcnow() - task.created_at).total_seconds()
+        if inflight_owner and task_age <= self._settings.dispatch_task_timeout_seconds:
+            return session
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type="dispatch_switch_timeout_release",
+            actor_type="system",
+            actor_id="gateway",
+            node_id=session.assigned_node_id,
+            payload={
+                "task_id": session.active_task_id,
+                "slot_id": session.assigned_slot_id,
+                "task_age_seconds": int(task_age),
+            },
+        )
+        try:
+            await self._store.delete(
+                self._task_key(task.task_id),
+                self._inflight_key(task.task_id),
+                self._session_task_key(task.session_id),
+            )
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to cleanup stale dispatch task") from exc
+        session = await self._session_manager.clear_dispatch_state(session.session_id, expected_task_id=task.task_id)
+        return await self._release_slot(
+            session,
+            event_type="dispatch_slot_released",
+            actor_id="gateway",
+            reason="task_timeout",
+            clear_assigned_node=False,
+        )
+
+    async def _release_slot(
+        self,
+        session: SessionRecord,
+        *,
+        event_type: str,
+        actor_id: str,
+        reason: str,
+        clear_assigned_node: bool,
+    ) -> SessionRecord:
+        if not session.assigned_node_id or not session.assigned_slot_id:
+            return session
+        try:
+            current = await self._store.hget(self._node_slots_key(session.assigned_node_id), session.assigned_slot_id)
+            if current == session.session_id:
+                await self._store.hdel(self._node_slots_key(session.assigned_node_id), session.assigned_slot_id)
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to release node slot") from exc
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type=event_type,
+            actor_type="system",
+            actor_id=actor_id,
+            node_id=session.assigned_node_id,
+            payload={
+                "slot_id": session.assigned_slot_id,
+                "reason": reason,
+            },
+        )
+        return await self._session_manager.set_dispatch_state(
+            session_id=session.session_id,
+            assigned_node_id=None if clear_assigned_node else session.assigned_node_id,
+            assigned_slot_id=None,
+            active_task_id=session.active_task_id,
+            queue_status=session.queue_status,
+            last_dispatch_at=session.last_dispatch_at,
+            routing_mode=session.routing_mode,
+            slot_bound_at=None,
+            slot_expires_at=None,
+        )
 
     async def _require_task(self, task_id: str) -> DispatchTask:
         try:
@@ -262,6 +638,17 @@ class DispatchQueue:
         except RedisError as exc:
             raise DispatchQueueError("Failed to cleanup dispatch task") from exc
         await self._session_manager.clear_dispatch_state(task.session_id, expected_task_id=task.task_id)
+
+    def _build_slot_id(self, slot_number: int) -> str:
+        return f"{SLOT_ID_PREFIX}{slot_number:02d}"
+
+    def _parse_slot_number(self, slot_id: str) -> int | None:
+        if not slot_id.startswith(SLOT_ID_PREFIX):
+            return None
+        suffix = slot_id[len(SLOT_ID_PREFIX):]
+        if not suffix.isdigit():
+            return None
+        return int(suffix)
 
     def _utcnow(self) -> datetime:
         return datetime.now(UTC)

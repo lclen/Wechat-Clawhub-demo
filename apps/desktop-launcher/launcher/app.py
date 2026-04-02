@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from launcher.models import (
+    DispatchModeToggleRequest,
     InstallRedisRequest,
     LauncherNodeCachePolicy,
     LauncherStatusResponse,
@@ -99,6 +100,20 @@ def create_app(*, open_browser: bool = False) -> FastAPI:
         app.state.profile = profile
         return await bootstrap_status()
 
+    @app.post("/local/bootstrap/dispatch-mode", response_model=LauncherStatusResponse)
+    async def toggle_dispatch_mode(payload: DispatchModeToggleRequest) -> LauncherStatusResponse:
+        profile = app.state.profile
+        profile.dispatch_mode_enabled = payload.enabled
+        save_profile(profile, app.state.state_path)
+        app.state.profile = profile
+        if payload.enabled:
+            app.state.manager.stop("local-node")
+        elif profile.enable_local_node:
+            layout = build_layout(profile)
+            ensure_layout(layout)
+            app.state.manager.start_local_node(profile, layout)
+        return await bootstrap_status()
+
     @app.post("/local/bootstrap/start", response_model=LauncherStatusResponse)
     async def start_stack(payload: StartRequest) -> LauncherStatusResponse:
         profile = app.state.profile
@@ -106,6 +121,7 @@ def create_app(*, open_browser: bool = False) -> FastAPI:
             raise HTTPException(status_code=400, detail="Select workdir first")
         profile.enable_local_node = payload.enable_local_node
         profile.node_cache_policy = LauncherNodeCachePolicy.ENABLED if payload.enable_node_cache_redis else LauncherNodeCachePolicy.DISABLED
+        profile.dispatch_mode_enabled = payload.dispatch_mode_enabled
         profile.redis_source = payload.redis_source
         profile.node_cache_redis_source = payload.node_cache_redis_source
         save_profile(profile, app.state.state_path)
@@ -129,7 +145,7 @@ def create_app(*, open_browser: bool = False) -> FastAPI:
         else:
             app.state.manager.stop("node-cache-redis")
 
-        if profile.enable_local_node:
+        if profile.enable_local_node and not profile.dispatch_mode_enabled:
             app.state.manager.start_local_node(profile, layout)
         else:
             app.state.manager.stop("local-node")

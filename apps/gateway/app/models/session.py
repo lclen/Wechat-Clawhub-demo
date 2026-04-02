@@ -26,6 +26,11 @@ class QueueStatus(StrEnum):
     INFLIGHT = "inflight"
 
 
+class RoutingMode(StrEnum):
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
 class MessageRecord(BaseModel):
     message_id: str
     session_id: str
@@ -46,10 +51,14 @@ class SessionRecord(BaseModel):
     agent_id: str
     status: SessionStatus
     assigned_node_id: str | None = None
+    assigned_slot_id: str | None = None
     active_task_id: str | None = None
     queue_status: QueueStatus = QueueStatus.NONE
     context_summary: str = ""
     context_version: int = 0
+    routing_mode: RoutingMode = RoutingMode.AUTO
+    slot_bound_at: datetime | None = None
+    slot_expires_at: datetime | None = None
     reply_context_token: str | None = None
     handoff_ticket_id: str | None = None
     claimed_by: str | None = None
@@ -88,3 +97,13 @@ class InboundMessageResponse(BaseModel):
     session: SessionRecord
     message: MessageRecord
     task_id: str | None = None
+
+
+class SessionSwitchRequest(BaseModel):
+    reason: str = Field(default="manual_switch", min_length=1, max_length=128)
+
+
+class SessionSwitchResponse(BaseModel):
+    ok: bool = True
+    session: SessionRecord
+    detail: str = ""

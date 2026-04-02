@@ -2,23 +2,25 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 
 type ModelStatus = { configured: boolean; base_url: string; model: string };
-type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; timestamp: string };
+type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; timestamp: string };
 type ModelCheck = { ok: boolean; configured_model: string; available_models: string[]; configured_model_available: boolean };
 type WeChatStatus = { configured: boolean; running: boolean; base_url: string; has_token: boolean; last_error: string | null; received_messages: number; sent_messages: number };
 type SessionStatus = "bot_active" | "handoff_pending" | "human_active" | "closing";
 type QueueStatus = "none" | "pending" | "inflight";
-type SessionRecord = { session_id: string; channel: string; user_id: string; agent_id: string; status: SessionStatus; assigned_node_id: string | null; active_task_id: string | null; queue_status: QueueStatus; context_summary: string; context_version: number; reply_context_token: string | null; handoff_ticket_id: string | null; claimed_by: string | null; message_count: number; last_message_at: string; last_dispatch_at: string | null; created_at: string; updated_at: string; version: number };
+type RoutingMode = "auto" | "manual";
+type SessionRecord = { session_id: string; channel: string; user_id: string; agent_id: string; status: SessionStatus; assigned_node_id: string | null; assigned_slot_id: string | null; active_task_id: string | null; queue_status: QueueStatus; context_summary: string; context_version: number; routing_mode: RoutingMode; slot_bound_at: string | null; slot_expires_at: string | null; reply_context_token: string | null; handoff_ticket_id: string | null; claimed_by: string | null; message_count: number; last_message_at: string; last_dispatch_at: string | null; created_at: string; updated_at: string; version: number };
 type MessageRecord = { message_id: string; session_id: string; channel: string; user_id: string; role: "user" | "bot" | "human" | "system"; content: string; created_at: string; actor_id: string | null; node_id: string | null; metadata: Record<string, string> };
-type NodeRecord = { node_id: string; base_url: string; advertised_address: string | null; lan_ip: string | null; max_concurrency: number; current_load: number; status: string; last_heartbeat_at: string; updated_at: string; last_error: string | null; load_ratio: number; node_version: string | null; platform: string | null; hostname: string | null; capabilities: string[] };
+type NodeRecord = { node_id: string; base_url: string; advertised_address: string | null; lan_ip: string | null; max_concurrency: number; current_load: number; status: string; last_heartbeat_at: string; updated_at: string; last_error: string | null; load_ratio: number; node_version: string | null; platform: string | null; hostname: string | null; capabilities: string[]; channel_capacity: number; channel_in_use: number };
 type NodeListResponse = { nodes: NodeRecord[] };
 type NodeMessageItem = { session_id: string; user_id: string; channel: string; role: MessageRecord["role"]; content: string; created_at: string; node_id: string | null };
 type SessionsResponse = { sessions: SessionRecord[] };
 type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[] };
+type SessionSwitchResponse = { ok: boolean; session: SessionRecord; detail: string };
 type QrStart = { qrcode: string; qrcode_url: string };
 type PollResponse = { status: string; token?: string; base_url?: string; message?: string; bot_id?: string; user_id?: string };
 type SetupRole = "gateway_host" | "gateway_host_console" | "worker_node" | "console_only";
 type SetupTaskStatus = "pending" | "running" | "succeeded" | "failed";
-type GatewaySetupConfig = { redis_url: string; default_agent_id: string; dify_base_url: string; dify_api_key: string; builtin_model_base_url: string; builtin_model_api_key: string; builtin_model_name: string; wechat_base_url: string; wechat_token: string };
+type GatewaySetupConfig = { redis_url: string; default_agent_id: string; dify_base_url: string; dify_api_key: string; builtin_model_base_url: string; builtin_model_api_key: string; builtin_model_name: string; wechat_base_url: string; wechat_token: string; dispatch_mode_enabled: boolean };
 type WorkerNodeSetupConfig = { node_id: string; gateway_base_url: string; node_token: string; pairing_key: string; dify_base_url: string; dify_api_key: string; max_concurrency: number; install_dir: string; bundle_path: string; discovery_enabled: boolean; discovery_port: number };
 type ConsoleSetupConfig = { gateway_base_url: string };
 type PairingStatus = "pending" | "paired" | "auth_failed" | "already_paired" | "offline";
@@ -34,7 +36,7 @@ type LauncherState = "stopped" | "starting" | "running" | "degraded" | "failed";
 type LauncherRedisSource = "github" | "mirror";
 type LauncherNodeCachePolicy = "disabled" | "optional" | "enabled";
 type LauncherComponentStatus = { name: string; state: LauncherState; pid: number | null; detail: string; started_at: string | null; log_path: string | null };
-type LauncherProfile = { workdir: string; gateway_port: number; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; node_cache_policy: LauncherNodeCachePolicy; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
+type LauncherProfile = { workdir: string; gateway_port: number; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
 type LauncherWorkdirLayout = { root: string; host_redis_dir: string; transcript_dir: string; identity_dir: string; memory_dir: string; log_dir: string; runtime_dir: string; config_dir: string; node_cache_dir: string };
 type LauncherRedisInstallState = { installed: boolean; source: LauncherRedisSource; archive_path: string; executable_path: string; version: string; detail: string };
 type LauncherStatusResponse = { profile: LauncherProfile; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; components: LauncherComponentStatus[] };
@@ -42,7 +44,7 @@ type LauncherLogResponse = { component: string; log_path: string | null; content
 type SelectWorkdirResponse = { profile: LauncherProfile; layout: LauncherWorkdirLayout };
 type WorkspaceTab = "quick_setup" | "sessions" | "connection";
 type SessionFilter = "all" | "processing" | "human" | "recent";
-type SetupStep = "role" | "config" | "preview" | "result";
+type SetupMode = "status" | "role" | "config" | "preview" | "result";
 
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
@@ -65,11 +67,12 @@ const DEFAULT_GATEWAY_SETUP: GatewaySetupConfig = {
   builtin_model_name: "",
   wechat_base_url: "https://ilinkai.weixin.qq.com",
   wechat_token: "",
+  dispatch_mode_enabled: false,
 };
 
 const DEFAULT_WORKER_SETUP: WorkerNodeSetupConfig = {
   node_id: "claw-node-local-1",
-  gateway_base_url: "http://127.0.0.1:8000",
+  gateway_base_url: "http://127.0.0.1:8300",
   node_token: "",
   pairing_key: "",
   dify_base_url: "",
@@ -82,8 +85,10 @@ const DEFAULT_WORKER_SETUP: WorkerNodeSetupConfig = {
 };
 
 const DEFAULT_CONSOLE_SETUP: ConsoleSetupConfig = {
-  gateway_base_url: "http://127.0.0.1:8000",
+  gateway_base_url: "http://127.0.0.1:8300",
 };
+
+const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope OpenAI Compatible（默认 qwen3.5-plus）";
 
 async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, { headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }, ...init });
@@ -97,7 +102,7 @@ export function App() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [setupProfile, setSetupProfile] = useState<SetupProfileResponse | null>(null);
   const [setupRole, setSetupRole] = useState<SetupRole | null>(null);
-  const [setupStep, setSetupStep] = useState<SetupStep>("role");
+  const [setupMode, setSetupMode] = useState<SetupMode>("role");
   const [gatewaySetup, setGatewaySetup] = useState<GatewaySetupConfig>(DEFAULT_GATEWAY_SETUP);
   const [workerSetup, setWorkerSetup] = useState<WorkerNodeSetupConfig>(DEFAULT_WORKER_SETUP);
   const [consoleSetup, setConsoleSetup] = useState<ConsoleSetupConfig>(DEFAULT_CONSOLE_SETUP);
@@ -105,6 +110,7 @@ export function App() {
   const [discoveredNodes, setDiscoveredNodes] = useState<DiscoveredNodeRecord[]>([]);
   const [pairingSecrets, setPairingSecrets] = useState<Record<string, string>>({});
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, PairingStatus>>({});
+  const [reconfigureConfirmOpen, setReconfigureConfirmOpen] = useState(false);
   const [launcherStatus, setLauncherStatus] = useState<LauncherStatusResponse | null>(null);
   const [launcherAvailable, setLauncherAvailable] = useState(false);
   const [launcherLogs, setLauncherLogs] = useState<Record<string, string>>({});
@@ -144,7 +150,7 @@ export function App() {
       };
       if (parsed.role) {
         setSetupRole(parsed.role);
-        setSetupStep("config");
+        setSetupMode("config");
       }
       if (parsed.gateway) setGatewaySetup((current) => ({ ...current, ...parsed.gateway }));
       if (parsed.worker) setWorkerSetup((current) => ({ ...current, ...parsed.worker }));
@@ -228,6 +234,7 @@ export function App() {
         setSetupProfile(profile);
         setWorkspace(profile.recommended_workspace);
         setSetupTask(profile.last_task);
+        setSetupMode(profile.setup_completed ? "status" : "role");
         setGatewaySetup(profile.gateway);
         setConsoleSetup(profile.console);
         setWorkerSetup((current) => ({
@@ -258,6 +265,11 @@ export function App() {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (workspace !== "quick_setup" || !setupProfile?.setup_completed) return;
+    setSetupMode((current) => (current === "config" || current === "preview" ? current : "status"));
+  }, [workspace, setupProfile?.setup_completed]);
 
   useEffect(() => {
     let cancelled = false;
@@ -417,13 +429,31 @@ export function App() {
   async function disconnectWeChat() { try { const status = await withBusy("wechat-disconnect", () => requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" })); setWechatStatus(status); setNotice("微信轮询已停止。"); } catch (error) { setNotice(`断开失败：${(error as Error).message}`); } }
   function selectSetupRole(role: SetupRole) {
     setSetupRole(role);
-    setSetupStep("config");
+    setSetupMode("config");
     setSetupTask(null);
+    setReconfigureConfirmOpen(false);
   }
-  function resetSetupFlow() {
+  function returnToSetupStatus() {
     setSetupRole(null);
-    setSetupStep("role");
     setSetupTask(null);
+    setReconfigureConfirmOpen(false);
+    setSetupMode(setupProfile?.setup_completed ? "status" : "role");
+  }
+  function resetCurrentSetupDraft() {
+    setGatewaySetup(setupProfile?.gateway ?? DEFAULT_GATEWAY_SETUP);
+    setConsoleSetup(setupProfile?.console ?? DEFAULT_CONSOLE_SETUP);
+    setWorkerSetup((current) => ({
+      ...DEFAULT_WORKER_SETUP,
+      ...current,
+      gateway_base_url: setupProfile?.console.gateway_base_url || DEFAULT_WORKER_SETUP.gateway_base_url,
+      dify_base_url: setupProfile?.gateway.dify_base_url || DEFAULT_WORKER_SETUP.dify_base_url,
+      dify_api_key: setupProfile?.gateway.dify_api_key || DEFAULT_WORKER_SETUP.dify_api_key,
+    }));
+    setDiscoveredNodes([]);
+    setPairingSecrets({});
+    setPairingStatuses({});
+    setSetupTask(null);
+    setNotice("已重置当前填写内容。");
   }
   async function refreshSetupProfile() {
     const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
@@ -437,6 +467,47 @@ export function App() {
       dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
     }));
   }
+  async function refreshQuickSetupStatus() {
+    try {
+      const [profile, system, model, wechat, nodeList] = await Promise.all([
+        requestJson<SetupProfileResponse>("/api/setup/profile"),
+        requestJson<SystemStatus>("/api/system/status"),
+        requestJson<ModelStatus>("/api/models/builtin/status"),
+        requestJson<WeChatStatus>("/api/wechat/onboard/status"),
+        requestJson<NodeListResponse>("/api/nodes"),
+      ]);
+      setSetupProfile(profile);
+      setSetupTask(profile.last_task);
+      setGatewaySetup(profile.gateway);
+      setConsoleSetup(profile.console);
+      setWorkerSetup((current) => ({
+        ...current,
+        gateway_base_url: profile.console.gateway_base_url || current.gateway_base_url,
+        dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
+        dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+      }));
+      setSystemStatus(system);
+      setModelStatus(model);
+      setWechatStatus(wechat);
+      if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
+      syncNodes(nodeList.nodes, setNodes, setSelectedNodeId);
+      if (launcherAvailable) {
+        await refreshLauncherStatus();
+      }
+      setNotice("已刷新当前连接状态。");
+    } catch (error) {
+      setNotice(`刷新快速配置状态失败：${(error as Error).message}`);
+    }
+  }
+  async function refreshSystemStatus() {
+    const system = await requestJson<SystemStatus>("/api/system/status");
+    setSystemStatus(system);
+  }
+  async function refreshSessionDetail(sessionId: string) {
+    const detail = await requestJson<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
+    setActiveSession(detail.session);
+    setMessages(detail.messages);
+  }
   async function runGatewaySetup() {
     try {
       const result = await withBusy(
@@ -444,7 +515,7 @@ export function App() {
         () => requestJson<GatewaySetupSaveResponse>("/api/setup/gateway/save", { method: "POST", body: JSON.stringify({ config: gatewaySetup }) }),
       );
       setSetupTask(result.task);
-      setSetupStep("result");
+      setSetupMode("result");
       if (gatewaySetup.wechat_base_url) setWechatBaseUrl(gatewaySetup.wechat_base_url);
       if (gatewaySetup.wechat_token) setManualToken(gatewaySetup.wechat_token);
       await refreshSetupProfile();
@@ -460,7 +531,7 @@ export function App() {
         () => requestJson<SetupTaskEnvelope>("/api/setup/node/install", { method: "POST", body: JSON.stringify({ config: workerSetup }) }),
       );
       setSetupTask(result.task);
-      setSetupStep("result");
+      setSetupMode("result");
       setNotice("工作节点安装任务已启动，正在读取执行日志。");
     } catch (error) {
       setNotice(`启动工作节点安装失败：${(error as Error).message}`);
@@ -473,7 +544,7 @@ export function App() {
         () => requestJson<SetupTaskEnvelope>("/api/setup/console/connect", { method: "POST", body: JSON.stringify({ config: consoleSetup }) }),
       );
       setSetupTask(result.task);
-      setSetupStep("result");
+      setSetupMode("result");
       await refreshSetupProfile();
       setNotice(result.task.summary);
     } catch (error) {
@@ -488,7 +559,7 @@ export function App() {
         () => requestJson<SetupTaskEnvelope>("/api/setup/gateway-console/run", { method: "POST", body: JSON.stringify(payload) }),
       );
       setSetupTask(result.task);
-      setSetupStep("result");
+      setSetupMode("result");
       if (gatewaySetup.wechat_base_url) setWechatBaseUrl(gatewaySetup.wechat_base_url);
       if (gatewaySetup.wechat_token) setManualToken(gatewaySetup.wechat_token);
       await refreshSetupProfile();
@@ -520,6 +591,37 @@ export function App() {
       setLauncherAvailable(false);
     }
   }
+  async function toggleGatewayDispatchMode(enabled: boolean) {
+    const result = await requestJson<SetupTaskEnvelope>("/api/setup/gateway/dispatch-mode", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+    setSetupTask(result.task);
+  }
+  async function toggleLauncherDispatchMode(enabled: boolean) {
+    await requestJson<LauncherStatusResponse>("/local/bootstrap/dispatch-mode", {
+      method: "POST",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+  async function applyDispatchMode(enabled: boolean) {
+    try {
+      await withBusy("dispatch-mode-toggle", async () => {
+        await toggleGatewayDispatchMode(enabled);
+        if (launcherAvailable) {
+          await toggleLauncherDispatchMode(enabled);
+        }
+      });
+      await Promise.all([
+        refreshSetupProfile(),
+        refreshSystemStatus(),
+        refreshLauncherStatus(),
+      ]);
+      setNotice(enabled ? "已开启分发模式：当前主机只负责分发，不再由本机节点处理消息。" : "已关闭分发模式：本机节点可重新参与调度。");
+    } catch (error) {
+      setNotice(`更新分发模式失败：${(error as Error).message}`);
+    }
+  }
   async function chooseLauncherWorkdir() {
     try {
       await withBusy("launcher-select-workdir", () => requestJson<SelectWorkdirResponse>("/local/bootstrap/select-workdir", { method: "POST", body: JSON.stringify({ open_dialog: true }) }));
@@ -549,6 +651,7 @@ export function App() {
           body: JSON.stringify({
             enable_local_node: enableLocalNode,
             enable_node_cache_redis: enableNodeCacheRedis,
+            dispatch_mode_enabled: gatewaySetup.dispatch_mode_enabled,
             redis_source: launcherStatus?.profile.redis_source || "mirror",
             node_cache_redis_source: launcherStatus?.profile.node_cache_redis_source || "mirror",
           }),
@@ -586,6 +689,30 @@ export function App() {
       setNotice(`读取组件日志失败：${(error as Error).message}`);
     }
   }
+  async function switchSessionNode(sessionId: string) {
+    try {
+      const result = await withBusy(
+        "session-switch-node",
+        () => requestJson<SessionSwitchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/switch-node`, {
+          method: "POST",
+          body: JSON.stringify({ reason: "console_manual_switch" }),
+        }),
+      );
+      setActiveSession(result.session);
+      await Promise.all([
+        requestJson<SessionsResponse>("/api/sessions").then((sessionList) => {
+          syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
+        }),
+        refreshSessionDetail(sessionId),
+        requestJson<NodeListResponse>("/api/nodes").then((nodeList) => {
+          syncNodes(nodeList.nodes, setNodes, setSelectedNodeId);
+        }),
+      ]);
+      setNotice(result.detail || "已提交会话切换请求。");
+    } catch (error) {
+      setNotice(`切换会话节点失败：${(error as Error).message}`);
+    }
+  }
   async function pairLanNode(discovered: DiscoveredNodeRecord) {
     const pairingKey = pairingSecrets[discovered.discovery_id]?.trim();
     if (!pairingKey) return setNotice(`请先为 ${discovered.pairing_label || discovered.hostname} 输入配对密钥。`);
@@ -615,11 +742,28 @@ export function App() {
   }
   function submitSetupRole() {
     if (!setupRole) return setNotice("请先选择一个部署角色。");
-    if (setupStep === "config") return setSetupStep("preview");
+    if (setupMode === "config") return setSetupMode("preview");
     if (setupRole === "gateway_host") return void runGatewaySetup();
     if (setupRole === "gateway_host_console") return void runGatewayConsoleSetup();
     if (setupRole === "worker_node") return void runWorkerSetup();
     return void runConsoleSetup();
+  }
+  async function confirmReconfigure() {
+    try {
+      if (wechatStatus?.running) {
+        const status = await withBusy("reconfigure-disconnect-wechat", () =>
+          requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" }),
+        );
+        setWechatStatus(status);
+      }
+      setReconfigureConfirmOpen(false);
+      setSetupRole(null);
+      setSetupTask(null);
+      setSetupMode("role");
+      setNotice(wechatStatus?.running ? "已断开微信连接，进入重新配置。" : "已进入重新配置流程。");
+    } catch (error) {
+      setNotice(`进入重新配置失败：${(error as Error).message}`);
+    }
   }
   function updateGatewaySetup<K extends keyof GatewaySetupConfig>(key: K, value: GatewaySetupConfig[K]) {
     setGatewaySetup((current) => ({ ...current, [key]: value }));
@@ -638,7 +782,51 @@ export function App() {
   const latestUserMessage = useMemo(() => [...messages].reverse().find((message) => message.role === "user") ?? null, [messages]);
   const latestBotMessage = useMemo(() => [...messages].reverse().find((message) => message.role === "bot") ?? null, [messages]);
   const typingState = getTypingState(selectedSession, now);
+  const channelReleaseHint = getChannelReleaseHint(selectedSession, now);
+  const availableDispatchNodes = useMemo(
+    () => nodes.filter((node) => !gatewaySetup.dispatch_mode_enabled || node.node_id !== "local-node").length,
+    [nodes, gatewaySetup.dispatch_mode_enabled],
+  );
   const setupCompletedRoles = useMemo(() => new Set(setupProfile?.completed_roles ?? []), [setupProfile]);
+  const latestSetupSummary = useMemo(
+    () => setupTask?.summary || setupProfile?.last_task?.summary || (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。"),
+    [nodes.length, setupProfile?.last_task?.summary, setupTask?.summary],
+  );
+  const quickSetupStatusRows = useMemo<Array<{ title: string; value: string; tone: "good" | "warn"; detail: string }>>(() => ([
+    {
+      title: "微信连接",
+      value: wechatStatus?.running ? "轮询中" : (wechatStatus?.has_token ? "已保存未连接" : "未连接"),
+      tone: wechatStatus?.running ? "good" : "warn",
+      detail: wechatStatus?.base_url || gatewaySetup.wechat_base_url || "未配置",
+    },
+    {
+      title: "控制台目标",
+      value: setupProfile?.console.gateway_base_url || "未配置",
+      tone: setupProfile?.console.gateway_base_url ? "good" : "warn",
+      detail: "重新配置时会覆盖该地址，不会自动解绑。",
+    },
+    {
+      title: "网关运行",
+      value: systemStatus?.redis_ok ? "Redis 正常" : "待检查",
+      tone: systemStatus?.redis_ok ? "good" : "warn",
+      detail: modelStatus?.configured ? `模型 ${modelStatus.model || "-"} 已配置` : "模型尚未完成检测或配置",
+    },
+    {
+      title: "节点纳管",
+      value: nodes.length ? `${nodes.length} 个在线节点` : "暂无在线节点",
+      tone: nodes.length ? "good" : "warn",
+      detail: latestSetupSummary,
+    },
+  ]), [gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running]);
+  const reconfigureWarnings = useMemo(() => {
+    const warnings: string[] = [];
+    if (wechatStatus?.running) warnings.push("微信当前处于轮询中；继续后会先断开微信连接，再进入重新配置。");
+    if (setupProfile?.console.gateway_base_url) warnings.push(`当前控制台目标为 ${setupProfile.console.gateway_base_url}；继续后新的配置会覆盖该地址，但不会执行解绑。`);
+    if (setupCompletedRoles.has("gateway_host") || setupCompletedRoles.has("gateway_host_console")) warnings.push("主机网关基础配置仍会保留，继续后仅覆盖配置项，不会回滚或清空历史配置。");
+    if (nodes.length) warnings.push(`当前有 ${nodes.length} 个在线节点；继续后不会自动解绑已纳管节点，节点仍可能继续使用原配置。`);
+    if (!warnings.length) warnings.push("当前没有需要先断开的活动连接，确认后将直接进入重新配置。");
+    return warnings;
+  }, [nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, wechatStatus?.running]);
 
   return (
     <div className="console-app">
@@ -676,13 +864,14 @@ export function App() {
               <section className="surface">
                 <div className="section-head">
                   <div><div className="section-kicker">步骤导航</div><h3>配置流程</h3></div>
-                  <span className="small-note">{setupStep === "role" ? "选择角色" : setupStep === "config" ? "填写参数" : setupStep === "preview" ? "执行前确认" : "查看结果"}</span>
+                  <span className="small-note">{setupMode === "status" ? "当前连接状态" : setupMode === "role" ? "选择角色" : setupMode === "config" ? "填写参数" : setupMode === "preview" ? "执行前确认" : "查看结果"}</span>
                 </div>
                 <div className="quick-setup-steps">
-                  <SetupStepPill label="1. 选择角色" active={setupStep === "role"} done={setupStep !== "role"} />
-                  <SetupStepPill label="2. 基础参数" active={setupStep === "config"} done={setupStep === "preview" || setupStep === "result"} />
-                  <SetupStepPill label="3. 执行确认" active={setupStep === "preview"} done={setupStep === "result"} />
-                  <SetupStepPill label="4. 执行结果" active={setupStep === "result"} done={Boolean(setupTask && setupTask.status === "succeeded")} />
+                  <SetupStepPill label="0. 当前连接" active={setupMode === "status"} done={setupMode !== "status"} />
+                  <SetupStepPill label="1. 选择角色" active={setupMode === "role"} done={setupMode === "config" || setupMode === "preview" || setupMode === "result"} />
+                  <SetupStepPill label="2. 基础参数" active={setupMode === "config"} done={setupMode === "preview" || setupMode === "result"} />
+                  <SetupStepPill label="3. 执行确认" active={setupMode === "preview"} done={setupMode === "result"} />
+                  <SetupStepPill label="4. 执行结果" active={setupMode === "result"} done={Boolean(setupTask && setupTask.status === "succeeded")} />
                 </div>
                 <div className="info-stack">
                   <InfoRow label="推荐入口" value={setupProfile?.recommended_workspace === "quick_setup" ? "当前仍建议先完成快速配置" : "已可直接进入联调或会话观察"} multiline />
@@ -707,10 +896,12 @@ export function App() {
                       <InfoRow label="身份信息目录" value={launcherStatus?.layout.identity_dir || "-"} multiline />
                       <InfoRow label="记忆目录" value={launcherStatus?.layout.memory_dir || "-"} multiline />
                       <InfoRow label="节点缓存策略" value={launcherStatus?.profile.node_cache_policy === "disabled" ? "关闭" : "已启用可选节点缓存 Redis"} />
+                      <InfoRow label="分发模式" value={gatewaySetup.dispatch_mode_enabled ? "已开启（主机只分发）" : "已关闭（本机节点可处理）"} />
                     </div>
                     <div className="inline-actions quick-setup-actions">
                       <button type="button" onClick={() => installLauncherRedis("host", launcherStatus?.profile.redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-host" ? "下载中..." : "安装主机 Redis"}</button>
                       <button type="button" className="ghost-button" onClick={() => startLauncherStack({ enableLocalNode: !(launcherStatus?.profile.enable_local_node ?? true) })} disabled={busy !== null}>{launcherStatus?.profile.enable_local_node ? "关闭本机 Claw 节点" : "启用本机 Claw 节点"}</button>
+                      <button type="button" className="ghost-button" onClick={() => applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button>
                       <button type="button" className="ghost-button" onClick={() => toggleLauncherNodeCache(launcherStatus?.profile.node_cache_policy === "disabled")} disabled={busy !== null}>{launcherStatus?.profile.node_cache_policy === "disabled" ? "启用节点缓存 Redis" : "关闭节点缓存 Redis"}</button>
                       {launcherStatus?.profile.node_cache_policy !== "disabled" ? <button type="button" className="ghost-button" onClick={() => installLauncherRedis("node-cache", launcherStatus?.profile.node_cache_redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-node-cache" ? "下载中..." : "安装节点缓存 Redis"}</button> : null}
                       <button type="button" onClick={() => void startLauncherStack()} disabled={busy !== null}>{busy === "launcher-start" ? "启动中..." : "一键启动"}</button>
@@ -737,7 +928,45 @@ export function App() {
                   </section>
                 ) : null}
 
-                {setupStep === "role" ? (
+                {setupMode === "status" ? (
+                  <section className="surface">
+                    <div className="section-head">
+                      <div><div className="section-kicker">当前连接状态</div><h3>先确认当前主机和连接状态</h3></div>
+                      <div className="inline-actions">
+                        <button type="button" className="ghost-button" onClick={refreshQuickSetupStatus} disabled={busy !== null}>{busy === "reconfigure-disconnect-wechat" ? "处理中..." : "刷新状态"}</button>
+                        <button type="button" onClick={() => setReconfigureConfirmOpen((current) => !current)} disabled={busy !== null}>{reconfigureConfirmOpen ? "收起确认" : "重新配置"}</button>
+                      </div>
+                    </div>
+                    <div className="status-grid">
+                      {quickSetupStatusRows.map((item) => (
+                        <PrepStrip key={item.title} label={item.title} detail={`${item.value} · ${item.detail}`} tone={item.tone} />
+                      ))}
+                    </div>
+                    <div className="info-stack">
+                      <InfoRow label="微信 Base URL" value={wechatStatus?.base_url || gatewaySetup.wechat_base_url || "-"} multiline />
+                      <InfoRow label="控制台目标网关" value={setupProfile?.console.gateway_base_url || "-"} multiline />
+                      <InfoRow label="模型配置" value={modelStatus?.configured ? `${modelStatus.model || "-"} / ${modelStatus.base_url || "-"}` : DEFAULT_BUILTIN_MODEL_LABEL} multiline />
+                      <InfoRow label="节点状态" value={nodes.length ? `${nodes.length} 个在线节点，最近任务：${latestSetupSummary}` : latestSetupSummary} multiline />
+                    </div>
+                    {reconfigureConfirmOpen ? (
+                      <section className="surface surface-subsection reconfigure-panel">
+                        <div className="section-head">
+                          <div><div className="section-kicker">重新配置确认</div><h3>确认是否断开当前连接并重新配置</h3></div>
+                        </div>
+                        <div className="snippet-stack">
+                          <SnippetBlock label="将发生的变化" content={reconfigureWarnings.join("\n")} />
+                          <SnippetBlock label="支持直接断开的连接" content={wechatStatus?.running ? "微信连接：继续后将先调用断开接口，再进入角色选择。" : "当前没有处于运行中的微信连接。"} />
+                        </div>
+                        <div className="inline-actions quick-setup-actions">
+                          <button type="button" onClick={() => void confirmReconfigure()} disabled={busy !== null}>{busy === "reconfigure-disconnect-wechat" ? "断开中..." : wechatStatus?.running ? "断开微信并继续" : "确认并继续"}</button>
+                          <button type="button" className="ghost-button" onClick={() => setReconfigureConfirmOpen(false)} disabled={busy !== null}>取消</button>
+                        </div>
+                      </section>
+                    ) : null}
+                  </section>
+                ) : null}
+
+                {setupMode === "role" ? (
                   <section className="surface">
                     <div className="section-head"><div><div className="section-kicker">角色选择</div><h3>这台机器现在要扮演什么角色？</h3></div></div>
                     <div className="role-card-grid">
@@ -755,30 +984,31 @@ export function App() {
                   </section>
                 ) : null}
 
-                {setupStep !== "role" && setupRole ? (
+                {setupMode !== "status" && setupMode !== "role" && setupRole ? (
                   <>
                     <section className="surface">
                       <div className="section-head">
                         <div><div className="section-kicker">当前角色</div><h3>{roleName(setupRole)}</h3></div>
                         <div className="inline-actions">
-                          <button type="button" className="ghost-button" onClick={() => setSetupStep("role")}>重新选角色</button>
-                          <button type="button" className="ghost-button" onClick={resetSetupFlow}>重置流程</button>
+                          <button type="button" className="ghost-button" onClick={() => setSetupMode("role")}>重新选角色</button>
+                          {setupProfile?.setup_completed ? <button type="button" className="ghost-button" onClick={returnToSetupStatus}>返回状态总览</button> : null}
+                          <button type="button" className="ghost-button" onClick={resetCurrentSetupDraft}>重置当前填写内容</button>
                         </div>
                       </div>
-                      {setupStep === "config" ? (
+                      {setupMode === "config" ? (
                         setupRole === "gateway_host" || setupRole === "gateway_host_console" ? (
                           <>
                             <div className="form-grid">
                               <label><span>Redis URL</span><input value={gatewaySetup.redis_url} onChange={(event) => updateGatewaySetup("redis_url", event.target.value)} /></label>
                               <label><span>默认 Agent ID</span><input value={gatewaySetup.default_agent_id} onChange={(event) => updateGatewaySetup("default_agent_id", event.target.value)} /></label>
                               <label><span>主网关访问地址</span><input value={consoleSetup.gateway_base_url} onChange={(event) => updateConsoleSetup("gateway_base_url", event.target.value)} placeholder="节点回连主机时使用这个地址" /></label>
-                              <label><span>Dify Base URL</span><input value={gatewaySetup.dify_base_url} onChange={(event) => updateGatewaySetup("dify_base_url", event.target.value)} placeholder="https://api.dify.ai/v1" /></label>
-                              <label><span>Dify API Key</span><textarea value={gatewaySetup.dify_api_key} onChange={(event) => updateGatewaySetup("dify_api_key", event.target.value)} placeholder="保存到网关 .env，并供节点安装复用。" /></label>
-                              <label><span>内置模型 Base URL</span><input value={gatewaySetup.builtin_model_base_url} onChange={(event) => updateGatewaySetup("builtin_model_base_url", event.target.value)} /></label>
-                              <label><span>内置模型 API Key</span><textarea value={gatewaySetup.builtin_model_api_key} onChange={(event) => updateGatewaySetup("builtin_model_api_key", event.target.value)} /></label>
-                              <label><span>内置模型名称</span><input value={gatewaySetup.builtin_model_name} onChange={(event) => updateGatewaySetup("builtin_model_name", event.target.value)} placeholder="例如 qwen3.5-plus" /></label>
+                    <label><span>Dify Base URL（留空则默认走内置模型）</span><input value={gatewaySetup.dify_base_url} onChange={(event) => updateGatewaySetup("dify_base_url", event.target.value)} placeholder="https://api.dify.ai/v1" /></label>
+                    <label><span>Dify API Key</span><textarea value={gatewaySetup.dify_api_key} onChange={(event) => updateGatewaySetup("dify_api_key", event.target.value)} placeholder="留空时保留当前已保存值；若同时未填 Dify Base URL，则回退到内置模型。" /></label>
+                    <label><span>内置模型 Base URL</span><input value={gatewaySetup.builtin_model_base_url} onChange={(event) => updateGatewaySetup("builtin_model_base_url", event.target.value)} placeholder="留空时默认使用 DashScope OpenAI Compatible" /></label>
+                    <label><span>内置模型 API Key</span><textarea value={gatewaySetup.builtin_model_api_key} onChange={(event) => updateGatewaySetup("builtin_model_api_key", event.target.value)} placeholder="留空则保留当前已保存的内置模型密钥。" /></label>
+                    <label><span>内置模型名称</span><input value={gatewaySetup.builtin_model_name} onChange={(event) => updateGatewaySetup("builtin_model_name", event.target.value)} placeholder="留空时默认使用 qwen3.5-plus" /></label>
                               <label><span>微信 Base URL</span><input value={gatewaySetup.wechat_base_url} onChange={(event) => updateGatewaySetup("wechat_base_url", event.target.value)} /></label>
-                              <label><span>微信 Token</span><textarea value={gatewaySetup.wechat_token} onChange={(event) => updateGatewaySetup("wechat_token", event.target.value)} placeholder="支持保存后直接尝试刷新运行配置。" /></label>
+                    <label><span>微信 Token</span><textarea value={gatewaySetup.wechat_token} onChange={(event) => updateGatewaySetup("wechat_token", event.target.value)} placeholder="留空则保留当前已保存 token；填写后保存会尝试直接刷新连接。" /></label>
                             </div>
                             <section className="surface surface-subsection">
                               <div className="section-head">
@@ -831,7 +1061,7 @@ export function App() {
                             <label><span>目标网关地址</span><input value={consoleSetup.gateway_base_url} onChange={(event) => updateConsoleSetup("gateway_base_url", event.target.value)} /></label>
                           </div>
                         )
-                      ) : setupStep === "preview" ? (
+                      ) : setupMode === "preview" ? (
                         <div className="snippet-stack">
                           <SnippetBlock label="将执行的动作" content={previewContent(setupRole, gatewaySetup, workerSetup, consoleSetup)} />
                           <SnippetBlock label="预期产物" content={previewOutcome(setupRole)} />
@@ -843,11 +1073,11 @@ export function App() {
                         </div>
                       )}
                       <div className="inline-actions quick-setup-actions">
-                        {setupStep === "config" ? <button type="button" onClick={() => setSetupStep("preview")}>下一步：确认执行</button> : null}
-                        {setupStep === "preview" ? <button type="button" onClick={submitSetupRole} disabled={busy !== null}>{busy === "setup-gateway" || busy === "setup-gateway-console" || busy === "setup-worker" || busy === "setup-console" ? "执行中..." : "开始执行"}</button> : null}
-                        {setupStep === "preview" || setupStep === "result" ? <button type="button" className="ghost-button" onClick={() => setSetupStep("config")}>返回修改参数</button> : null}
-                        {setupStep === "result" ? <button type="button" className="ghost-button" onClick={refreshSetupProfile}>刷新配置状态</button> : null}
-                        {setupStep === "result" ? <button type="button" className="ghost-button" onClick={() => setWorkspace("connection")}>去接入中心</button> : null}
+                        {setupMode === "config" ? <button type="button" onClick={() => setSetupMode("preview")}>下一步：确认执行</button> : null}
+                        {setupMode === "preview" ? <button type="button" onClick={submitSetupRole} disabled={busy !== null}>{busy === "setup-gateway" || busy === "setup-gateway-console" || busy === "setup-worker" || busy === "setup-console" ? "执行中..." : "开始执行"}</button> : null}
+                        {setupMode === "preview" || setupMode === "result" ? <button type="button" className="ghost-button" onClick={() => setSetupMode("config")}>返回修改参数</button> : null}
+                        {setupMode === "result" ? <button type="button" className="ghost-button" onClick={refreshSetupProfile}>刷新配置状态</button> : null}
+                        {setupMode === "result" ? <button type="button" className="ghost-button" onClick={() => setWorkspace("connection")}>去接入中心</button> : null}
                       </div>
                     </section>
                   </>
@@ -872,13 +1102,15 @@ export function App() {
                   </div>
                 </section>
                 <section className="surface">
-                  <div className="section-head"><div><div className="section-kicker">运行摘要</div><h3>系统状态</h3></div></div>
+                  <div className="section-head"><div><div className="section-kicker">运行摘要</div><h3>系统状态</h3></div><button type="button" className="ghost-button" onClick={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button></div>
                   <div className="status-grid">
                     <Metric title="环境" value={systemStatus?.environment || "-"} />
                     <Metric title="模型" value={modelStatus?.model || "-"} />
                     <Metric title="微信接入" value={wechatStatus?.running ? "已连接" : "未连接"} />
                     <Metric title="在线节点" value={`${systemStatus?.active_nodes ?? 0}`} />
+                    <Metric title="分发模式" value={systemStatus?.dispatch_mode_enabled ? "主机只分发" : "本机可处理"} />
                   </div>
+                  {gatewaySetup.dispatch_mode_enabled && availableDispatchNodes === 0 ? <div className="topbar-notice dispatch-warning">当前已开启分发模式，但还没有可用的远端处理节点；网关会继续接收微信消息，但无法完成实际回复。</div> : null}
                 </section>
                 <section className="surface">
                   <div className="section-head"><div><div className="section-kicker">检测回显</div><h3>模型与网关</h3></div></div>
@@ -931,6 +1163,10 @@ export function App() {
                             <div>
                               <div className="node-card-label">负载</div>
                               <div className="node-card-value">{`${node.current_load}/${node.max_concurrency}`}</div>
+                            </div>
+                            <div>
+                              <div className="node-card-label">通道槽位</div>
+                              <div className="node-card-value">{`${node.channel_in_use}/${node.channel_capacity}`}</div>
                             </div>
                           </div>
                         </div>
@@ -995,9 +1231,9 @@ export function App() {
                     <>
                       <div className="stage-header-main">
                         <div><div className="section-kicker">当前会话</div><h2>{formatSessionName(selectedSession.user_id)}</h2><div className="subtitle-stack"><span title={selectedSession.user_id}>{selectedSession.user_id}</span><span>{selectedSession.channel}</span><span title={selectedSession.session_id}>{selectedSession.session_id}</span></div></div>
-                        <div className="stage-meta-row"><MetaPill label="Agent" value={selectedSession.agent_id} /><MetaPill label="节点" value={selectedSession.assigned_node_id || "未绑定"} /><MetaPill label="状态" value={getSessionBadgeLabel(selectedSession)} /><button type="button" className="memory-inline-trigger" onClick={() => setInspectorOpen(true)}>会话记忆</button></div>
+                        <div className="stage-meta-row"><MetaPill label="Agent" value={selectedSession.agent_id} /><MetaPill label="节点" value={selectedSession.assigned_node_id || "未绑定"} /><MetaPill label="槽位" value={selectedSession.assigned_slot_id || "未占用"} /><MetaPill label="路由" value={selectedSession.routing_mode === "manual" ? "手动切换" : "自动分配"} /><MetaPill label="状态" value={getSessionBadgeLabel(selectedSession)} /><button type="button" className="ghost-button session-switch-trigger" onClick={() => void switchSessionNode(selectedSession.session_id)} disabled={busy !== null}>{busy === "session-switch-node" ? "切换中..." : "切换节点"}</button><button type="button" className="memory-inline-trigger" onClick={() => setInspectorOpen(true)}>会话记忆</button></div>
                       </div>
-                      <div className="header-status-line"><span>上下文版本 v{selectedSession.context_version}</span><span>最后调度 {formatTimeLabel(selectedSession.last_dispatch_at || selectedSession.updated_at, true)}</span><span>{typingState || "当前没有活跃任务"}</span></div>
+                      <div className="header-status-line"><span>上下文版本 v{selectedSession.context_version}</span><span>最后调度 {formatTimeLabel(selectedSession.last_dispatch_at || selectedSession.updated_at, true)}</span><span>{typingState || channelReleaseHint || "当前没有活跃任务"}</span></div>
                     </>
                   ) : <div className="empty-state empty-state-tall">选择一个会话，或先在微信里给机器人发一条消息。</div>}
                 </div>
@@ -1046,6 +1282,10 @@ export function App() {
                       <InfoRow label="当前用户" value={selectedSession ? formatWechatIdentity(selectedSession.user_id) : "未选中会话"} multiline />
                       <InfoRow label="会话 ID" value={selectedSession?.session_id || "-"} multiline />
                       <InfoRow label="上下文版本" value={selectedSession ? `v${selectedSession.context_version}` : "-"} />
+                      <InfoRow label="当前节点" value={selectedSession?.assigned_node_id || "未绑定"} />
+                      <InfoRow label="当前槽位" value={selectedSession?.assigned_slot_id || "未占用"} />
+                      <InfoRow label="路由模式" value={selectedSession ? (selectedSession.routing_mode === "manual" ? "手动切换" : "自动分配") : "-"} />
+                      <InfoRow label="通道状态" value={channelReleaseHint || (selectedSession?.assigned_slot_id ? "通道租约有效" : "等待重新分配")} multiline />
                       <InfoRow label="最近用户消息" value={latestUserMessage?.content || "暂无"} multiline />
                       <InfoRow label="最近 Bot 回复" value={latestBotMessage?.content || "暂无"} multiline />
                     </div>
@@ -1112,8 +1352,8 @@ function previewContent(role: SetupRole, gateway: GatewaySetupConfig, worker: Wo
     `写入网关配置：Redis=${gateway.redis_url}`,
     `默认 Agent=${gateway.default_agent_id}`,
     `节点回连地址=${consoleConfig.gateway_base_url || "未填写"}`,
-    `Dify=${gateway.dify_base_url || "未填写"}`,
-    `内置模型=${gateway.builtin_model_name || "未填写"}`,
+    `Dify=${gateway.dify_base_url || "未填写（将默认使用内置模型）"}`,
+    `内置模型=${gateway.builtin_model_name || DEFAULT_BUILTIN_MODEL_LABEL}`,
     `微信 Base URL=${gateway.wechat_base_url}`,
     gateway.wechat_token ? "若 token 已填写，将尝试刷新微信运行配置。" : "本次不会刷新微信 token。",
     "保存成功后即可点击“搜索局域网节点”，对候选机器输入配对密钥完成连接。",
@@ -1122,8 +1362,8 @@ function previewContent(role: SetupRole, gateway: GatewaySetupConfig, worker: Wo
     `写入网关配置：Redis=${gateway.redis_url}`,
     `默认 Agent=${gateway.default_agent_id}`,
     `控制台目标网关=${consoleConfig.gateway_base_url || "未填写"}`,
-    `Dify=${gateway.dify_base_url || "未填写"}`,
-    `内置模型=${gateway.builtin_model_name || "未填写"}`,
+    `Dify=${gateway.dify_base_url || "未填写（将默认使用内置模型）"}`,
+    `内置模型=${gateway.builtin_model_name || DEFAULT_BUILTIN_MODEL_LABEL}`,
     `微信 Base URL=${gateway.wechat_base_url}`,
     gateway.wechat_token ? "若 token 已填写，将尝试刷新微信运行配置。" : "本次不会刷新微信 token。",
     "执行时会先保存网关配置，再校验控制台目标网关；若校验失败，不回滚已保存的网关配置。",
@@ -1156,6 +1396,12 @@ function sessionPreview(session: SessionRecord) { return session.status === "hum
 function sessionBadgeTone(session: SessionRecord) { return session.status === "human_active" || session.status === "handoff_pending" ? "human" : session.queue_status === "pending" ? "queued" : session.queue_status === "inflight" || session.active_task_id ? "typing" : "idle"; }
 function getSessionBadgeLabel(session: SessionRecord) { return session.queue_status === "inflight" ? "处理中" : session.queue_status === "pending" ? "排队中" : session.status === "human_active" ? "人工中" : session.status === "handoff_pending" ? "待接管" : "空闲"; }
 function getTypingState(session: SessionRecord | null, now: number) { if (!session) return ""; if (session.queue_status === "pending") return `消息已入队，等待 ${session.assigned_node_id || "可用节点"} 领取任务`; if (session.queue_status === "inflight" || session.active_task_id) { const elapsed = session.last_dispatch_at ? Math.max(1, Math.floor((now - new Date(session.last_dispatch_at).getTime()) / 1000)) : null; return `${session.assigned_node_id || "Agent"} 正在输入${elapsed ? `，已处理 ${elapsed}s` : ""}`; } return ""; }
+function getChannelReleaseHint(session: SessionRecord | null, now: number) {
+  if (!session || session.assigned_slot_id || !session.slot_expires_at) return "";
+  const releasedAt = new Date(session.slot_expires_at).getTime();
+  if (Number.isNaN(releasedAt) || now < releasedAt) return "";
+  return "当前通道已释放，等待下次消息自动重新分配。";
+}
 function shouldUseFastPolling(session: SessionRecord | null) { return !!session && (session.queue_status === "pending" || session.queue_status === "inflight" || Boolean(session.active_task_id)); }
 function roleLabel(role: MessageRecord["role"]) { return role === "user" ? "微信用户" : role === "bot" ? "Agent 回复" : role === "human" ? "人工坐席" : "系统事件"; }
 function truncateText(value: string, start = 6, end = 6) { return value.length <= start + end + 3 ? value : `${value.slice(0, start)}...${value.slice(-end)}`; }

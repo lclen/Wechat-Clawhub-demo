@@ -7,6 +7,8 @@ import time
 from contextlib import suppress
 from typing import Any
 
+import httpx
+
 from claw_node.config import NodeSettings
 from claw_node.discovery_service import DiscoveryService
 from claw_node.dify_client import DifyClient
@@ -77,6 +79,21 @@ class Worker:
                 current_load = len(self._active_tasks)
                 await self._gateway.heartbeat(current_load=current_load, last_error=self._last_error)
                 self._last_error = None
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    logger.warning(
+                        "Heartbeat failed because node '%s' is missing on gateway; re-registering.",
+                        self._settings.node_id,
+                    )
+                    try:
+                        await self._register_with_gateway()
+                        self._last_error = None
+                    except Exception as register_exc:
+                        logger.exception("Re-register after heartbeat 404 failed: %s", register_exc)
+                        self._last_error = str(register_exc)
+                else:
+                    logger.exception("Heartbeat failed: %s", exc)
+                    self._last_error = str(exc)
             except Exception as exc:
                 logger.exception("Heartbeat failed: %s", exc)
                 self._last_error = str(exc)
@@ -123,11 +140,14 @@ class Worker:
         if not self._settings.node_token.strip() or not self._settings.gateway_base_url.strip() or not self._settings.node_id.strip():
             logger.info("[worker] node is discoverable but not paired yet; waiting for pairing.")
             return
+        await self._register_with_gateway()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
+        self._polling_task = asyncio.create_task(self._poll_loop(), name="poll-loop")
+
+    async def _register_with_gateway(self) -> None:
         await self._gateway.reconfigure()
         await self._gateway.register()
         logger.info("[worker] node registered successfully: %s", self._settings.node_id)
-        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
-        self._polling_task = asyncio.create_task(self._poll_loop(), name="poll-loop")
 
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:
         pairing_key = payload.get("pairing_key", "").strip()

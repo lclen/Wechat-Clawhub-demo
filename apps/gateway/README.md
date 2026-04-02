@@ -45,7 +45,7 @@ pip install -e .
 uvicorn app.main:app --reload
 ```
 
-默认监听 `http://127.0.0.1:8000`。如果你同时运行 `apps/agent-console` 的 Vite 开发服务器，默认代理地址就是这个端口。
+默认监听 `http://127.0.0.1:8300`。如果你同时运行 `apps/agent-console` 的 Vite 开发服务器，默认代理地址就是这个端口。
 
 ## 与前端联调
 
@@ -56,7 +56,7 @@ npm run dev
 ```
 
 - 默认开发地址：`http://127.0.0.1:5174`
-- Vite 已代理 `/api` 到 `http://127.0.0.1:8000`
+- Vite 已代理 `/api` 到 `http://127.0.0.1:8300`
 - 网关也已开放默认 CORS 白名单：`http://127.0.0.1:5174`、`http://localhost:5174`
 
 ## 环境变量

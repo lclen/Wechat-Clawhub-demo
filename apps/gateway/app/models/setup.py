@@ -21,6 +21,7 @@ class GatewaySetupConfig(BaseModel):
     builtin_model_name: str = ""
     wechat_base_url: str = "https://ilinkai.weixin.qq.com"
     wechat_token: str = ""
+    dispatch_mode_enabled: bool = False
 
 
 class WorkerNodeSetupConfig(BaseModel):
@@ -74,6 +75,10 @@ class SetupProfileResponse(BaseModel):
 
 class GatewaySetupSaveRequest(BaseModel):
     config: GatewaySetupConfig
+
+
+class GatewayDispatchModeRequest(BaseModel):
+    enabled: bool
 
 
 class GatewaySetupSaveResponse(BaseModel):

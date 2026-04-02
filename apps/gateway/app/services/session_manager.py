@@ -11,6 +11,7 @@ from app.models.session import (
     MessageRecord,
     MessageRole,
     QueueStatus,
+    RoutingMode,
     SessionRecord,
     SessionStatus,
 )
@@ -50,7 +51,7 @@ class SessionManager:
         return f"wch:session:{session_id}:summary"
 
     async def ingest_inbound_message(self, payload: InboundMessageRequest) -> tuple[SessionRecord, MessageRecord]:
-        session = await self._get_or_create_session(
+        session = await self.ensure_session(
             channel=payload.channel,
             user_id=payload.user_id,
             agent_id=payload.agent_id or self._settings.default_agent_id,
@@ -97,6 +98,9 @@ class SessionManager:
         self._transcript_writer.append_message(message)
         return session
 
+    async def ensure_session(self, *, channel: str, user_id: str, agent_id: str) -> SessionRecord:
+        return await self._get_or_create_session(channel=channel, user_id=user_id, agent_id=agent_id)
+
     async def list_sessions(self) -> list[SessionRecord]:
         try:
             session_ids = sorted(await self._store.smembers(self.ACTIVE_SESSIONS_KEY))
@@ -141,19 +145,27 @@ class SessionManager:
         *,
         session_id: str,
         assigned_node_id: str | None,
+        assigned_slot_id: str | None = None,
         active_task_id: str | None,
         queue_status: str | QueueStatus,
         last_dispatch_at: datetime | None,
+        routing_mode: str | RoutingMode | None = None,
+        slot_bound_at: datetime | None = None,
+        slot_expires_at: datetime | None = None,
     ) -> SessionRecord:
         session = await self.get_session(session_id)
         q = QueueStatus(queue_status)
         meta = self._build_session_meta(
             session,
             assigned_node_id=assigned_node_id,
+            assigned_slot_id=assigned_slot_id if assigned_slot_id is not None else session.assigned_slot_id,
             active_task_id=active_task_id,
             queue_status=q,
             last_dispatch_at=last_dispatch_at or session.last_dispatch_at,
             updated_at=self._utcnow(),
+            routing_mode=RoutingMode(routing_mode) if routing_mode is not None else session.routing_mode,
+            slot_bound_at=slot_bound_at if slot_bound_at is not None else session.slot_bound_at,
+            slot_expires_at=slot_expires_at if slot_expires_at is not None else session.slot_expires_at,
         )
         try:
             await self._store.hset_many(self._session_meta_key(session.session_id), meta)
@@ -168,10 +180,14 @@ class SessionManager:
         meta = self._build_session_meta(
             session,
             assigned_node_id=session.assigned_node_id,
+            assigned_slot_id=session.assigned_slot_id,
             active_task_id=None,
             queue_status=QueueStatus.NONE,
             last_dispatch_at=session.last_dispatch_at,
             updated_at=self._utcnow(),
+            routing_mode=session.routing_mode,
+            slot_bound_at=session.slot_bound_at,
+            slot_expires_at=session.slot_expires_at,
         )
         try:
             await self._store.hset_many(self._session_meta_key(session.session_id), meta)
@@ -195,9 +211,13 @@ class SessionManager:
                 "agent_id": agent_id,
                 "status": SessionStatus.BOT_ACTIVE.value,
                 "assigned_node_id": "",
+                "assigned_slot_id": "",
                 "active_task_id": "",
                 "queue_status": QueueStatus.NONE.value,
                 "context_version": "0",
+                "routing_mode": RoutingMode.AUTO.value,
+                "slot_bound_at": "",
+                "slot_expires_at": "",
                 "reply_context_token": "",
                 "handoff_ticket_id": "",
                 "claimed_by": "",
@@ -228,6 +248,7 @@ class SessionManager:
         meta = self._build_session_meta(
             session,
             assigned_node_id=session.assigned_node_id,
+            assigned_slot_id=session.assigned_slot_id,
             active_task_id=session.active_task_id,
             queue_status=session.queue_status,
             last_dispatch_at=session.last_dispatch_at,
@@ -237,6 +258,9 @@ class SessionManager:
             last_message_at=now,
             version=session.version + 1,
             reply_context_token=message.metadata.get("context_token") or session.reply_context_token,
+            routing_mode=session.routing_mode,
+            slot_bound_at=session.slot_bound_at,
+            slot_expires_at=session.slot_expires_at,
         )
         encoded = message.model_dump_json()
         try:
@@ -253,6 +277,8 @@ class SessionManager:
 
     def _parse_session(self, raw: dict[str, str], summary: str | None) -> SessionRecord:
         last_dispatch_raw = raw.get("last_dispatch_at") or None
+        slot_bound_at_raw = raw.get("slot_bound_at") or None
+        slot_expires_at_raw = raw.get("slot_expires_at") or None
         return SessionRecord(
             session_id=raw["session_id"],
             channel=raw["channel"],
@@ -260,10 +286,14 @@ class SessionManager:
             agent_id=raw["agent_id"],
             status=SessionStatus(raw.get("status", SessionStatus.BOT_ACTIVE.value)),
             assigned_node_id=raw.get("assigned_node_id") or None,
+            assigned_slot_id=raw.get("assigned_slot_id") or None,
             active_task_id=raw.get("active_task_id") or None,
             queue_status=QueueStatus(raw.get("queue_status", QueueStatus.NONE.value)),
             context_summary=summary or "",
             context_version=int(raw.get("context_version", "0")),
+            routing_mode=RoutingMode(raw.get("routing_mode", RoutingMode.AUTO.value)),
+            slot_bound_at=self._parse_dt(slot_bound_at_raw) if slot_bound_at_raw else None,
+            slot_expires_at=self._parse_dt(slot_expires_at_raw) if slot_expires_at_raw else None,
             reply_context_token=raw.get("reply_context_token") or None,
             handoff_ticket_id=raw.get("handoff_ticket_id") or None,
             claimed_by=raw.get("claimed_by") or None,
@@ -280,10 +310,14 @@ class SessionManager:
         session: SessionRecord,
         *,
         assigned_node_id: str | None,
+        assigned_slot_id: str | None,
         active_task_id: str | None,
         queue_status: QueueStatus,
         last_dispatch_at: datetime | None,
         updated_at: datetime,
+        routing_mode: RoutingMode,
+        slot_bound_at: datetime | None,
+        slot_expires_at: datetime | None,
         context_version: int | None = None,
         message_count: int | None = None,
         last_message_at: datetime | None = None,
@@ -297,11 +331,15 @@ class SessionManager:
             "agent_id": session.agent_id,
             "status": session.status.value,
             "assigned_node_id": assigned_node_id or "",
+            "assigned_slot_id": assigned_slot_id or "",
             "active_task_id": active_task_id or "",
             "queue_status": queue_status.value,
             "context_version": str(
                 session.context_version if context_version is None else context_version
             ),
+            "routing_mode": routing_mode.value,
+            "slot_bound_at": slot_bound_at.isoformat() if slot_bound_at else "",
+            "slot_expires_at": slot_expires_at.isoformat() if slot_expires_at else "",
             "reply_context_token": session.reply_context_token or "" if reply_context_token is None else (reply_context_token or ""),
             "handoff_ticket_id": session.handoff_ticket_id or "",
             "claimed_by": session.claimed_by or "",

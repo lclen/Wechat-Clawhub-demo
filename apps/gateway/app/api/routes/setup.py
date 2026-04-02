@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.core.deps import get_setup_service
 from app.models.setup import (
     ConsoleConnectRequest,
+    GatewayDispatchModeRequest,
     DiscoveryPairRequest,
     DiscoveryPairResponse,
     DiscoveryScanRequest,
@@ -39,6 +40,15 @@ async def save_gateway_setup(
         applied_runtime=applied_runtime,
         restart_required=True,
     )
+
+
+@router.post("/gateway/dispatch-mode", response_model=SetupTaskEnvelope)
+async def update_gateway_dispatch_mode(
+    payload: GatewayDispatchModeRequest,
+    setup_service: SetupService = Depends(get_setup_service),
+) -> SetupTaskEnvelope:
+    task = await setup_service.set_dispatch_mode(payload.enabled)
+    return SetupTaskEnvelope(task=task)
 
 
 @router.post("/gateway-console/run", response_model=SetupTaskEnvelope)

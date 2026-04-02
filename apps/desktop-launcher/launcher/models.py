@@ -63,6 +63,7 @@ class LauncherProfile(BaseModel):
     node_cache_redis_port: int = 6380
     enable_local_node: bool = True
     node_cache_policy: LauncherNodeCachePolicy = LauncherNodeCachePolicy.DISABLED
+    dispatch_mode_enabled: bool = False
     redis_source: RedisSource = RedisSource.MIRROR
     node_cache_redis_source: RedisSource = RedisSource.MIRROR
     bootstrap_completed: bool = False
@@ -94,6 +95,7 @@ class InstallRedisRequest(BaseModel):
 class StartRequest(BaseModel):
     enable_local_node: bool = True
     enable_node_cache_redis: bool = False
+    dispatch_mode_enabled: bool = False
     redis_source: RedisSource = RedisSource.MIRROR
     node_cache_redis_source: RedisSource = RedisSource.MIRROR
 
@@ -103,6 +105,10 @@ class StopRequest(BaseModel):
 
 
 class NodeCacheToggleRequest(BaseModel):
+    enabled: bool
+
+
+class DispatchModeToggleRequest(BaseModel):
     enabled: bool
 
 

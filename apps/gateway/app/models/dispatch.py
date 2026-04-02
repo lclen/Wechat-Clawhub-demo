@@ -11,12 +11,14 @@ class DispatchTask(BaseModel):
     task_id: str
     session_id: str
     node_id: str
+    slot_id: str
     agent_id: str
     user_id: str
     context_summary: str = ""
     recent_messages: list[MessageRecord] = Field(default_factory=list)
     message: MessageRecord
     context_version: int
+    retry_count: int = 0
     created_at: datetime
 
 

@@ -36,6 +36,9 @@ class NodeRegistry:
     def _leases_key(self, node_id: str) -> str:
         return f"wch:node:{node_id}:leases"
 
+    def _slots_key(self, node_id: str) -> str:
+        return f"wch:node:{node_id}:slots"
+
     async def register(self, payload: NodeRegistrationRequest) -> NodeRecord:
         now = self._utcnow()
         meta = {
@@ -50,6 +53,7 @@ class NodeRegistry:
             "platform": payload.platform or "",
             "hostname": payload.hostname or "",
             "capabilities": ",".join(payload.capabilities),
+            "channel_capacity": str(payload.channel_capacity),
             "last_heartbeat_at": now.isoformat(),
             "updated_at": now.isoformat(),
             "last_error": "",
@@ -80,6 +84,7 @@ class NodeRegistry:
             "platform": payload.platform or record.platform or "",
             "hostname": payload.hostname or record.hostname or "",
             "capabilities": ",".join(payload.capabilities or record.capabilities),
+            "channel_capacity": str(payload.channel_capacity or record.channel_capacity),
             "last_heartbeat_at": now.isoformat(),
             "updated_at": now.isoformat(),
             "last_error": payload.last_error or "",
@@ -95,6 +100,7 @@ class NodeRegistry:
         record = await self.get(node_id)
         now = self._utcnow()
         max_concurrency = payload.max_concurrency or record.max_concurrency
+        channel_capacity = payload.channel_capacity or record.channel_capacity
         status = payload.status or record.status
         base_url = payload.base_url or record.base_url
         advertised_address = payload.advertised_address or record.advertised_address or base_url
@@ -112,6 +118,7 @@ class NodeRegistry:
             "platform": payload.platform or record.platform or "",
             "hostname": payload.hostname or record.hostname or "",
             "capabilities": ",".join(payload.capabilities if payload.capabilities is not None else record.capabilities),
+            "channel_capacity": str(channel_capacity),
             "last_heartbeat_at": record.last_heartbeat_at.isoformat(),
             "updated_at": now.isoformat(),
             "last_error": record.last_error or "",
@@ -130,7 +137,8 @@ class NodeRegistry:
             raise NodeRegistryError("Failed to fetch node") from exc
         if not raw:
             raise NodeNotFoundError(f"Node '{node_id}' not found")
-        return self._parse_record(raw)
+        channel_in_use = await self._store.hlen(self._slots_key(node_id))
+        return self._parse_record(raw, channel_in_use)
 
     async def list_nodes(self) -> list[NodeRecord]:
         try:
@@ -145,15 +153,17 @@ class NodeRegistry:
             if not raw:
                 stale_ids.append(node_id)
                 continue
-            nodes.append(self._parse_record(raw))
+            channel_in_use = await self._store.hlen(self._slots_key(node_id))
+            nodes.append(self._parse_record(raw, channel_in_use))
 
         if stale_ids:
             await self._store.srem(self.ACTIVE_NODES_KEY, *stale_ids)
 
         return sorted(nodes, key=lambda item: (item.status.value, item.node_id))
 
-    def _parse_record(self, raw: dict[str, str]) -> NodeRecord:
+    def _parse_record(self, raw: dict[str, str], channel_in_use: int) -> NodeRecord:
         max_concurrency = int(raw.get("max_concurrency", "1"))
+        channel_capacity = int(raw.get("channel_capacity", "12"))
         current_load = int(raw.get("current_load", "0"))
         last_heartbeat_at = self._parse_dt(raw["last_heartbeat_at"])
         updated_at = self._parse_dt(raw["updated_at"])
@@ -161,7 +171,7 @@ class NodeRegistry:
 
         if self._is_stale(last_heartbeat_at):
             status = NodeStatus.OFFLINE
-        elif current_load >= max_concurrency and status == NodeStatus.HEALTHY:
+        elif (current_load >= max_concurrency or channel_in_use >= channel_capacity) and status == NodeStatus.HEALTHY:
             status = NodeStatus.BUSY
 
         load_ratio = round(current_load / max_concurrency, 4) if max_concurrency else 1.0
@@ -181,12 +191,15 @@ class NodeRegistry:
             platform=raw.get("platform") or None,
             hostname=raw.get("hostname") or None,
             capabilities=[item for item in raw.get("capabilities", "").split(",") if item],
+            channel_capacity=channel_capacity,
+            channel_in_use=channel_in_use,
         )
 
     async def _refresh_ttls(self, node_id: str) -> None:
         ttl = self._settings.node_heartbeat_ttl_seconds * 2
         await self._store.expire(self._meta_key(node_id), ttl)
         await self._store.expire(self._leases_key(node_id), ttl)
+        await self._store.expire(self._slots_key(node_id), ttl)
 
     def _is_stale(self, last_heartbeat_at: datetime) -> bool:
         ttl = self._settings.node_heartbeat_ttl_seconds * 2

@@ -49,7 +49,7 @@ $env:WCH_TRANSCRIPT_DIR="D:\wechat-claw-hub-host\data\transcripts"
 $env:WCH_IDENTITY_DIR="D:\wechat-claw-hub-host\data\identity"
 $env:WCH_MEMORY_DIR="D:\wechat-claw-hub-host\data\memory"
 $env:WCH_RUNTIME_ROOT="D:\wechat-claw-hub-host\runtime"
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+uvicorn app.main:app --host 0.0.0.0 --port 8300
 ```
 
 建议主机工作目录固定单独使用，例如：`D:\wechat-claw-hub-host\`
@@ -73,7 +73,7 @@ npm run dev -- --host 0.0.0.0 --port 5174
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
-  -GatewayBaseUrl http://127.0.0.1:8000 `
+-GatewayBaseUrl http://127.0.0.1:8300 `
   -ExpectedNodeId node-b
 ```
 
@@ -92,7 +92,7 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
 
 ```env
 CLAW_NODE_ID=node-b
-CLAW_GATEWAY_BASE_URL=http://<电脑A局域网IP>:8000
+CLAW_GATEWAY_BASE_URL=http://<电脑A局域网IP>:8300
 CLAW_NODE_TOKEN=replace-node-token
 CLAW_PAIRING_KEY=replace-pairing-key
 CLAW_DISCOVERY_ENABLED=true
@@ -148,7 +148,7 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-check-node.ps1 `
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
-  -GatewayBaseUrl http://127.0.0.1:8000 `
+-GatewayBaseUrl http://127.0.0.1:8300 `
   -ExpectedNodeId node-b `
   -RunDiscoveryScan
 ```
@@ -189,7 +189,7 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
 
 - `python -m claw_node.main` 终端输出
 - `.env` 是否填写正确
-- 能否访问主机 `http://<电脑A局域网IP>:8000`
+- 能否访问主机 `http://<电脑A局域网IP>:8300`
 - 主机的 `/api/nodes` 是否能看到当前节点
 
 ### 如果同时跑了桌面启动器

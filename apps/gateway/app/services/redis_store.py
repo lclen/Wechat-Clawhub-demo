@@ -32,6 +32,23 @@ class RedisStore:
     async def hgetall(self, key: str) -> dict[str, str]:
         return await self._client.hgetall(key)
 
+    async def hset(self, key: str, field: str, value: str) -> None:
+        await self._client.hset(key, field, value)
+
+    async def hget(self, key: str, field: str) -> str | None:
+        return await self._client.hget(key, field)
+
+    async def hdel(self, key: str, *fields: str) -> int:
+        if not fields:
+            return 0
+        return await self._client.hdel(key, *fields)
+
+    async def hkeys(self, key: str) -> list[str]:
+        return await self._client.hkeys(key)
+
+    async def hlen(self, key: str) -> int:
+        return await self._client.hlen(key)
+
     async def set(self, key: str, value: str) -> None:
         await self._client.set(key, value)
 

@@ -57,12 +57,15 @@ class SetupTaskState:
 
 
 class SetupService:
+    _DEFAULT_BUILTIN_MODEL_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    _DEFAULT_BUILTIN_MODEL_NAME = "qwen3.5-plus"
+
     def __init__(self, settings: Settings, wechat_bot: WeChatBotService) -> None:
         self._settings = settings
         self._wechat_bot = wechat_bot
         self._tasks: dict[str, SetupTaskState] = {}
         self._last_task_id: str | None = None
-        self._console_gateway_base_url = "http://127.0.0.1:8000"
+        self._console_gateway_base_url = "http://127.0.0.1:8300"
         self._console_setup_completed = False
         self._gateway_env_path = Path(__file__).resolve().parents[2] / ".env"
         self._repo_root = Path(__file__).resolve().parents[4]
@@ -80,6 +83,7 @@ class SetupService:
             builtin_model_name=self._settings.builtin_model_name,
             wechat_base_url=self._settings.wechat_base_url,
             wechat_token=self._settings.wechat_token,
+            dispatch_mode_enabled=self._settings.dispatch_mode_enabled,
         )
         console = ConsoleSetupConfig(gateway_base_url=self._console_gateway_base_url)
         completed_roles: list[str] = []
@@ -113,6 +117,16 @@ class SetupService:
         task.summary = "网关配置已保存；部分运行时已即时生效，其余配置建议重启网关后确认。"
         self._finish_task(task, "succeeded")
         return task.to_result(), applied_runtime
+
+    async def set_dispatch_mode(self, enabled: bool) -> SetupTaskResult:
+        task = self._create_task("gateway_save", "更新分发模式")
+        task.status = "running"
+        self._settings.dispatch_mode_enabled = enabled
+        self._write_env_updates(self._gateway_env_path, {"WCH_DISPATCH_MODE_ENABLED": "true" if enabled else "false"})
+        task.summary = "已开启主机只分发模式。" if enabled else "已关闭主机只分发模式，本机节点可重新参与调度。"
+        self._append_log(task, task.summary)
+        self._finish_task(task, "succeeded")
+        return task.to_result()
 
     async def run_gateway_console_setup(
         self,
@@ -267,16 +281,18 @@ class SetupService:
         config: GatewaySetupConfig,
     ) -> list[str]:
         self._append_log(task, "开始写入网关配置。")
+        normalized_config = self._normalize_gateway_config(config, task)
         env_updates = {
-            "WCH_REDIS_URL": config.redis_url,
-            "WCH_DEFAULT_AGENT_ID": config.default_agent_id,
-            "WCH_DIFY_BASE_URL": config.dify_base_url,
-            "WCH_DIFY_API_KEY": config.dify_api_key,
-            "WCH_BUILTIN_MODEL_BASE_URL": config.builtin_model_base_url,
-            "WCH_BUILTIN_MODEL_API_KEY": config.builtin_model_api_key,
-            "WCH_BUILTIN_MODEL_NAME": config.builtin_model_name,
-            "WCH_WECHAT_BASE_URL": config.wechat_base_url,
-            "WCH_WECHAT_TOKEN": config.wechat_token,
+            "WCH_REDIS_URL": normalized_config.redis_url,
+            "WCH_DEFAULT_AGENT_ID": normalized_config.default_agent_id,
+            "WCH_DIFY_BASE_URL": normalized_config.dify_base_url,
+            "WCH_DIFY_API_KEY": normalized_config.dify_api_key,
+            "WCH_BUILTIN_MODEL_BASE_URL": normalized_config.builtin_model_base_url,
+            "WCH_BUILTIN_MODEL_API_KEY": normalized_config.builtin_model_api_key,
+            "WCH_BUILTIN_MODEL_NAME": normalized_config.builtin_model_name,
+            "WCH_WECHAT_BASE_URL": normalized_config.wechat_base_url,
+            "WCH_WECHAT_TOKEN": normalized_config.wechat_token,
+            "WCH_DISPATCH_MODE_ENABLED": "true" if normalized_config.dispatch_mode_enabled else "false",
         }
         self._write_env_updates(self._gateway_env_path, env_updates)
         applied_runtime = [
@@ -289,28 +305,104 @@ class SetupService:
             "builtin_model_name",
             "wechat_base_url",
             "wechat_token",
+            "dispatch_mode_enabled",
         ]
-        self._settings.redis_url = config.redis_url
-        self._settings.default_agent_id = config.default_agent_id
-        self._settings.dify_base_url = config.dify_base_url
-        self._settings.dify_api_key = config.dify_api_key
-        self._settings.builtin_model_base_url = config.builtin_model_base_url
-        self._settings.builtin_model_api_key = config.builtin_model_api_key
-        self._settings.builtin_model_name = config.builtin_model_name
-        self._settings.wechat_base_url = config.wechat_base_url
-        self._settings.wechat_token = config.wechat_token
+        self._settings.redis_url = normalized_config.redis_url
+        self._settings.default_agent_id = normalized_config.default_agent_id
+        self._settings.dify_base_url = normalized_config.dify_base_url
+        self._settings.dify_api_key = normalized_config.dify_api_key
+        self._settings.builtin_model_base_url = normalized_config.builtin_model_base_url
+        self._settings.builtin_model_api_key = normalized_config.builtin_model_api_key
+        self._settings.builtin_model_name = normalized_config.builtin_model_name
+        self._settings.wechat_base_url = normalized_config.wechat_base_url
+        self._settings.wechat_token = normalized_config.wechat_token
+        self._settings.dispatch_mode_enabled = normalized_config.dispatch_mode_enabled
         self._append_log(task, f"已写入 {self._gateway_env_path}.")
-        if config.wechat_token:
+        if normalized_config.wechat_token:
             try:
                 await self._wechat_bot.connect(
-                    config.wechat_token,
-                    config.wechat_base_url,
+                    normalized_config.wechat_token,
+                    normalized_config.wechat_base_url,
                     enable_polling=True,
                 )
                 self._append_log(task, "已同步刷新微信运行配置并启动轮询。")
             except Exception as exc:
                 self._append_log(task, f"微信运行配置刷新失败：{exc}")
         return applied_runtime
+
+    def _normalize_gateway_config(
+        self,
+        config: GatewaySetupConfig,
+        task: SetupTaskState,
+    ) -> GatewaySetupConfig:
+        dify_base_url = config.dify_base_url.strip()
+        dify_api_key = config.dify_api_key.strip() or self._preserve_secret(
+            task,
+            label="Dify API Key",
+            incoming_value=config.dify_api_key,
+            current_value=self._settings.dify_api_key,
+        )
+        builtin_model_base_url = config.builtin_model_base_url.strip()
+        builtin_model_api_key = config.builtin_model_api_key.strip() or self._preserve_secret(
+            task,
+            label="内置模型 API Key",
+            incoming_value=config.builtin_model_api_key,
+            current_value=self._settings.builtin_model_api_key,
+        )
+        builtin_model_name = config.builtin_model_name.strip()
+        wechat_token = config.wechat_token.strip() or self._preserve_secret(
+            task,
+            label="微信 Token",
+            incoming_value=config.wechat_token,
+            current_value=self._settings.wechat_token,
+        )
+        has_dify_config = bool(dify_base_url or dify_api_key)
+        has_builtin_config = bool(builtin_model_base_url or builtin_model_api_key or builtin_model_name)
+        if has_dify_config or has_builtin_config:
+            return config.model_copy(
+                update={
+                    "dify_base_url": dify_base_url,
+                    "dify_api_key": dify_api_key,
+                    "builtin_model_base_url": builtin_model_base_url,
+                    "builtin_model_api_key": builtin_model_api_key,
+                    "builtin_model_name": builtin_model_name,
+                    "wechat_token": wechat_token,
+                }
+            )
+
+        fallback_base_url = self._settings.builtin_model_base_url.strip() or self._DEFAULT_BUILTIN_MODEL_BASE_URL
+        fallback_api_key = self._settings.builtin_model_api_key.strip()
+        fallback_model_name = self._settings.builtin_model_name.strip() or self._DEFAULT_BUILTIN_MODEL_NAME
+        self._append_log(
+            task,
+            f"未填写模型配置，默认沿用内置模型 {fallback_model_name}（{fallback_base_url}）。",
+        )
+        if not fallback_api_key:
+            self._append_log(task, "当前未检测到内置模型 API Key，请在需要时补充。")
+        return config.model_copy(
+            update={
+                "dify_base_url": "",
+                "dify_api_key": "",
+                "builtin_model_base_url": fallback_base_url,
+                "builtin_model_api_key": fallback_api_key,
+                "builtin_model_name": fallback_model_name,
+                "wechat_token": wechat_token,
+            }
+        )
+
+    def _preserve_secret(
+        self,
+        task: SetupTaskState,
+        label: str,
+        incoming_value: str,
+        current_value: str,
+    ) -> str:
+        if incoming_value.strip():
+            return incoming_value.strip()
+        preserved = current_value.strip()
+        if preserved:
+            self._append_log(task, f"{label} 未填写，已保留当前已保存的值。")
+        return preserved
 
     async def _apply_console_config(
         self,

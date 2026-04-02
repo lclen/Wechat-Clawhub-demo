@@ -24,6 +24,7 @@ class NodeRegistrationRequest(BaseModel):
     platform: str | None = Field(default=None, max_length=64)
     hostname: str | None = Field(default=None, max_length=128)
     capabilities: list[str] = Field(default_factory=list)
+    channel_capacity: int = Field(default=12, ge=1, le=512)
 
 
 class NodeHeartbeatRequest(BaseModel):
@@ -36,6 +37,7 @@ class NodeHeartbeatRequest(BaseModel):
     platform: str | None = Field(default=None, max_length=64)
     hostname: str | None = Field(default=None, max_length=128)
     capabilities: list[str] = Field(default_factory=list)
+    channel_capacity: int | None = Field(default=None, ge=1, le=512)
 
 
 class NodeUpdateRequest(BaseModel):
@@ -48,6 +50,7 @@ class NodeUpdateRequest(BaseModel):
     platform: str | None = Field(default=None, max_length=64)
     hostname: str | None = Field(default=None, max_length=128)
     capabilities: list[str] | None = None
+    channel_capacity: int | None = Field(default=None, ge=1, le=512)
 
 
 class NodeRecord(BaseModel):
@@ -66,6 +69,8 @@ class NodeRecord(BaseModel):
     platform: str | None = None
     hostname: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    channel_capacity: int = 12
+    channel_in_use: int = 0
 
 
 class NodeListResponse(BaseModel):
@@ -85,4 +90,5 @@ class SystemStatusResponse(BaseModel):
     dify_configured: bool
     wechat_configured: bool
     active_nodes: int
+    dispatch_mode_enabled: bool = False
     timestamp: datetime

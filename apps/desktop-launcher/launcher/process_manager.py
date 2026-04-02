@@ -6,7 +6,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-from launcher.models import ComponentState, LauncherComponentStatus, LauncherProfile
+from launcher.models import ComponentState, LauncherComponentStatus, LauncherNodeCachePolicy, LauncherProfile
 from launcher.profile_store import LauncherWorkdirLayout
 from launcher.redis_runtime import write_redis_config
 from launcher.runtime import resource_root
@@ -89,7 +89,7 @@ class ProcessManager:
     def start_gateway(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         env = os.environ.copy()
         node_tokens = {}
-        if profile.enable_local_node:
+        if profile.enable_local_node and not profile.dispatch_mode_enabled:
             node_tokens["local-node"] = env.get("CLAW_NODE_TOKEN", "local-node-token")
         env.update(
             {
@@ -98,6 +98,7 @@ class ProcessManager:
                 "WCH_IDENTITY_DIR": layout.identity_dir,
                 "WCH_MEMORY_DIR": layout.memory_dir,
                 "WCH_RUNTIME_ROOT": layout.runtime_dir,
+                "WCH_DISPATCH_MODE_ENABLED": "true" if profile.dispatch_mode_enabled else "false",
                 "WCH_CORS_ALLOW_ORIGINS": f'["http://127.0.0.1:{profile.launcher_port}","http://localhost:{profile.launcher_port}"]',
                 "WCH_NODE_TOKENS": __import__("json").dumps(node_tokens, ensure_ascii=False),
             }
@@ -124,8 +125,8 @@ class ProcessManager:
                 "CLAW_PAIRING_LABEL": "本机节点",
                 "CLAW_DIFY_BASE_URL": env.get("CLAW_DIFY_BASE_URL", ""),
                 "CLAW_DIFY_API_KEY": env.get("CLAW_DIFY_API_KEY", ""),
-                "CLAW_LOCAL_CACHE_ENABLED": "true" if profile.node_cache_policy != "disabled" else "false",
-                "CLAW_LOCAL_CACHE_REDIS_URL": f"redis://127.0.0.1:{profile.node_cache_redis_port}/0" if profile.node_cache_policy != "disabled" else "",
+                "CLAW_LOCAL_CACHE_ENABLED": "true" if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED else "false",
+                "CLAW_LOCAL_CACHE_REDIS_URL": f"redis://127.0.0.1:{profile.node_cache_redis_port}/0" if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED else "",
                 "CLAW_LOCAL_CACHE_TTL_SECONDS": "900",
             }
         )

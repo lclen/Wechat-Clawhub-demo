@@ -45,6 +45,11 @@ DEDUP_MAX_SIZE = 500
 SEND_MIN_INTERVAL_SECONDS = 2.5
 TYPING_REFRESH_INTERVAL_SECONDS = 4.0
 TYPING_STALE_THRESHOLD_SECONDS = 1_800
+SWITCH_COMMANDS = {"切换节点", "/switch"}
+
+
+class WeChatSessionExpiredError(RuntimeError):
+    """Raised when the upstream WeChat bot session has expired."""
 
 
 @dataclass
@@ -290,12 +295,20 @@ class WeChatBotService:
                 for raw in response.get("msgs") or []:
                     await self._handle_raw_message(raw)
                 self._last_error = None
+            except WeChatSessionExpiredError as exc:
+                self._last_error = str(exc)
+                self._running = False
+                logger.warning("wechat-bot: polling stopped because session expired: %s", exc)
+                break
             except asyncio.CancelledError:
                 break
             except Exception as exc:
                 self._last_error = str(exc)
                 logger.exception("wechat-bot: poll loop error: %s", exc)
                 await asyncio.sleep(2)
+        if self._http and not self._http.is_closed:
+            await self._http.aclose()
+        self._http = None
         logger.info("wechat-bot: poll loop ended")
 
     async def _get_updates(self) -> dict[str, Any]:
@@ -304,12 +317,25 @@ class WeChatBotService:
             {"get_updates_buf": self._get_updates_buf or ""},
             timeout_s=self._next_poll_timeout_ms / 1000 + 5,
         )
-        if (response.get("ret") not in (None, 0)) or (response.get("errcode") not in (None, 0)):
-            raise RuntimeError(
-                f"WeChat getupdates failed: ret={response.get('ret')} errcode={response.get('errcode')} "
-                f"errmsg={response.get('errmsg', '')}"
+        ret = response.get("ret")
+        errcode = response.get("errcode")
+        errmsg = response.get("errmsg", "")
+        if ret in (None, 0) and errcode in (None, 0):
+            return response
+        if self._is_session_timeout(ret=ret, errcode=errcode, errmsg=errmsg):
+            raise WeChatSessionExpiredError(
+                "WeChat 会话已过期，请重新扫码或手动重新连接。"
             )
-        return response
+        raise RuntimeError(
+            f"WeChat getupdates failed: ret={ret} errcode={errcode} errmsg={errmsg}"
+        )
+    
+    def _is_session_timeout(self, *, ret: Any, errcode: Any, errmsg: Any) -> bool:
+        if errcode == -14:
+            return True
+        if ret == -14:
+            return True
+        return "session timeout" in str(errmsg or "").lower()
 
     async def _handle_raw_message(self, raw: dict[str, Any]) -> None:
         message_id = raw.get("message_id")
@@ -327,6 +353,11 @@ class WeChatBotService:
 
         text = self._extract_text(raw.get("item_list") or [])
         if not text:
+            return
+        normalized_text = text.strip().lower()
+        if normalized_text in SWITCH_COMMANDS:
+            await self._handle_switch_command(user_id=user_id, context_token=context_token)
+            self._received_messages += 1
             return
         logger.info(
             "[wechat] inbound user_id=%s message_id=%s preview=%s",
@@ -360,6 +391,29 @@ class WeChatBotService:
         else:
             await self.start_typing_loop(user_id=user_id, context_token=context_token)
         self._received_messages += 1
+
+    async def _handle_switch_command(self, *, user_id: str, context_token: str) -> None:
+        if self._dispatch_queue is None:
+            raise RuntimeError("WeChat dispatch queue is not attached")
+        session = await self._session_manager.ensure_session(
+            channel="wechat",
+            user_id=user_id,
+            agent_id=self._settings.default_agent_id,
+        )
+        session, detail = await self._dispatch_queue.switch_session_target(
+            session.session_id,
+            requested_by="wechat-command",
+            reason="wechat_command_switch",
+        )
+        reply_text = detail if session.assigned_node_id else "当前没有可用 claw 节点，稍后再试。"
+        await self.send_text(user_id=user_id, text=reply_text, context_token=context_token or session.reply_context_token)
+        await self._session_manager.append_bot_message(
+            session_id=session.session_id,
+            content=reply_text,
+            actor_id="gateway",
+            node_id=session.assigned_node_id or "gateway",
+            metadata={"system_action": "switch_node"},
+        )
 
     def _extract_text(self, item_list: list[dict[str, Any]]) -> str:
         for item in item_list:
