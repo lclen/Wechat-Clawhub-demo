@@ -67,7 +67,7 @@ class SetupService:
         self._tasks: dict[str, SetupTaskState] = {}
         self._last_task_id: str | None = None
         self._worker_setup_completed = False
-        self._console_gateway_base_url = preferred_gateway_base_url()
+        self._console_gateway_base_url = settings.console_gateway_base_url.strip() or preferred_gateway_base_url()
         self._console_setup_completed = False
         self._gateway_env_path = Path(__file__).resolve().parents[2] / ".env"
         self._repo_root = Path(__file__).resolve().parents[4]
@@ -112,10 +112,17 @@ class SetupService:
             last_task=last_task,
         )
 
-    async def save_gateway_config(self, config: GatewaySetupConfig) -> tuple[SetupTaskResult, list[str]]:
+    async def save_gateway_config(
+        self,
+        config: GatewaySetupConfig,
+        console_gateway_base_url: str | None = None,
+    ) -> tuple[SetupTaskResult, list[str]]:
         task = self._create_task("gateway_save", "保存网关配置")
         task.status = "running"
         applied_runtime = await self._apply_gateway_config(task, config)
+        if console_gateway_base_url and console_gateway_base_url.strip():
+            self._persist_console_gateway_base_url(console_gateway_base_url.strip().rstrip("/"))
+            self._append_log(task, f"已保存主网关访问地址：{self._console_gateway_base_url}")
         task.summary = "网关配置已保存；部分运行时已即时生效，其余配置建议重启网关后确认。"
         self._finish_task(task, "succeeded")
         return task.to_result(), applied_runtime
@@ -422,13 +429,19 @@ class SetupService:
         target = config.gateway_base_url.rstrip("/")
         self._append_log(task, f"开始校验 {target}。")
         payload = await self._probe_console_gateway(target)
-        self._console_gateway_base_url = target
+        self._persist_console_gateway_base_url(target)
+        self._append_log(task, "已持久化控制台目标网关地址。")
         self._console_setup_completed = True
         return {
             "gateway_base_url": target,
             "environment": str(payload.get("environment", "")),
             "version": str(payload.get("version", "")),
         }
+
+    def _persist_console_gateway_base_url(self, target: str) -> None:
+        self._console_gateway_base_url = target
+        self._settings.console_gateway_base_url = target
+        self._write_env_updates(self._gateway_env_path, {"WCH_CONSOLE_GATEWAY_BASE_URL": target})
 
     async def _probe_console_gateway(self, target: str) -> dict[str, object]:
         async with httpx.AsyncClient(timeout=5.0) as client:

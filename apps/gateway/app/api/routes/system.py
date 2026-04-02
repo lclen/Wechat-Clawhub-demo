@@ -52,6 +52,6 @@ async def get_system_status(
         dispatch_mode_enabled=settings.dispatch_mode_enabled,
         gateway_bind_host=DEFAULT_GATEWAY_HOST,
         preferred_lan_ip=detect_lan_ip(),
-        preferred_gateway_base_url=preferred_gateway_base_url(),
+        preferred_gateway_base_url=settings.console_gateway_base_url.strip() or preferred_gateway_base_url(),
         timestamp=datetime.now(UTC),
     )

@@ -28,6 +28,7 @@ type DiscoveredNodeRecord = { discovery_id: string; node_id: string | null; pair
 type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "discovery_scan" | "discovery_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
 type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; preferred_gateway_base_url: string; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
 type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boolean; applied_runtime: string[] };
+type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_base_url?: string };
 type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };
 type SetupTaskEnvelope = { task: SetupTaskResult };
 type DiscoveryScanResponse = { task: SetupTaskResult; nodes: DiscoveredNodeRecord[] };
@@ -598,9 +599,13 @@ export function App() {
   }
   async function runGatewaySetup() {
     try {
+      const payload: GatewaySetupSaveRequest = {
+        config: gatewaySetup,
+        console_gateway_base_url: consoleSetup.gateway_base_url || undefined,
+      };
       const result = await withBusy(
         "setup-gateway",
-        () => requestJson<GatewaySetupSaveResponse>("/api/setup/gateway/save", { method: "POST", body: JSON.stringify({ config: gatewaySetup }) }),
+        () => requestJson<GatewaySetupSaveResponse>("/api/setup/gateway/save", { method: "POST", body: JSON.stringify(payload) }),
       );
       setSetupTask(result.task);
       setSetupMode("result");

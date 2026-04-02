@@ -8,6 +8,11 @@ DEFAULT_GATEWAY_HOST = "0.0.0.0"
 DEFAULT_GATEWAY_PORT = 8300
 LOOPBACK_HOST = "127.0.0.1"
 PROBE_TARGETS: tuple[str, ...] = ("8.8.8.8", "1.1.1.1")
+RFC1918_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
 
 
 def detect_lan_ip() -> str | None:
@@ -48,7 +53,7 @@ def is_preferred_lan_ip(value: str) -> bool:
         return False
     if not isinstance(ip, ipaddress.IPv4Address):
         return False
-    return ip.is_private and not ip.is_loopback and not ip.is_link_local
+    return any(ip in network for network in RFC1918_NETWORKS)
 
 
 def is_usable_ipv4(value: str) -> bool:

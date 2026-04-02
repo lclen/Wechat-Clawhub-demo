@@ -76,6 +76,7 @@ class SetupProfileResponse(BaseModel):
 
 class GatewaySetupSaveRequest(BaseModel):
     config: GatewaySetupConfig
+    console_gateway_base_url: str | None = None
 
 
 class GatewayDispatchModeRequest(BaseModel):

@@ -84,6 +84,15 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.preferred_gateway_base_url, profile.console.gateway_base_url)
         self.assertTrue(profile.console.gateway_base_url.startswith("http://"))
 
+    async def test_profile_prefers_persisted_console_gateway_address(self) -> None:
+        self.settings.console_gateway_base_url = "http://192.168.0.17:8300"
+        service = SetupService(settings=self.settings, wechat_bot=self.wechat_bot)
+        service._gateway_env_path = Path(self.tempdir.name) / ".env"
+
+        profile = service.get_profile()
+
+        self.assertEqual(profile.console.gateway_base_url, "http://192.168.0.17:8300")
+
     async def test_gateway_console_setup_partial_failure_keeps_gateway_config(self) -> None:
         self.service._probe_console_gateway = AsyncMock(side_effect=RuntimeError("gateway unreachable"))
         gateway_config = build_gateway_config()
@@ -125,6 +134,19 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("console_only", profile.completed_roles)
         self.assertNotIn("gateway_host_console", profile.completed_roles)
 
+    async def test_connect_console_persists_gateway_address(self) -> None:
+        self.service._probe_console_gateway = AsyncMock(
+            return_value={"environment": "development", "version": "0.1.0"}
+        )
+
+        task = await self.service.connect_console(build_console_config())
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertEqual(self.settings.console_gateway_base_url, "http://127.0.0.1:8300")
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("WCH_CONSOLE_GATEWAY_BASE_URL=http://127.0.0.1:8300", env_text)
+        self.assertTrue(any("已持久化控制台目标网关地址。" in line for line in task.logs))
+
     async def test_set_dispatch_mode_updates_settings_and_env(self) -> None:
         task = await self.service.set_dispatch_mode(True)
 
@@ -132,6 +154,18 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.settings.dispatch_mode_enabled)
         env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
         self.assertIn("WCH_DISPATCH_MODE_ENABLED=true", env_text)
+
+    async def test_save_gateway_config_persists_console_gateway_address(self) -> None:
+        task, _ = await self.service.save_gateway_config(
+            build_gateway_config(),
+            console_gateway_base_url="http://192.168.0.17:8300",
+        )
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertEqual(self.settings.console_gateway_base_url, "http://192.168.0.17:8300")
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("WCH_CONSOLE_GATEWAY_BASE_URL=http://192.168.0.17:8300", env_text)
+        self.assertTrue(any("已保存主网关访问地址：http://192.168.0.17:8300" in line for line in task.logs))
 
     async def test_save_gateway_config_defaults_to_builtin_model_when_model_fields_empty(self) -> None:
         gateway_config = GatewaySetupConfig(

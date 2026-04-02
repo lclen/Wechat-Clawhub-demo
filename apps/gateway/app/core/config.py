@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     local_node_id: str = "local-node"
     discovery_port: int = Field(default=9531, ge=1024, le=65535)
     discovery_timeout_ms: int = Field(default=1200, ge=200, le=10000)
+    console_gateway_base_url: str = ""
 
     default_agent_id: str = "default-agent"
     dify_base_url: str = ""

@@ -34,7 +34,10 @@ async def save_gateway_setup(
     payload: GatewaySetupSaveRequest,
     setup_service: SetupService = Depends(get_setup_service),
 ) -> GatewaySetupSaveResponse:
-    task, applied_runtime = await setup_service.save_gateway_config(payload.config)
+    task, applied_runtime = await setup_service.save_gateway_config(
+        payload.config,
+        console_gateway_base_url=payload.console_gateway_base_url,
+    )
     return GatewaySetupSaveResponse(
         task=task,
         applied_runtime=applied_runtime,
