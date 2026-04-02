@@ -45,6 +45,7 @@ type SelectWorkdirResponse = { profile: LauncherProfile; layout: LauncherWorkdir
 type WorkspaceTab = "quick_setup" | "sessions" | "connection";
 type SessionFilter = "all" | "processing" | "human" | "recent";
 type SetupMode = "status" | "role" | "config" | "preview" | "result";
+type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cache-redis";
 
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
@@ -102,6 +103,16 @@ function resolvePreferredGatewayBaseUrl(
   system?: Pick<SystemStatus, "preferred_gateway_base_url"> | null,
 ): string {
   return profile?.preferred_gateway_base_url || profile?.console.gateway_base_url || system?.preferred_gateway_base_url || window.location.origin;
+}
+
+function runningLauncherComponents(status: LauncherStatusResponse | null): Set<string> {
+  return new Set((status?.components || []).filter((item) => item.state === "running").map((item) => item.name));
+}
+
+function roleComponentsToStop(role: SetupRole): LauncherComponentName[] {
+  if (role === "console_only") return ["local-node", "gateway", "node-cache-redis", "host-redis"];
+  if (role === "worker_node") return ["gateway", "node-cache-redis", "host-redis"];
+  return [];
 }
 
 export function App() {
@@ -400,6 +411,9 @@ export function App() {
         if (cancelled) return;
         setSetupTask(result.task);
         if (result.task.status === "succeeded") {
+          if (setupRole === "worker_node") {
+            await applyLauncherPolicyForRole("worker_node");
+          }
           setNotice(result.task.summary || "快速配置执行完成。");
           const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
           if (!cancelled) setSetupProfile(profile);
@@ -414,7 +428,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [setupTask]);
+  }, [setupRole, setupTask]);
 
   async function withBusy<T>(name: string, fn: () => Promise<T>) { setBusy(name); try { return await fn(); } finally { setBusy(null); } }
   async function runModelCheck() { try { const result = await withBusy("model-check", () => requestJson<ModelCheck>("/api/models/builtin/check", { method: "POST" })); setModelCheck(result); setNotice(result.configured_model_available ? `内置模型 ${result.configured_model} 可用。` : `内置模型 ${result.configured_model} 未出现在模型列表中，请检查配置。`); } catch (error) { setNotice(`模型检测失败：${(error as Error).message}`); } }
@@ -437,11 +451,68 @@ export function App() {
   }
   async function connectManualToken() { if (!manualToken.trim()) return setNotice("请先填写 token，或通过扫码自动获取。"); try { await connectWeChat(manualToken.trim(), wechatBaseUrl.trim()); setNotice("微信 bot 已使用手动 token 连接成功。"); } catch (error) { setNotice(`手动连接失败：${(error as Error).message}`); } }
   async function disconnectWeChat() { try { const status = await withBusy("wechat-disconnect", () => requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" })); setWechatStatus(status); setNotice("微信轮询已停止。"); } catch (error) { setNotice(`断开失败：${(error as Error).message}`); } }
+  async function ensureLauncherRuntimeForQuickSetup(role: SetupRole) {
+    if (!launcherAvailable || !launcherStatus?.profile.workdir) return;
+    const running = runningLauncherComponents(launcherStatus);
+    const needsHost = role !== "worker_node";
+    const needsGateway = role !== "worker_node";
+    const needsLocalNode = true;
+    const shouldStart =
+      (needsHost && !running.has("host-redis")) ||
+      (needsGateway && !running.has("gateway")) ||
+      (needsLocalNode && !running.has("local-node"));
+    if (!shouldStart) return;
+    try {
+      await withBusy(
+        "launcher-start",
+        () => requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
+          method: "POST",
+          body: JSON.stringify({
+            enable_local_node: true,
+            enable_node_cache_redis: launcherStatus.profile.node_cache_policy !== "disabled",
+            dispatch_mode_enabled: false,
+            redis_source: launcherStatus.profile.redis_source || "mirror",
+            node_cache_redis_source: launcherStatus.profile.node_cache_redis_source || "mirror",
+          }),
+        }),
+      );
+      await refreshLauncherStatus();
+      setNotice(`已为${roleName(role)}预启动本地组件，便于立即配置网关与节点。`);
+    } catch (error) {
+      setNotice(`预启动本地组件失败：${(error as Error).message}`);
+    }
+  }
+  async function applyLauncherPolicyForRole(role: SetupRole) {
+    if (!launcherAvailable) return;
+    const stopTargets = roleComponentsToStop(role);
+    if (!stopTargets.length) {
+      await refreshLauncherStatus();
+      return;
+    }
+    const running = runningLauncherComponents(launcherStatus);
+    const targets = stopTargets.filter((item) => running.has(item));
+    if (!targets.length) return;
+    try {
+      await withBusy("launcher-stop", async () => {
+        for (const component of targets) {
+          await requestJson<LauncherStatusResponse>("/local/bootstrap/stop", {
+            method: "POST",
+            body: JSON.stringify({ component }),
+          });
+        }
+      });
+      await refreshLauncherStatus();
+      setNotice(`已按${roleName(role)}收敛本地组件：${targets.map(launcherComponentName).join("、")}。`);
+    } catch (error) {
+      setNotice(`按角色收敛本地组件失败：${(error as Error).message}`);
+    }
+  }
   function selectSetupRole(role: SetupRole) {
     setSetupRole(role);
     setSetupMode("config");
     setSetupTask(null);
     setReconfigureConfirmOpen(false);
+    void ensureLauncherRuntimeForQuickSetup(role);
   }
   function returnToSetupStatus() {
     setSetupRole(null);
@@ -536,6 +607,7 @@ export function App() {
       if (gatewaySetup.wechat_base_url) setWechatBaseUrl(gatewaySetup.wechat_base_url);
       if (gatewaySetup.wechat_token) setManualToken(gatewaySetup.wechat_token);
       await refreshSetupProfile();
+      await applyLauncherPolicyForRole("gateway_host");
       setNotice(result.task.summary);
     } catch (error) {
       setNotice(`保存网关配置失败：${(error as Error).message}`);
@@ -563,6 +635,7 @@ export function App() {
       setSetupTask(result.task);
       setSetupMode("result");
       await refreshSetupProfile();
+      await applyLauncherPolicyForRole("console_only");
       setNotice(result.task.summary);
     } catch (error) {
       setNotice(`校验控制台连接失败：${(error as Error).message}`);
@@ -580,6 +653,7 @@ export function App() {
       if (gatewaySetup.wechat_base_url) setWechatBaseUrl(gatewaySetup.wechat_base_url);
       if (gatewaySetup.wechat_token) setManualToken(gatewaySetup.wechat_token);
       await refreshSetupProfile();
+      await applyLauncherPolicyForRole("gateway_host_console");
       setNotice(result.task.summary);
     } catch (error) {
       setNotice(`执行网关主机+控制台配置失败：${(error as Error).message}`);
@@ -822,6 +896,10 @@ export function App() {
     [nodes, gatewaySetup.dispatch_mode_enabled],
   );
   const setupCompletedRoles = useMemo(() => new Set(setupProfile?.completed_roles ?? []), [setupProfile]);
+  const currentRoleDisplay = useMemo(
+    () => setupRole ? roleName(setupRole) : (setupProfile?.completed_roles.length ? setupProfile.completed_roles.map(roleName).join(" / ") : "未选择"),
+    [setupProfile?.completed_roles, setupRole],
+  );
   const latestSetupSummary = useMemo(
     () => setupTask?.summary || setupProfile?.last_task?.summary || (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。"),
     [nodes.length, setupProfile?.last_task?.summary, setupTask?.summary],
@@ -931,6 +1009,7 @@ export function App() {
                 </div>
                 <div className="info-stack">
                   <InfoRow label="推荐入口" value={setupProfile?.recommended_workspace === "quick_setup" ? "当前仍建议先完成快速配置" : "已可直接进入联调或会话观察"} multiline />
+                  <InfoRow label="当前角色" value={currentRoleDisplay} multiline />
                   <InfoRow label="已完成角色" value={setupProfile?.completed_roles.length ? setupProfile.completed_roles.map(roleName).join(" / ") : "暂无"} multiline />
                   <InfoRow label="最近任务" value={setupTask?.title || setupProfile?.last_task?.title || "暂无"} multiline />
                 </div>
@@ -999,6 +1078,7 @@ export function App() {
                       ))}
                     </div>
                     <div className="info-stack">
+                      <InfoRow label="当前角色" value={currentRoleDisplay} multiline />
                       <InfoRow label="微信 Base URL" value={wechatStatus?.base_url || gatewaySetup.wechat_base_url || "-"} multiline />
                       <InfoRow label="控制台目标网关" value={setupProfile?.console.gateway_base_url || "-"} multiline />
                       <InfoRow label="模型配置" value={modelStatus?.configured ? `${modelStatus.model || "-"} / ${modelStatus.base_url || "-"}` : DEFAULT_BUILTIN_MODEL_LABEL} multiline />
