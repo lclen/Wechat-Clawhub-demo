@@ -5,6 +5,7 @@ import re
 import socket
 import subprocess
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 
 DEFAULT_GATEWAY_HOST = "0.0.0.0"
@@ -83,10 +84,17 @@ def is_usable_ipv4(value: str) -> bool:
     return not ip.is_loopback and not ip.is_multicast and not ip.is_unspecified
 
 
-def directed_broadcast_targets() -> list[str]:
+def directed_broadcast_targets(gateway_base_url: str | None = None) -> list[str]:
     targets: list[str] = []
     seen: set[str] = set()
-    for interface in list_ipv4_interfaces():
+    interfaces = list_ipv4_interfaces()
+    scoped_gateway_ip = _extract_rfc1918_ipv4(gateway_base_url or "")
+    if scoped_gateway_ip is not None:
+        scoped_interfaces = [interface for interface in interfaces if scoped_gateway_ip in interface.network]
+        if scoped_interfaces:
+            interfaces = scoped_interfaces
+
+    for interface in interfaces:
         broadcast = interface.broadcast
         if broadcast in seen:
             continue
@@ -182,3 +190,23 @@ def _netmask_to_prefix(mask: str) -> int | None:
     except (ValueError, ipaddress.NetmaskValueError):
         return None
     return int(network.prefixlen)
+
+
+def _extract_rfc1918_ipv4(value: str) -> ipaddress.IPv4Address | None:
+    candidate = value.strip()
+    if not candidate:
+        return None
+    if "://" in candidate:
+        parsed = urlparse(candidate)
+        candidate = parsed.hostname or ""
+    elif ":" in candidate and candidate.count(":") == 1:
+        host, _, maybe_port = candidate.partition(":")
+        if maybe_port.isdigit():
+            candidate = host
+    try:
+        ip = ipaddress.IPv4Address(candidate)
+    except ipaddress.AddressValueError:
+        return None
+    if any(ip in network for network in RFC1918_NETWORKS):
+        return ip
+    return None

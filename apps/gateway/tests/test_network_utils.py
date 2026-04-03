@@ -29,6 +29,17 @@ class NetworkUtilsTests(unittest.TestCase):
 
         self.assertEqual(targets, ["192.168.0.255", "192.168.2.255"])
 
+    @patch("app.utils.network.list_ipv4_interfaces")
+    def test_directed_broadcast_targets_scopes_to_gateway_subnet(self, mock_list_interfaces) -> None:
+        mock_list_interfaces.return_value = [
+            IPv4InterfaceRecord(address="192.168.0.17", prefix_length=24),
+            IPv4InterfaceRecord(address="192.168.2.17", prefix_length=24),
+        ]
+
+        targets = directed_broadcast_targets("http://192.168.0.17:8300")
+
+        self.assertEqual(targets, ["192.168.0.255"])
+
 
 if __name__ == "__main__":
     unittest.main()

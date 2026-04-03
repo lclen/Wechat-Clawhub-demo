@@ -57,13 +57,7 @@ class Worker:
                 await asyncio.sleep(3600)
         finally:
             self._shutdown.set()
-            for system_task in (self._heartbeat_task, self._polling_task):
-                if system_task is not None:
-                    system_task.cancel()
-            for system_task in (self._heartbeat_task, self._polling_task):
-                if system_task is not None:
-                    with suppress(asyncio.CancelledError):
-                        await system_task
+            await self._stop_gateway_loops()
             for task in list(self._active_tasks):
                 task.cancel()
             for task in list(self._active_tasks):
@@ -148,7 +142,16 @@ class Worker:
                 self._inference_error or "unknown",
             )
             return
-        await self._register_with_gateway()
+        try:
+            await self._register_with_gateway()
+        except Exception as exc:
+            self._last_error = str(exc)
+            logger.warning(
+                "[worker] gateway registration is not ready yet; node stays discoverable for pairing. reason=%s",
+                exc,
+            )
+            return
+        self._last_error = None
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
         self._polling_task = asyncio.create_task(self._poll_loop(), name="poll-loop")
 
@@ -157,6 +160,16 @@ class Worker:
         await self._gateway.register()
         logger.info("[worker] node registered successfully: %s", self._settings.node_id)
 
+    async def _stop_gateway_loops(self) -> None:
+        tasks = [task for task in (self._heartbeat_task, self._polling_task) if task is not None]
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            with suppress(asyncio.CancelledError):
+                await task
+        self._heartbeat_task = None
+        self._polling_task = None
+
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:
         pairing_key = payload.get("pairing_key", "").strip()
         expected = self._settings.pairing_key.strip()
@@ -164,16 +177,28 @@ class Worker:
             return 401, {"pairing_status": "auth_failed", "detail": "Pairing key is not configured on this node."}
         if pairing_key != expected:
             return 401, {"pairing_status": "auth_failed", "detail": "Invalid pairing key."}
-        if self._settings.node_token.strip():
-            return 200, {"pairing_status": "already_paired", "node_id": self._settings.node_id}
+        current_gateway_base_url = self._settings.gateway_base_url.strip()
+        current_node_token = self._settings.node_token.strip()
+        current_node_id = self._settings.node_id.strip()
         gateway_base_url = payload.get("gateway_base_url", "").strip()
         node_token = payload.get("node_token", "").strip()
-        node_id = payload.get("node_id", "").strip() or self._settings.node_id.strip()
+        node_id = payload.get("node_id", "").strip() or current_node_id
+        if current_node_token and (
+            gateway_base_url == current_gateway_base_url
+            and node_token == current_node_token
+            and (not node_id or node_id == current_node_id)
+        ):
+            return 200, {"pairing_status": "already_paired", "node_id": current_node_id}
         if not gateway_base_url or not node_token:
+            if current_node_token:
+                return 200, {"pairing_status": "already_paired", "node_id": current_node_id}
             return 400, {"pairing_status": "auth_failed", "detail": "gateway_base_url and node_token are required."}
+
+        await self._stop_gateway_loops()
         self._settings.gateway_base_url = gateway_base_url
         self._settings.node_token = node_token
         self._settings.node_id = node_id or self._settings.hostname
+        self._last_error = None
         self._persist_runtime_pairing()
         await self._ensure_gateway_loops_started()
         return 200, {"pairing_status": "paired", "node_id": self._settings.node_id}

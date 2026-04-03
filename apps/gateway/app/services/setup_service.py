@@ -820,7 +820,9 @@ class SetupService:
             self._append_log(task, f"扫描 Socket 已绑定到 {bind_host}:{bind_port}。")
             request_id = uuid4().hex
             payload = json.dumps({"type": "discover", "request_id": request_id}).encode("utf-8")
-            broadcast_targets = directed_broadcast_targets()
+            gateway_scan_base_url = self._console_gateway_base_url.strip() or preferred_gateway_base_url()
+            self._append_log(task, f"本次按网关地址所属子网扫描：{gateway_scan_base_url}")
+            broadcast_targets = directed_broadcast_targets(gateway_scan_base_url)
             if not broadcast_targets:
                 self._append_log(task, "未识别到定向广播地址，回退到 255.255.255.255。")
                 broadcast_targets = ["255.255.255.255"]
