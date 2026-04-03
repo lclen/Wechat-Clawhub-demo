@@ -459,27 +459,27 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any("内置模型 API Key 未填写，已保留当前已保存的值。" in line for line in task.logs))
         self.assertTrue(any("微信 Token 未填写，已保留当前已保存的值。" in line for line in task.logs))
 
-    async def test_prepare_worker_install_config_generates_and_persists_node_token(self) -> None:
+    async def test_prepare_worker_install_config_defers_node_token_to_pairing(self) -> None:
         task = self.service._create_task("node_install", "安装工作节点 node-b")
 
         config = self.service._prepare_worker_install_config(build_worker_config(), task)
 
         self.assertEqual(config.node_id, "node-b")
-        self.assertTrue(config.node_token.startswith("node-"))
-        self.assertEqual(self.settings.node_tokens["node-b"], config.node_token)
-        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
-        self.assertIn("node-b", env_text)
-        self.assertIn(config.node_token, env_text)
-        self.assertTrue(any("已自动生成新的节点 token" in line for line in task.logs))
+        self.assertEqual(config.node_token, "")
+        self.assertEqual(self.settings.node_tokens, {})
+        self.assertFalse(self.service._gateway_env_path.exists())
+        self.assertTrue(any("安装阶段不会生成或写入节点 token" in line for line in task.logs))
+        self.assertTrue(any("由网关统一下发并覆盖节点 token" in line for line in task.logs))
 
-    async def test_prepare_worker_install_config_reuses_existing_gateway_token(self) -> None:
+    async def test_prepare_worker_install_config_does_not_reuse_existing_gateway_token(self) -> None:
         self.settings.node_tokens["node-b"] = "existing-node-token"
         task = self.service._create_task("node_install", "安装工作节点 node-b")
 
         config = self.service._prepare_worker_install_config(build_worker_config(), task)
 
-        self.assertEqual(config.node_token, "existing-node-token")
-        self.assertTrue(any("沿用网关当前已保存的节点 token" in line for line in task.logs))
+        self.assertEqual(config.node_token, "")
+        self.assertEqual(self.settings.node_tokens["node-b"], "existing-node-token")
+        self.assertTrue(any("安装阶段不会生成或写入节点 token" in line for line in task.logs))
 
     async def test_prepare_worker_install_config_inherits_builtin_openai_model(self) -> None:
         self.settings.builtin_model_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -537,6 +537,40 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.task.status, "succeeded")
         self.assertEqual(result.task.metadata["matched_lan_ip"], "192.168.0.23")
         self.assertEqual(result.task.metadata["matched_hostname"], "NODE-REMOTE")
+        self.assertEqual(result.task.metadata["token_delivery"], "issued_by_gateway_pairing")
+
+    async def test_manual_pair_node_reissues_token_when_node_already_has_old_token(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        self.settings.node_tokens["node-remote"] = "old-token"
+        confirmed_node = SimpleNamespace(
+            node_id="node-remote",
+            lan_ip="192.168.0.23",
+            hostname="NODE-REMOTE",
+            last_heartbeat_at=datetime.now(UTC),
+        )
+        registry = SimpleNamespace(list_nodes=AsyncMock(return_value=[confirmed_node]))
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
+            FakeResponse(200, {"pairing_status": "paired", "node_id": "node-remote"})
+        )
+        try:
+            result = await self.service.manual_pair_node(
+                SimpleNamespace(
+                    host="192.168.0.23",
+                    pairing_port=9532,
+                    pairing_key="pairing-secret",
+                    gateway_base_url="http://192.168.0.17:8300",
+                    node_id="node-remote",
+                ),
+                registry,
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(result.pairing_status, "paired")
+        self.assertNotEqual(self.settings.node_tokens["node-remote"], "old-token")
+        self.assertTrue(self.settings.node_tokens["node-remote"].startswith("node-"))
 
     async def test_manual_pair_node_returns_pending_confirm_when_registration_not_confirmed(self) -> None:
         import app.services.setup_service as setup_service_module

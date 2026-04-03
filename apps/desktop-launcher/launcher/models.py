@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -79,6 +80,8 @@ class LauncherProfile(BaseModel):
     redis_source: RedisSource = RedisSource.MIRROR
     node_cache_redis_source: RedisSource = RedisSource.MIRROR
     bootstrap_completed: bool = False
+    local_node_id: str = "local-node"
+    local_node_token: str = Field(default_factory=lambda: f"node-{uuid4().hex}")
 
 
 class LauncherStatusResponse(BaseModel):

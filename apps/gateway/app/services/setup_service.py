@@ -184,8 +184,7 @@ class SetupService:
             "node_id": normalized.node_id,
             "install_dir": normalized.install_dir,
             "gateway_base_url": normalized.gateway_base_url,
-            "node_token": normalized.node_token,
-            "node_token_source": "provided" if config.node_token.strip() else "generated",
+            "node_token_delivery": "deferred_to_pairing",
         }
         self._append_log(task, "已创建节点安装任务。")
         asyncio.create_task(self._run_node_install(task.task_id, normalized))
@@ -813,11 +812,13 @@ class SetupService:
                 "node_id": config.node_id,
                 "install_dir": config.install_dir,
                 "gateway_base_url": config.gateway_base_url,
-                "node_token": config.node_token,
+                "node_token_delivery": "deferred_to_pairing",
             }
         )
         if process.returncode == 0:
-            task.summary = f"工作节点 {config.node_id} 安装完成。"
+            self._append_log(task, "本次安装不会生成或写入节点 token。")
+            self._append_log(task, "请回到网关端完成扫描配对或手动配对，由网关统一下发 token 并确认注册。")
+            task.summary = f"工作节点 {config.node_id} 安装完成，等待网关配对下发 token。"
             self._worker_setup_completed = True
             self._finish_task(task, "succeeded")
         else:
@@ -850,22 +851,13 @@ class SetupService:
         task: SetupTaskState,
     ) -> WorkerNodeSetupConfig:
         resolved_node_id = config.node_id.strip()
-        existing_token = self._settings.node_tokens.get(resolved_node_id, "").strip()
-        provided_token = config.node_token.strip()
-        resolved_token = provided_token or existing_token or f"node-{uuid4().hex}"
-        if provided_token:
-            self._append_log(task, "沿用表单填写的节点 token，并同步写入网关节点凭据。")
-        elif existing_token:
-            self._append_log(task, "未填写节点 token，沿用网关当前已保存的节点 token。")
-        else:
-            self._append_log(task, "未填写节点 token，已自动生成新的节点 token，并写入网关节点凭据。")
-        self._settings.node_tokens[resolved_node_id] = resolved_token
-        self._persist_node_tokens()
+        self._append_log(task, "安装阶段不会生成或写入节点 token；节点将保持待配对状态。")
+        self._append_log(task, "后续请在网关端输入配对密钥，由网关统一下发并覆盖节点 token。")
         normalized = config.model_copy(
             update={
                 "node_id": resolved_node_id,
                 "gateway_base_url": config.gateway_base_url.strip().rstrip("/"),
-                "node_token": resolved_token,
+                "node_token": "",
                 "pairing_key": config.pairing_key.strip(),
                 "dify_base_url": config.dify_base_url.strip(),
                 "dify_api_key": config.dify_api_key.strip(),
@@ -1000,8 +992,13 @@ class SetupService:
             or (discovered.node_id if discovered else None)
             or (self._suggest_node_id(discovered) if discovered else self._suggest_node_id_from_host(host))
         )
-        node_token = self._settings.node_tokens.get(resolved_node_id) or f"node-{uuid4().hex}"
+        previous_token = self._settings.node_tokens.get(resolved_node_id, "").strip()
+        node_token = f"node-{uuid4().hex}"
         pair_url = f"http://{host}:{pairing_port}/pair"
+        if previous_token:
+            self._append_log(task, f"检测到节点 {resolved_node_id} 已存在旧 token，本次将重新签发并覆盖。")
+        else:
+            self._append_log(task, f"节点 {resolved_node_id} 尚未签发 token，本次配对将首次生成并下发。")
         self._append_log(task, f"开始请求 {pair_url}。")
         try:
             async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
@@ -1049,19 +1046,20 @@ class SetupService:
                 "node_id": returned_node_id,
                 "lan_ip": host,
                 "pairing_port": str(pairing_port),
+                "token_delivery": "issued_by_gateway_pairing",
             }
-            self._append_log(task, f"节点已接受配对参数，返回状态：{pairing_status}。")
+            self._append_log(task, f"节点已接受网关下发的新 token，返回状态：{pairing_status}。")
             if detail:
                 self._append_log(task, f"节点返回详情：{detail}")
             if pairing_status == "register_failed":
                 diagnostic_state = self._normalize_register_failure_state(detail)
                 self._set_pairing_diagnostic(returned_node_id, diagnostic_state, detail or "节点注册失败")
-                task.summary = f"节点 {suggested_label or returned_node_id} 已接收配置，但注册失败：{detail or '请重新配对'}"
+                task.summary = f"节点 {suggested_label or returned_node_id} 已接收网关下发的 token，但注册失败：{detail or '请重新输入配对密钥后重试'}"
                 self._finish_task(task, "failed")
                 return DiscoveryPairResponse(task=task.to_result(), pairing_status="register_failed", node_id=returned_node_id)
             if registry is None:
                 self._set_pairing_diagnostic(returned_node_id, "pairing_pending", "等待网关确认节点注册")
-                task.summary = f"节点 {suggested_label or returned_node_id} 已接收配置，等待注册确认。"
+                task.summary = f"节点 {suggested_label or returned_node_id} 已接收网关下发的 token，等待注册确认。"
                 self._finish_task(task, "failed")
                 return DiscoveryPairResponse(task=task.to_result(), pairing_status="paired_pending_confirm", node_id=returned_node_id)
             self._set_pairing_diagnostic(returned_node_id, "pairing_pending", "等待网关确认节点注册")
