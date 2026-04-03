@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from asyncio.subprocess import PIPE
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from unittest.mock import patch
 
 import httpx
 
@@ -41,6 +43,11 @@ class FakeAsyncClient:
             raise self._response
         return self._response
 
+    async def get(self, url: str) -> FakeResponse:
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
+
 
 def build_gateway_config() -> GatewaySetupConfig:
     return GatewaySetupConfig(
@@ -68,6 +75,10 @@ def build_worker_config(**overrides: object) -> WorkerNodeSetupConfig:
         "pairing_key": "pairing-secret",
         "dify_base_url": "",
         "dify_api_key": "",
+        "openai_base_url": "",
+        "openai_api_key": "",
+        "openai_model": "",
+        "openai_enable_thinking": False,
         "max_concurrency": 1,
         "install_dir": "C:\\wechat-claw-node",
         "bundle_path": "",
@@ -178,6 +189,52 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("WCH_CONSOLE_GATEWAY_BASE_URL=http://127.0.0.1:8300", env_text)
         self.assertTrue(any("已持久化控制台目标网关地址。" in line for line in task.logs))
 
+    async def test_probe_gateway_reports_successful_status(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=3.0, trust_env=False: FakeAsyncClient(
+            FakeResponse(
+                200,
+                {
+                    "app_name": "wechat-claw-hub gateway",
+                    "environment": "development",
+                    "preferred_lan_ip": "192.168.0.18",
+                    "preferred_gateway_base_url": "http://192.168.0.18:8300",
+                    "active_nodes": 2,
+                    "dispatch_mode_enabled": False,
+                },
+            )
+        )
+        try:
+            task = await self.service.probe_gateway("http://192.168.0.18:8300", 2500)
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(task.kind, "gateway_probe")
+        self.assertEqual(task.status, "succeeded")
+        self.assertIn("目标网关可达", task.summary)
+        self.assertEqual(task.metadata["gateway_base_url"], "http://192.168.0.18:8300")
+        self.assertEqual(task.metadata["http_status"], "200")
+        self.assertTrue(any("网关上报的局域网 IP：192.168.0.18" in line for line in task.logs))
+
+    async def test_probe_gateway_reports_connection_failure(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=3.0, trust_env=False: FakeAsyncClient(
+            httpx.ConnectError("connection refused")
+        )
+        try:
+            task = await self.service.probe_gateway("http://192.168.0.18:8300", 2500)
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(task.kind, "gateway_probe")
+        self.assertEqual(task.status, "failed")
+        self.assertIn("无法连接目标网关", task.summary)
+        self.assertTrue(any("防火墙" in line for line in task.logs))
+
     async def test_set_dispatch_mode_updates_settings_and_env(self) -> None:
         task = await self.service.set_dispatch_mode(True)
 
@@ -282,6 +339,28 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.node_token, "existing-node-token")
         self.assertTrue(any("沿用网关当前已保存的节点 token" in line for line in task.logs))
 
+    async def test_prepare_worker_install_config_inherits_builtin_openai_model(self) -> None:
+        self.settings.builtin_model_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        self.settings.builtin_model_api_key = "builtin-key"
+        self.settings.builtin_model_name = "qwen3.5-plus"
+        task = self.service._create_task("node_install", "安装工作节点 node-b")
+
+        config = self.service._prepare_worker_install_config(build_worker_config(), task)
+
+        self.assertEqual(config.openai_base_url, self.settings.builtin_model_base_url)
+        self.assertEqual(config.openai_api_key, self.settings.builtin_model_api_key)
+        self.assertEqual(config.openai_model, self.settings.builtin_model_name)
+        self.assertTrue(any("自动沿用网关的 OpenAI 兼容模型" in line for line in task.logs))
+
+    async def test_prepare_worker_install_config_keeps_discovery_mode_when_model_missing(self) -> None:
+        task = self.service._create_task("node_install", "安装工作节点 node-b")
+
+        config = self.service._prepare_worker_install_config(build_worker_config(), task)
+
+        self.assertEqual(config.openai_base_url, "")
+        self.assertEqual(config.dify_base_url, "")
+        self.assertTrue(any("将保持可发现状态" in line for line in task.logs))
+
     async def test_manual_pair_node_success_persists_gateway_token(self) -> None:
         import app.services.setup_service as setup_service_module
 
@@ -376,6 +455,40 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.pairing_status, "offline")
         self.assertEqual(result.task.status, "failed")
         self.assertIn("HTTP 502", result.task.summary)
+
+    async def test_run_node_install_passes_plain_boolean_strings_to_script(self) -> None:
+        task = self.service._create_task("node_install", "安装工作节点 node-b")
+        config = build_worker_config(discovery_enabled=True)
+
+        class FakeProcess:
+            returncode = 0
+            stdout = None
+            stderr = None
+
+            async def communicate(self) -> tuple[bytes, bytes]:
+                return (b"", b"")
+
+            async def wait(self) -> int:
+                return self.returncode
+
+        with tempfile.TemporaryDirectory() as repo_root:
+            script_path = Path(repo_root) / "scripts" / "install-claw-node.ps1"
+            script_path.parent.mkdir(parents=True, exist_ok=True)
+            script_path.write_text("param()", encoding="utf-8")
+            self.service._repo_root = Path(repo_root)
+            self.service._node_install_script = script_path
+            with patch("app.services.setup_service.asyncio.create_subprocess_exec", new=AsyncMock(return_value=FakeProcess())) as create_proc:
+                await self.service._run_node_install(task.task_id, config)
+
+        command = create_proc.await_args.args
+        self.assertIn("-DiscoveryEnabled", command)
+        self.assertIn("true", command)
+        self.assertNotIn("$true", command)
+        self.assertIn("-OpenAIBaseUrl", command)
+        self.assertIn("-OpenAIApiKey", command)
+        self.assertIn("-OpenAIModel", command)
+        self.assertIn("-OpenAIEnableThinking", command)
+        self.assertIn(PIPE, create_proc.await_args.kwargs.values())
 
 
 if __name__ == "__main__":

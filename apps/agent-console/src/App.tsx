@@ -25,11 +25,12 @@ type WorkerNodeSetupConfig = { node_id: string; gateway_base_url: string; node_t
 type ConsoleSetupConfig = { gateway_base_url: string };
 type PairingStatus = "pending" | "paired" | "auth_failed" | "already_paired" | "offline";
 type DiscoveredNodeRecord = { discovery_id: string; node_id: string | null; pairing_label: string | null; hostname: string; lan_ip: string | null; platform: string | null; node_version: string | null; capabilities: string[]; advertised_address: string | null; pairing_required: boolean; already_paired: boolean; pairing_port: number; last_seen_at: string };
-type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "discovery_scan" | "discovery_pair" | "manual_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
+type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "gateway_probe" | "discovery_scan" | "discovery_pair" | "manual_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
 type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; preferred_gateway_base_url: string; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
 type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boolean; applied_runtime: string[] };
 type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_base_url?: string };
 type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };
+type GatewayProbeRequest = { gateway_base_url: string; timeout_ms?: number };
 type SetupTaskEnvelope = { task: SetupTaskResult };
 type DiscoveryScanResponse = { task: SetupTaskResult; nodes: DiscoveredNodeRecord[] };
 type DiscoveryPairResponse = { task: SetupTaskResult; pairing_status: PairingStatus; node_id: string | null };
@@ -53,7 +54,7 @@ type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cac
 type ManualPairDraft = { host: string; pairing_port: number; pairing_key: string; node_id: string };
 type PairingDebugEntry = {
   id: string;
-  kind: "discovery_scan" | "discovery_pair" | "manual_pair" | "client_error";
+  kind: "discovery_scan" | "discovery_pair" | "manual_pair" | "gateway_probe" | "client_error";
   title: string;
   status: SetupTaskStatus | "failed";
   summary: string;
@@ -515,7 +516,11 @@ export function App() {
       status: setupTask.status,
       summary: setupTask.summary,
       logs: setupTask.logs,
-      target: setupTask.metadata.lan_ip || setupTask.metadata.host || setupTask.metadata.node_id || "局域网配对",
+      target: setupTask.kind === "discovery_scan"
+        ? `局域网广播${setupTask.metadata.discovery_port ? ` · UDP ${setupTask.metadata.discovery_port}` : ""}`
+        : setupTask.kind === "gateway_probe"
+          ? (setupTask.metadata.gateway_base_url || "目标网关")
+        : (setupTask.metadata.lan_ip || setupTask.metadata.host || setupTask.metadata.node_id || "局域网配对"),
       updated_at: setupTask.updated_at,
     });
   }, [setupTask]);
@@ -791,7 +796,11 @@ export function App() {
         title: "扫描局域网节点",
         status: "running",
         summary: "正在发送广播并等待节点响应。",
-        logs: [`开始扫描，回连网关地址：${currentGatewayBaseUrl}`],
+        logs: [
+          `开始扫描，回连网关地址：${currentGatewayBaseUrl}`,
+          `当前机器局域网 IP：${currentNodeLanIp || "未识别"}`,
+          "调试说明：接口返回后会在这里追加完整的网关扫描日志。",
+        ],
         target: "局域网广播",
         updated_at: new Date().toISOString(),
       });
@@ -813,6 +822,37 @@ export function App() {
     } catch (error) {
       appendPairingClientError("扫描局域网节点", "局域网广播", error as Error);
       setNotice(`搜索局域网节点失败：${(error as Error).message}`);
+    }
+  }
+  async function probeWorkerGateway() {
+    const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
+    if (!gatewayBaseUrl) return setNotice("请先填写目标网关地址。");
+    try {
+      pushPairingDebugEntry({
+        id: `gateway-probe-${Date.now()}`,
+        kind: "gateway_probe",
+        title: "检测目标网关",
+        status: "running",
+        summary: `准备检测 ${gatewayBaseUrl}`,
+        logs: [
+          `目标网关地址：${gatewayBaseUrl}`,
+          `当前节点 IP：${currentNodeLanIp || "未识别"}`,
+          `当前节点 ID：${workerSetup.node_id || "未填写"}`,
+          "调试说明：接口返回后会在这里追加网关探测日志。",
+        ],
+        target: gatewayBaseUrl,
+        updated_at: new Date().toISOString(),
+      });
+      const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, timeout_ms: 3000 };
+      const result = await withBusy(
+        "setup-gateway-probe",
+        () => requestJson<SetupTaskEnvelope>("/api/setup/gateway/probe", { method: "POST", body: JSON.stringify(payload) }),
+      );
+      setSetupTask(result.task);
+      setNotice(result.task.summary || `目标网关检测完成：${gatewayBaseUrl}`);
+    } catch (error) {
+      appendPairingClientError("检测目标网关", gatewayBaseUrl, error as Error);
+      setNotice(`检测目标网关失败：${(error as Error).message}`);
     }
   }
   async function refreshLauncherStatus() {
@@ -1111,6 +1151,7 @@ export function App() {
     () => setupRole ? roleName(setupRole) : (setupProfile?.completed_roles.length ? setupProfile.completed_roles.map(roleName).join(" / ") : "未选择"),
     [setupProfile?.completed_roles, setupRole],
   );
+  const currentNodeLanIp = systemStatus?.preferred_lan_ip || setupTask?.metadata.lan_ip || "";
   const latestSetupSummary = useMemo(
     () => setupTask?.summary || setupProfile?.last_task?.summary || (currentRoleIsWorker ? "暂无最近节点安装或回连记录。" : (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。")),
     [currentRoleIsWorker, nodes.length, setupProfile?.last_task?.summary, setupTask?.summary],
@@ -1129,6 +1170,12 @@ export function App() {
           value: workerSetup.gateway_base_url || "未配置",
           tone: workerSetup.gateway_base_url ? "good" : "warn",
           detail: workerSetup.gateway_base_url ? "节点将连接这个局域网网关地址。" : "建议填写局域网内目标网关地址。",
+        },
+        {
+          title: "当前节点 IP",
+          value: currentNodeLanIp || "未检测到",
+          tone: currentNodeLanIp ? "good" : "warn",
+          detail: currentNodeLanIp ? "局域网内其他机器可用这个地址访问当前节点。" : "请先确认当前机器已接入局域网。",
         },
         {
           title: "节点凭据",
@@ -1170,7 +1217,7 @@ export function App() {
         detail: latestSetupSummary,
       },
     ];
-  }, [currentRoleIsWorker, gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.gateway_base_url, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
+  }, [currentNodeLanIp, currentRoleIsWorker, gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.gateway_base_url, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
   const reconfigureWarnings = useMemo(() => {
     const warnings: string[] = [];
     if (wechatStatus?.running) warnings.push("微信当前处于轮询中；继续后会先断开微信连接，再进入重新配置。");
@@ -1342,6 +1389,7 @@ export function App() {
                       <InfoRow label="当前角色" value={currentRoleDisplay} multiline />
                       {currentRoleIsWorker ? (
                         <>
+                          <InfoRow label="当前节点 IP" value={currentNodeLanIp || "-"} multiline />
                           <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "-"} multiline />
                           <InfoRow label="节点安装目录" value={workerSetup.install_dir || "-"} multiline />
                           <InfoRow label="发现响应" value={workerSetup.discovery_enabled ? `已启用 · UDP ${workerSetup.discovery_port}` : "已关闭"} multiline />
@@ -1461,6 +1509,9 @@ export function App() {
                           </>
                         ) : setupRole === "worker_node" ? (
                           <>
+                            <div className="inline-tip">
+                              当前节点 IP：{currentNodeLanIp || "未检测到"}。局域网内其他机器连接或排查当前节点时，可以优先使用这个地址。
+                            </div>
                             <div className="form-grid">
                               <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
                               <label>
@@ -1662,81 +1713,87 @@ export function App() {
                   {workerSetup.node_token.trim() ? <SnippetBlock label="当前工作节点 Token" content={workerSetup.node_token} /> : null}
                   <div className="inline-actions">
                     <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>{busy === "setup-worker" ? "安装中..." : "安装这个工作节点"}</button>
+                    {currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={() => void probeWorkerGateway()} disabled={busy !== null}>{busy === "setup-gateway-probe" ? "检测中..." : "检测目标网关"}</button> : null}
                   </div>
                 </section>
               </div>
               <div className="connection-action-column">
-                {!currentRoleIsWorker ? <section className="surface">
-                  <div className="section-head">
-                    <div><div className="section-kicker">直连配对</div><h3>按地址直接纳管工作节点</h3></div>
-                  </div>
-                  <div className="inline-tip">
-                    如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
-                  </div>
-                  <div className="form-grid">
-                    <label><span>目标 IP / 主机名</span><input value={manualPair.host} onChange={(event) => updateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
-                    <label><span>配对端口</span><input type="number" value={manualPair.pairing_port} onChange={(event) => updateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
-                    <label><span>配对密钥</span><input type="password" value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
-                    <label><span>指定节点 ID（可选）</span><input value={manualPair.node_id} onChange={(event) => updateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
-                  </div>
-                  <div className="inline-actions">
-                    <button type="button" onClick={() => void manualPairNode()} disabled={busy !== null}>{busy === "setup-manual-pair" ? "连接中..." : "按地址配对"}</button>
-                  </div>
-                </section>
-                <section className="surface">
-                  <div className="section-head">
-                    <div><div className="section-kicker">节点配对</div><h3>扫描并纳管局域网工作节点</h3></div>
-                    <button type="button" onClick={scanLanNodes} disabled={busy !== null}>{busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}</button>
-                  </div>
-                  <div className="inline-tip">
-                    当前网关回连地址：{currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
-                  </div>
-                  {!discoveredNodes.length ? <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div> : (
-                    <div className="discovery-list">
-                      {discoveredNodes.map((item) => (
-                        <div key={item.discovery_id} className="discovery-card">
-                          <div className="discovery-card-top">
-                            <div>
-                              <div className="node-card-title">{item.pairing_label || item.hostname}</div>
-                              <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
+                {!currentRoleIsWorker ? (
+                  <>
+                    <section className="surface">
+                      <div className="section-head">
+                        <div><div className="section-kicker">直连配对</div><h3>按地址直接纳管工作节点</h3></div>
+                      </div>
+                      <div className="inline-tip">
+                        如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
+                      </div>
+                      <div className="form-grid">
+                        <label><span>目标 IP / 主机名</span><input value={manualPair.host} onChange={(event) => updateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
+                        <label><span>配对端口</span><input type="number" value={manualPair.pairing_port} onChange={(event) => updateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
+                        <label><span>配对密钥</span><input type="password" value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
+                        <label><span>指定节点 ID（可选）</span><input value={manualPair.node_id} onChange={(event) => updateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
+                      </div>
+                      <div className="inline-actions">
+                        <button type="button" onClick={() => void manualPairNode()} disabled={busy !== null}>{busy === "setup-manual-pair" ? "连接中..." : "按地址配对"}</button>
+                      </div>
+                    </section>
+                    <section className="surface">
+                      <div className="section-head">
+                        <div><div className="section-kicker">节点配对</div><h3>扫描并纳管局域网工作节点</h3></div>
+                        <button type="button" onClick={scanLanNodes} disabled={busy !== null}>{busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}</button>
+                      </div>
+                      <div className="inline-tip">
+                        当前网关回连地址：{currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
+                      </div>
+                      {!discoveredNodes.length ? <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div> : (
+                        <div className="discovery-list">
+                          {discoveredNodes.map((item) => (
+                            <div key={item.discovery_id} className="discovery-card">
+                              <div className="discovery-card-top">
+                                <div>
+                                  <div className="node-card-title">{item.pairing_label || item.hostname}</div>
+                                  <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
+                                </div>
+                                <span className={`session-badge session-badge-${pairingStatuses[item.discovery_id] === "paired" ? "human" : pairingStatuses[item.discovery_id] === "auth_failed" ? "queued" : item.already_paired ? "typing" : "idle"}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
+                              </div>
+                              <div className="node-card-grid">
+                                <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
+                                <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
+                                <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
+                                <div><div className="node-card-label">正式节点 ID</div><div className="node-card-value">{item.node_id || "配对时自动生成"}</div></div>
+                              </div>
+                              <div className="discovery-actions">
+                                <input value={pairingSecrets[item.discovery_id] || ""} onChange={(event) => setPairingSecrets((current) => ({ ...current, [item.discovery_id]: event.target.value }))} placeholder="输入该机器的配对密钥" />
+                                <button type="button" onClick={() => pairLanNode(item)} disabled={busy !== null}>{busy === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}</button>
+                              </div>
                             </div>
-                            <span className={`session-badge session-badge-${pairingStatuses[item.discovery_id] === "paired" ? "human" : pairingStatuses[item.discovery_id] === "auth_failed" ? "queued" : item.already_paired ? "typing" : "idle"}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
-                          </div>
-                          <div className="node-card-grid">
-                            <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
-                            <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
-                            <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
-                            <div><div className="node-card-label">正式节点 ID</div><div className="node-card-value">{item.node_id || "配对时自动生成"}</div></div>
-                          </div>
-                          <div className="discovery-actions">
-                            <input value={pairingSecrets[item.discovery_id] || ""} onChange={(event) => setPairingSecrets((current) => ({ ...current, [item.discovery_id]: event.target.value }))} placeholder="输入该机器的配对密钥" />
-                            <button type="button" onClick={() => pairLanNode(item)} disabled={busy !== null}>{busy === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}</button>
-                          </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
+                    </section>
+                  </>
+                ) : (
+                  <section className="surface node-role-surface">
+                    <div className="section-head"><div><div className="section-kicker">节点说明</div><h3>当前角色不显示网关纳管能力</h3></div></div>
+                    <div className="inline-tip">
+                      你当前选择的是工作节点角色，这里只保留节点安装、回连、凭据和发现响应相关功能；扫描并纳管其它节点需要切换回网关角色。
                     </div>
-                  )}
-                </section> : (
-                <section className="surface node-role-surface">
-                  <div className="section-head"><div><div className="section-kicker">节点说明</div><h3>当前角色不显示网关纳管能力</h3></div></div>
-                  <div className="inline-tip">
-                    你当前选择的是工作节点角色，这里只保留节点安装、回连、凭据和发现响应相关功能；扫描并纳管其它节点需要切换回网关角色。
-                  </div>
-                  <div className="info-stack">
-                    <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
-                    <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
-                    <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
-                  </div>
-                </section>
+                    <div className="info-stack">
+                      <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
+                      <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
+                      <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
+                    </div>
+                  </section>
+                )}
                 <section className="surface">
                   <div className="section-head">
-                    <div><div className="section-kicker">调试日志</div><h3>配对过程与问题定位</h3></div>
+                    <div><div className="section-kicker">调试日志</div><h3>{currentRoleIsWorker ? "网关探测与节点回连定位" : "配对过程与问题定位"}</h3></div>
                     <div className="inline-actions">
                       <span className="small-note">保留最近 12 条扫描/配对记录</span>
                       <button type="button" className="ghost-button" onClick={() => setPairingDebugEntries([])} disabled={!pairingDebugEntries.length}>清空日志</button>
                     </div>
                   </div>
-                  {!pairingDebugEntries.length ? <div className="empty-state">这里会显示扫描、直连配对、失败原因和返回日志，方便快速定位问题。</div> : (
+                  {!pairingDebugEntries.length ? <div className="empty-state">{currentRoleIsWorker ? "这里会显示目标网关探测、节点回连检测和失败原因，方便定位当前节点为什么连不上网关。" : "这里会显示扫描、直连配对、失败原因和返回日志，方便快速定位问题。"}</div> : (
                     <div className="pairing-debug-list">
                       {pairingDebugEntries.map((entry) => (
                         <article key={entry.id} className="pairing-debug-card">
@@ -1914,7 +1971,7 @@ function roleName(role: SetupRole) {
   return "控制台";
 }
 function isPairingTaskKind(kind: SetupTaskResult["kind"]) {
-  return kind === "discovery_scan" || kind === "discovery_pair" || kind === "manual_pair";
+  return kind === "discovery_scan" || kind === "discovery_pair" || kind === "manual_pair" || kind === "gateway_probe";
 }
 function roleDescription(role: SetupRole) {
   if (role === "gateway_host") return "保存网关基础配置，并主动搜索局域网里已经运行的可配对节点。";

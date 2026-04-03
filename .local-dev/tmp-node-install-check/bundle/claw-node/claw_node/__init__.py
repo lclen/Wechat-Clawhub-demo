@@ -1,0 +1,1 @@
+"""claw-node worker package."""

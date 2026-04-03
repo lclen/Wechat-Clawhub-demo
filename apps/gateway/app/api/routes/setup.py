@@ -6,6 +6,7 @@ from app.core.deps import get_setup_service
 from app.models.setup import (
     ConsoleConnectRequest,
     GatewayDispatchModeRequest,
+    GatewayProbeRequest,
     DiscoveryPairRequest,
     DiscoveryPairResponse,
     DiscoveryScanRequest,
@@ -79,6 +80,15 @@ async def connect_console_setup(
     setup_service: SetupService = Depends(get_setup_service),
 ) -> SetupTaskEnvelope:
     task = await setup_service.connect_console(payload.config)
+    return SetupTaskEnvelope(task=task)
+
+
+@router.post("/gateway/probe", response_model=SetupTaskEnvelope)
+async def probe_worker_gateway(
+    payload: GatewayProbeRequest,
+    setup_service: SetupService = Depends(get_setup_service),
+) -> SetupTaskEnvelope:
+    task = await setup_service.probe_gateway(payload.gateway_base_url, payload.timeout_ms)
     return SetupTaskEnvelope(task=task)
 
 

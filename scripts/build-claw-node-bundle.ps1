@@ -22,6 +22,13 @@ New-Item -ItemType Directory -Force $BundleRoot | Out-Null
 
 $NodeSource = Join-Path $RepoRoot "services\claw-node"
 $WinSWSource = Join-Path $RepoRoot "infra\windows\winsw"
+$WinSWExe = Join-Path $WinSWSource "WinSW-x64.exe"
+if (-not (Test-Path $WinSWExe)) {
+    $WinSWExe = Join-Path $WinSWSource "WinSW.exe"
+}
+if (-not (Test-Path $WinSWExe)) {
+    throw "WinSW executable not found under $WinSWSource. Put WinSW-x64.exe or WinSW.exe there before building the bundle."
+}
 
 Copy-Item -Recurse -Force $NodeSource (Join-Path $BundleRoot "claw-node")
 Copy-Item -Recurse -Force $WinSWSource (Join-Path $BundleRoot "winsw")

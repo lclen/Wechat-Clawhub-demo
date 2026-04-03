@@ -31,6 +31,10 @@ class WorkerNodeSetupConfig(BaseModel):
     pairing_key: str = ""
     dify_base_url: str = ""
     dify_api_key: str = ""
+    openai_base_url: str = ""
+    openai_api_key: str = ""
+    openai_model: str = ""
+    openai_enable_thinking: bool = False
     max_concurrency: int = Field(default=1, ge=1, le=128)
     install_dir: str = Field(min_length=1)
     bundle_path: str = ""
@@ -49,6 +53,7 @@ class SetupTaskResult(BaseModel):
         "gateway_console_setup",
         "node_install",
         "console_connect",
+        "gateway_probe",
         "discovery_scan",
         "discovery_pair",
         "manual_pair",
@@ -96,6 +101,11 @@ class NodeInstallRequest(BaseModel):
 
 class ConsoleConnectRequest(BaseModel):
     config: ConsoleSetupConfig
+
+
+class GatewayProbeRequest(BaseModel):
+    gateway_base_url: str = Field(min_length=1)
+    timeout_ms: int = Field(default=3000, ge=500, le=15000)
 
 
 class GatewayConsoleSetupRequest(BaseModel):

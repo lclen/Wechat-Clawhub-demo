@@ -10,6 +10,24 @@ from claw_node.worker import Worker
 
 
 class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_without_inference_backend_stays_discoverable(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+        )
+
+        worker = Worker(settings)
+        worker._register_with_gateway = AsyncMock()
+
+        await worker._ensure_gateway_loops_started()
+
+        self.assertIsNone(worker._inference)
+        self.assertIn("No inference backend is configured", worker._inference_error or "")
+        worker._register_with_gateway.assert_not_awaited()
+        self.assertIsNone(worker._heartbeat_task)
+        self.assertIsNone(worker._polling_task)
+
     async def test_heartbeat_404_triggers_reregister(self) -> None:
         settings = NodeSettings(
             CLAW_NODE_ID="node-local-1",

@@ -1,0 +1,15 @@
+<service>
+  <id>__SERVICE_ID__</id>
+  <name>__SERVICE_NAME__</name>
+  <description>__SERVICE_DESCRIPTION__</description>
+  <executable>__PYTHON_EXE__</executable>
+  <arguments>-m claw_node.main</arguments>
+  <workingdirectory>__PROJECT_ROOT__</workingdirectory>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+    <pattern>yyyyMMdd</pattern>
+  </log>
+  <logpath>__LOG_DIR__</logpath>
+  <onfailure action="restart" delay="10 sec" />
+</service>

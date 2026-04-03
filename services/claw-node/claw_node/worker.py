@@ -23,6 +23,7 @@ class Worker:
     def __init__(self, settings: NodeSettings) -> None:
         self._settings = settings
         self._gateway = GatewayClient(settings)
+        self._inference_error: str | None = None
         self._inference = self._build_inference_client(settings)
         self._discovery = DiscoveryService(settings, self._handle_pair_request)
         self._local_cache = LocalCache(settings)
@@ -71,7 +72,8 @@ class Worker:
             await self._discovery.close()
             await self._local_cache.close()
             await self._gateway.close()
-            await self._inference.close()
+            if self._inference is not None:
+                await self._inference.close()
 
     async def _heartbeat_loop(self) -> None:
         while not self._shutdown.is_set():
@@ -140,6 +142,12 @@ class Worker:
         if not self._settings.node_token.strip() or not self._settings.gateway_base_url.strip() or not self._settings.node_id.strip():
             logger.info("[worker] node is discoverable but not paired yet; waiting for pairing.")
             return
+        if self._inference is None:
+            logger.warning(
+                "[worker] inference backend is unavailable; node stays discoverable but will not register/poll until configured. reason=%s",
+                self._inference_error or "unknown",
+            )
+            return
         await self._register_with_gateway()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
         self._polling_task = asyncio.create_task(self._poll_loop(), name="poll-loop")
@@ -201,6 +209,8 @@ class Worker:
     async def _handle_task(self, task: dict[str, Any]) -> None:
         started_at = time.perf_counter()
         try:
+            if self._inference is None:
+                raise RuntimeError(self._inference_error or "Inference backend is not configured on this node.")
             message = task["message"]
             recent_messages = task.get("recent_messages", [])
             await self._local_cache.store_context_snapshot(
@@ -290,22 +300,31 @@ class Worker:
         except Exception:
             return "-"
 
-    def _build_inference_client(self, settings: NodeSettings) -> DifyClient | OpenAICompatibleClient:
-        provider = settings.model_provider.strip().lower()
-        if provider in {"openai", "openai_compatible"}:
-            self._ensure_openai_config(settings)
-            return OpenAICompatibleClient(settings)
-        if provider == "dify":
-            self._ensure_dify_config(settings)
-            return DifyClient(settings)
+    def _build_inference_client(self, settings: NodeSettings) -> DifyClient | OpenAICompatibleClient | None:
+        try:
+            provider = settings.model_provider.strip().lower()
+            if provider in {"openai", "openai_compatible"}:
+                self._ensure_openai_config(settings)
+                self._inference_error = None
+                return OpenAICompatibleClient(settings)
+            if provider == "dify":
+                self._ensure_dify_config(settings)
+                self._inference_error = None
+                return DifyClient(settings)
 
-        if settings.openai_base_url and settings.openai_api_key and settings.openai_model:
-            return OpenAICompatibleClient(settings)
-        if settings.dify_base_url and settings.dify_api_key:
-            return DifyClient(settings)
-        raise RuntimeError(
-            "No inference backend is configured. Set OpenAI-compatible or Dify environment variables."
-        )
+            if settings.openai_base_url and settings.openai_api_key and settings.openai_model:
+                self._inference_error = None
+                return OpenAICompatibleClient(settings)
+            if settings.dify_base_url and settings.dify_api_key:
+                self._inference_error = None
+                return DifyClient(settings)
+            raise RuntimeError(
+                "No inference backend is configured. Set OpenAI-compatible or Dify environment variables."
+            )
+        except Exception as exc:
+            self._inference_error = str(exc)
+            logger.warning("[worker] inference backend unavailable: %s", exc)
+            return None
 
     def _ensure_openai_config(self, settings: NodeSettings) -> None:
         if settings.openai_base_url and settings.openai_api_key and settings.openai_model:

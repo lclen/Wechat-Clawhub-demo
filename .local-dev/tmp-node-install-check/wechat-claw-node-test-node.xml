@@ -1,0 +1,16 @@
+﻿<service>
+  <id>wechat-claw-node-test-node</id>
+  <name>wechat-claw-node-test-node</name>
+  <description>wechat-claw-hub worker node test-node</description>
+  <executable>D:\\wechat-clawhub\\.local-dev\\tmp-node-install-check\\.venv\\Scripts\\python.exe</executable>
+  <arguments>-m claw_node.main</arguments>
+  <workingdirectory>D:\\wechat-clawhub\\.local-dev\\tmp-node-install-check\\bundle\\claw-node</workingdirectory>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>5</keepFiles>
+    <pattern>yyyyMMdd</pattern>
+  </log>
+  <logpath>D:\\wechat-clawhub\\.local-dev\\tmp-node-install-check\\logs</logpath>
+  <onfailure action="restart" delay="10 sec" />
+</service>
+

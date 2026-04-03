@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 from asyncio.subprocess import PIPE
 from collections import deque
@@ -176,8 +177,16 @@ class SetupService:
     async def scan_discovery(self, timeout_ms: int | None = None) -> DiscoveryScanResponse:
         task = self._create_task("discovery_scan", "扫描局域网内可配对节点")
         task.status = "running"
-        self._append_log(task, "开始发送 UDP 广播发现包。")
-        discovered = await self._udp_broadcast_scan(timeout_ms or self._settings.discovery_timeout_ms)
+        effective_timeout_ms = timeout_ms or self._settings.discovery_timeout_ms
+        task.metadata = {
+            "discovery_port": str(self._settings.discovery_port),
+            "timeout_ms": str(effective_timeout_ms),
+        }
+        self._append_log(
+            task,
+            f"开始发送 UDP 广播发现包，端口 {self._settings.discovery_port}，等待窗口 {effective_timeout_ms} ms。",
+        )
+        discovered = await self._udp_broadcast_scan(task, effective_timeout_ms)
         self._discovered_nodes = {item.discovery_id: item for item in discovered}
         task.summary = f"扫描完成，共发现 {len(discovered)} 台候选机器。"
         self._append_log(task, task.summary)
@@ -230,6 +239,77 @@ class SetupService:
         target = config.gateway_base_url.rstrip("/")
         task.summary = f"控制台目标网关已校验：{target}"
         self._append_log(task, "目标网关健康检查通过。")
+        self._finish_task(task, "succeeded")
+        return task.to_result()
+
+    async def probe_gateway(self, gateway_base_url: str, timeout_ms: int | None = None) -> SetupTaskResult:
+        task = self._create_task("gateway_probe", "检测节点目标网关")
+        task.status = "running"
+        target = gateway_base_url.strip().rstrip("/")
+        effective_timeout_ms = timeout_ms or 3000
+        task.metadata = {
+            "gateway_base_url": target,
+            "timeout_ms": str(effective_timeout_ms),
+        }
+        self._append_log(task, f"开始检测目标网关：{target}")
+        self._append_log(task, f"请求地址：{target}/api/system/status")
+        self._append_log(task, f"超时时间：{effective_timeout_ms} ms")
+        try:
+            async with httpx.AsyncClient(timeout=effective_timeout_ms / 1000, trust_env=False) as client:
+                response = await client.get(f"{target}/api/system/status")
+        except httpx.RequestError as exc:
+            task.summary = f"无法连接目标网关：{exc}"
+            self._append_log(task, task.summary)
+            self._append_log(task, "可检查：目标 IP/端口是否正确、网关进程是否已启动、防火墙是否放行 8300。")
+            self._finish_task(task, "failed")
+            return task.to_result()
+
+        task.metadata["http_status"] = str(response.status_code)
+        self._append_log(task, f"目标网关返回 HTTP {response.status_code}")
+        if response.status_code >= 400:
+            task.summary = f"目标网关返回异常状态：HTTP {response.status_code}"
+            body_preview = response.text.strip()
+            if body_preview:
+                self._append_log(task, f"响应内容：{body_preview[:240]}")
+            self._finish_task(task, "failed")
+            return task.to_result()
+
+        try:
+            payload = response.json()
+        except ValueError:
+            task.summary = "目标地址返回成功，但响应不是合法 JSON。"
+            body_preview = response.text.strip()
+            if body_preview:
+                self._append_log(task, f"响应内容：{body_preview[:240]}")
+            self._finish_task(task, "failed")
+            return task.to_result()
+
+        app_name = str(payload.get("app_name") or "")
+        environment = str(payload.get("environment") or "")
+        preferred_gateway_url = str(payload.get("preferred_gateway_base_url") or "")
+        preferred_lan_ip = str(payload.get("preferred_lan_ip") or "")
+        active_nodes = str(payload.get("active_nodes") or "0")
+        dispatch_mode = "开启" if bool(payload.get("dispatch_mode_enabled")) else "关闭"
+        task.metadata.update(
+            {
+                "app_name": app_name,
+                "environment": environment,
+                "preferred_gateway_base_url": preferred_gateway_url,
+                "preferred_lan_ip": preferred_lan_ip,
+                "active_nodes": active_nodes,
+            }
+        )
+        if app_name:
+            self._append_log(task, f"应用标识：{app_name}")
+        if environment:
+            self._append_log(task, f"运行环境：{environment}")
+        if preferred_lan_ip:
+            self._append_log(task, f"网关上报的局域网 IP：{preferred_lan_ip}")
+        if preferred_gateway_url:
+            self._append_log(task, f"网关上报的首选访问地址：{preferred_gateway_url}")
+        self._append_log(task, f"当前在线节点数：{active_nodes}")
+        self._append_log(task, f"分发模式：{dispatch_mode}")
+        task.summary = f"目标网关可达：{target}"
         self._finish_task(task, "succeeded")
         return task.to_result()
 
@@ -435,8 +515,9 @@ class SetupService:
             self._append_log(task, task.summary)
             self._finish_task(task, "failed")
             return
+        shell_executable, subprocess_env = self._resolve_install_shell()
         command = [
-            "powershell",
+            shell_executable,
             "-NoProfile",
             "-ExecutionPolicy",
             "Bypass",
@@ -454,23 +535,32 @@ class SetupService:
             config.dify_base_url,
             "-DifyApiKey",
             config.dify_api_key,
+            "-OpenAIBaseUrl",
+            config.openai_base_url,
+            "-OpenAIApiKey",
+            config.openai_api_key,
+            "-OpenAIModel",
+            config.openai_model,
+            "-OpenAIEnableThinking",
+            "true" if config.openai_enable_thinking else "false",
             "-MaxConcurrency",
             str(config.max_concurrency),
             "-InstallDir",
             config.install_dir,
             "-DiscoveryEnabled",
-            "$true" if config.discovery_enabled else "$false",
+            "true" if config.discovery_enabled else "false",
             "-DiscoveryPort",
             str(config.discovery_port),
         ]
         if config.bundle_path:
             command.extend(["-BundlePath", config.bundle_path])
-        self._append_log(task, "开始调用受控安装脚本。")
+        self._append_log(task, f"开始调用受控安装脚本（shell: {Path(shell_executable).name}）。")
         process = await asyncio.create_subprocess_exec(
             *command,
             stdout=PIPE,
             stderr=PIPE,
             cwd=str(self._repo_root),
+            env=subprocess_env,
         )
         await asyncio.gather(
             self._stream_process_output(task, process.stdout, prefix="stdout"),
@@ -493,6 +583,26 @@ class SetupService:
             task.summary = f"工作节点 {config.node_id} 安装失败，退出码 {process.returncode}。"
             self._finish_task(task, "failed")
 
+    def _resolve_install_shell(self) -> tuple[str, dict[str, str]]:
+        pwsh = shutil.which("pwsh")
+        if pwsh:
+            return pwsh, os.environ.copy()
+
+        powershell = shutil.which("powershell") or "powershell"
+        env = os.environ.copy()
+        module_paths = env.get("PSModulePath", "")
+        if module_paths:
+            windows_ps_paths = [
+                item
+                for item in module_paths.split(os.pathsep)
+                if item and "windowspowershell" in item.lower()
+            ]
+            if windows_ps_paths:
+                env["PSModulePath"] = os.pathsep.join(windows_ps_paths)
+            else:
+                env.pop("PSModulePath", None)
+        return powershell, env
+
     def _prepare_worker_install_config(
         self,
         config: WorkerNodeSetupConfig,
@@ -510,7 +620,7 @@ class SetupService:
             self._append_log(task, "未填写节点 token，已自动生成新的节点 token，并写入网关节点凭据。")
         self._settings.node_tokens[resolved_node_id] = resolved_token
         self._persist_node_tokens()
-        return config.model_copy(
+        normalized = config.model_copy(
             update={
                 "node_id": resolved_node_id,
                 "gateway_base_url": config.gateway_base_url.strip().rstrip("/"),
@@ -518,10 +628,48 @@ class SetupService:
                 "pairing_key": config.pairing_key.strip(),
                 "dify_base_url": config.dify_base_url.strip(),
                 "dify_api_key": config.dify_api_key.strip(),
+                "openai_base_url": config.openai_base_url.strip(),
+                "openai_api_key": config.openai_api_key.strip(),
+                "openai_model": config.openai_model.strip(),
                 "install_dir": config.install_dir.strip(),
                 "bundle_path": config.bundle_path.strip(),
             }
         )
+        return self._hydrate_worker_model_config(normalized, task)
+
+    def _hydrate_worker_model_config(
+        self,
+        config: WorkerNodeSetupConfig,
+        task: SetupTaskState,
+    ) -> WorkerNodeSetupConfig:
+        has_dify = bool(config.dify_base_url and config.dify_api_key)
+        has_openai = bool(config.openai_base_url and config.openai_api_key and config.openai_model)
+        if has_dify or has_openai:
+            if has_openai:
+                self._append_log(task, f"工作节点将使用 OpenAI 兼容模型：{config.openai_model}。")
+            return config
+
+        inherited_base_url = self._settings.builtin_model_base_url.strip()
+        inherited_api_key = self._settings.builtin_model_api_key.strip()
+        inherited_model = self._settings.builtin_model_name.strip()
+        if inherited_base_url and inherited_api_key and inherited_model:
+            self._append_log(
+                task,
+                f"工作节点未单独填写模型配置，自动沿用网关的 OpenAI 兼容模型：{inherited_model}。",
+            )
+            return config.model_copy(
+                update={
+                    "openai_base_url": inherited_base_url,
+                    "openai_api_key": inherited_api_key,
+                    "openai_model": inherited_model,
+                }
+            )
+
+        self._append_log(
+            task,
+            "当前工作节点尚未获得可用推理后端；将保持可发现状态，待补充 OpenAI 兼容模型或 Dify 配置后再参与处理。",
+        )
+        return config
 
     async def _stream_process_output(
         self,
@@ -653,45 +801,73 @@ class SetupService:
         self._finish_task(task, "failed")
         return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=returned_node_id)
 
-    async def _udp_broadcast_scan(self, timeout_ms: int) -> list[DiscoveredNodeRecord]:
+    async def _udp_broadcast_scan(
+        self,
+        task: SetupTaskState,
+        timeout_ms: int,
+    ) -> list[DiscoveredNodeRecord]:
         loop = asyncio.get_running_loop()
         results: dict[str, DiscoveredNodeRecord] = {}
+        ignored_packets = 0
+        invalid_packets = 0
+        receive_errors = 0
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             sock.bind(("0.0.0.0", 0))
             sock.setblocking(False)
+            bind_host, bind_port = sock.getsockname()
+            self._append_log(task, f"扫描 Socket 已绑定到 {bind_host}:{bind_port}。")
             request_id = uuid4().hex
             payload = json.dumps({"type": "discover", "request_id": request_id}).encode("utf-8")
             broadcast_targets = directed_broadcast_targets()
             if not broadcast_targets:
+                self._append_log(task, "未识别到定向广播地址，回退到 255.255.255.255。")
                 broadcast_targets = ["255.255.255.255"]
+            else:
+                self._append_log(task, f"定向广播目标：{', '.join(broadcast_targets)}。")
+            sent_count = 0
             for target in broadcast_targets:
                 try:
                     await loop.sock_sendto(sock, payload, (target, self._settings.discovery_port))
-                except Exception:
+                    sent_count += 1
+                    self._append_log(task, f"已发送发现包到 {target}:{self._settings.discovery_port}。")
+                except Exception as exc:
+                    self._append_log(task, f"发送到 {target}:{self._settings.discovery_port} 失败：{exc}")
                     continue
+            if sent_count == 0:
+                self._append_log(task, "所有广播发送均失败，本次扫描大概率无法收到任何响应。")
             deadline = loop.time() + timeout_ms / 1000
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
+                    self._append_log(task, "扫描窗口结束，停止等待 UDP 响应。")
                     break
                 try:
                     data, addr = await asyncio.wait_for(loop.sock_recvfrom(sock, 8192), timeout=remaining)
                 except TimeoutError:
+                    self._append_log(task, "在等待窗口内未再收到新的 UDP 响应。")
                     break
-                except Exception:
+                except Exception as exc:
+                    receive_errors += 1
+                    if receive_errors <= 3:
+                        self._append_log(task, f"接收 UDP 响应失败：{exc}")
                     continue
                 try:
                     raw = json.loads(data.decode("utf-8"))
                 except Exception:
+                    invalid_packets += 1
                     continue
-                if raw.get("type") != "discover_response" or raw.get("request_id") != request_id:
+                if raw.get("type") != "discover_response":
+                    ignored_packets += 1
+                    continue
+                if raw.get("request_id") != request_id:
+                    ignored_packets += 1
                     continue
                 lan_ip = raw.get("lan_ip") or addr[0]
                 pairing_port = int(raw.get("pairing_port") or (self._settings.discovery_port + 1))
                 discovery_id = f"{lan_ip}:{pairing_port}:{raw.get('node_id') or raw.get('hostname') or 'node'}"
-                results[discovery_id] = DiscoveredNodeRecord(
+                discovered = DiscoveredNodeRecord(
                     discovery_id=discovery_id,
                     node_id=raw.get("node_id") or None,
                     pairing_label=raw.get("pairing_label") or None,
@@ -706,6 +882,25 @@ class SetupService:
                     pairing_port=pairing_port,
                     last_seen_at=utcnow(),
                 )
+                results[discovery_id] = discovered
+                self._append_log(
+                    task,
+                    "收到节点响应："
+                    f"{discovered.pairing_label or discovered.hostname} "
+                    f"({lan_ip}:{pairing_port})，"
+                    f"node_id={discovered.node_id or '未分配'}，"
+                    f"already_paired={'yes' if discovered.already_paired else 'no'}。",
+                )
+            if invalid_packets:
+                self._append_log(task, f"扫描期间忽略了 {invalid_packets} 个无法解析的 UDP 数据包。")
+            if ignored_packets:
+                self._append_log(task, f"扫描期间忽略了 {ignored_packets} 个非本次扫描的 UDP 响应。")
+            if not results:
+                self._append_log(task, "本次未收到任何工作节点响应。")
+                self._append_log(task, "可优先检查：目标机器上的 claw-node 是否正在运行。")
+                self._append_log(task, "可优先检查：目标机器是否启用了局域网发现响应（discovery_enabled）。")
+                self._append_log(task, "可优先检查：Windows 防火墙或安全软件是否拦截了 UDP 广播/9531 端口。")
+                self._append_log(task, "可优先检查：网关与节点是否处于同一广播域或同一子网。")
         finally:
             sock.close()
         return sorted(results.values(), key=lambda item: (item.already_paired, item.hostname.lower()))
