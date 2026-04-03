@@ -13,6 +13,7 @@ from app.models.setup import (
     GatewayConsoleSetupRequest,
     GatewaySetupSaveRequest,
     GatewaySetupSaveResponse,
+    ManualPairRequest,
     NodeInstallRequest,
     SetupProfileResponse,
     SetupTaskEnvelope,
@@ -95,6 +96,14 @@ async def pair_discovered_node(
     setup_service: SetupService = Depends(get_setup_service),
 ) -> DiscoveryPairResponse:
     return await setup_service.pair_discovered_node(payload)
+
+
+@router.post("/manual-pair", response_model=DiscoveryPairResponse)
+async def manual_pair_node(
+    payload: ManualPairRequest,
+    setup_service: SetupService = Depends(get_setup_service),
+) -> DiscoveryPairResponse:
+    return await setup_service.manual_pair_node(payload)
 
 
 @router.get("/tasks/{task_id}", response_model=SetupTaskEnvelope)

@@ -21,6 +21,7 @@ from launcher.models import (
     StartRequest,
     StopRequest,
 )
+from launcher.environment import detect_environment
 from launcher.process_manager import ProcessManager
 from launcher.profile_store import build_layout, default_state_path, ensure_layout, load_profile, redis_state, save_profile
 from launcher.redis_runtime import ensure_redis_binary
@@ -54,6 +55,7 @@ def create_app(*, open_browser: bool = False) -> FastAPI:
             layout=layout,
             host_redis=host_state,
             node_cache_redis=node_state,
+            environment=detect_environment(app.state.repo_root),
             components=app.state.manager.statuses(),
         )
 

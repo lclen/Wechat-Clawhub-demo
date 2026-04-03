@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from app.utils.network import is_preferred_lan_ip
+from app.utils.network import IPv4InterfaceRecord, directed_broadcast_targets, is_preferred_lan_ip
 
 
 class NetworkUtilsTests(unittest.TestCase):
@@ -15,6 +16,18 @@ class NetworkUtilsTests(unittest.TestCase):
         self.assertFalse(is_preferred_lan_ip("198.18.0.1"))
         self.assertFalse(is_preferred_lan_ip("127.0.0.1"))
         self.assertFalse(is_preferred_lan_ip("169.254.10.3"))
+
+    @patch("app.utils.network.list_ipv4_interfaces")
+    def test_directed_broadcast_targets_uses_rfc1918_interfaces(self, mock_list_interfaces) -> None:
+        mock_list_interfaces.return_value = [
+            IPv4InterfaceRecord(address="192.168.0.17", prefix_length=24),
+            IPv4InterfaceRecord(address="192.168.2.17", prefix_length=24),
+            IPv4InterfaceRecord(address="192.168.0.17", prefix_length=24),
+        ]
+
+        targets = directed_broadcast_targets()
+
+        self.assertEqual(targets, ["192.168.0.255", "192.168.2.255"])
 
 
 if __name__ == "__main__":

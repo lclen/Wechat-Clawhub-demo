@@ -6,9 +6,40 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
+
 from app.core.config import Settings
 from app.models.setup import ConsoleSetupConfig, GatewaySetupConfig, WorkerNodeSetupConfig
 from app.services.setup_service import SetupService
+
+
+class FakeResponse:
+    def __init__(self, status_code: int, payload: dict[str, object]) -> None:
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class FakeAsyncClient:
+    def __init__(self, response: FakeResponse | Exception) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> "FakeAsyncClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+    async def post(self, url: str, json: dict[str, object]) -> FakeResponse:
+        if isinstance(self._response, Exception):
+            raise self._response
+        return self._response
 
 
 def build_gateway_config() -> GatewaySetupConfig:
@@ -250,6 +281,101 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(config.node_token, "existing-node-token")
         self.assertTrue(any("沿用网关当前已保存的节点 token" in line for line in task.logs))
+
+    async def test_manual_pair_node_success_persists_gateway_token(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
+            FakeResponse(200, {"pairing_status": "paired", "node_id": "node-remote"})
+        )
+        try:
+            result = await self.service.manual_pair_node(
+                SimpleNamespace(
+                    host="192.168.0.23",
+                    pairing_port=9532,
+                    pairing_key="pairing-secret",
+                    gateway_base_url="http://192.168.0.17:8300",
+                    node_id="node-remote",
+                )
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(result.pairing_status, "paired")
+        self.assertEqual(result.node_id, "node-remote")
+        self.assertIn("node-remote", self.settings.node_tokens)
+        self.assertEqual(result.task.status, "succeeded")
+
+    async def test_manual_pair_node_returns_auth_failed(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
+            FakeResponse(401, {"pairing_status": "auth_failed"})
+        )
+        try:
+            result = await self.service.manual_pair_node(
+                SimpleNamespace(
+                    host="192.168.0.23",
+                    pairing_port=9532,
+                    pairing_key="bad-secret",
+                    gateway_base_url="http://192.168.0.17:8300",
+                    node_id=None,
+                )
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(result.pairing_status, "auth_failed")
+        self.assertEqual(result.task.status, "failed")
+
+    async def test_manual_pair_node_returns_offline_when_request_fails(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
+            httpx.ConnectError("connection refused")
+        )
+        try:
+            result = await self.service.manual_pair_node(
+                SimpleNamespace(
+                    host="192.168.0.23",
+                    pairing_port=9532,
+                    pairing_key="pairing-secret",
+                    gateway_base_url="http://192.168.0.17:8300",
+                    node_id=None,
+                )
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(result.pairing_status, "offline")
+        self.assertEqual(result.task.status, "failed")
+
+    async def test_manual_pair_node_handles_non_401_http_error_without_throwing(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
+            FakeResponse(502, {"detail": "bad gateway"})
+        )
+        try:
+            result = await self.service.manual_pair_node(
+                SimpleNamespace(
+                    host="192.168.0.23",
+                    pairing_port=9532,
+                    pairing_key="pairing-secret",
+                    gateway_base_url="http://192.168.0.17:8300",
+                    node_id=None,
+                )
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(result.pairing_status, "offline")
+        self.assertEqual(result.task.status, "failed")
+        self.assertIn("HTTP 502", result.task.summary)
 
 
 if __name__ == "__main__":

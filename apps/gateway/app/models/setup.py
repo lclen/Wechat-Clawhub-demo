@@ -51,6 +51,7 @@ class SetupTaskResult(BaseModel):
         "console_connect",
         "discovery_scan",
         "discovery_pair",
+        "manual_pair",
     ]
     status: SetupTaskStatus
     title: str
@@ -141,6 +142,14 @@ class DiscoveryPairRequest(BaseModel):
 class DiscoveryPairResponse(BaseModel):
     task: SetupTaskResult
     pairing_status: PairingStatus
+    node_id: str | None = None
+
+
+class ManualPairRequest(BaseModel):
+    host: str = Field(min_length=1)
+    pairing_port: int = Field(default=9532, ge=1024, le=65535)
+    pairing_key: str = Field(min_length=1)
+    gateway_base_url: str = Field(min_length=1)
     node_id: str | None = None
 
 

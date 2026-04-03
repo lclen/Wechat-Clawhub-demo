@@ -269,6 +269,39 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   gap: 12px;
   align-items: center;
 }
+.pairing-debug-list {
+  display: grid;
+  gap: 12px;
+}
+.pairing-debug-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+.pairing-debug-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.pairing-debug-summary {
+  margin-top: 12px;
+  color: #30405a;
+  line-height: 1.6;
+}
+.pairing-debug-log {
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(243, 246, 252, 0.92);
+  color: #34435d;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.65;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+}
 
 .surface {
   border-radius: 24px;

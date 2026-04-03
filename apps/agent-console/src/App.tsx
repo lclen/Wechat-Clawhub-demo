@@ -25,7 +25,7 @@ type WorkerNodeSetupConfig = { node_id: string; gateway_base_url: string; node_t
 type ConsoleSetupConfig = { gateway_base_url: string };
 type PairingStatus = "pending" | "paired" | "auth_failed" | "already_paired" | "offline";
 type DiscoveredNodeRecord = { discovery_id: string; node_id: string | null; pairing_label: string | null; hostname: string; lan_ip: string | null; platform: string | null; node_version: string | null; capabilities: string[]; advertised_address: string | null; pairing_required: boolean; already_paired: boolean; pairing_port: number; last_seen_at: string };
-type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "discovery_scan" | "discovery_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
+type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "discovery_scan" | "discovery_pair" | "manual_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
 type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; preferred_gateway_base_url: string; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
 type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boolean; applied_runtime: string[] };
 type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_base_url?: string };
@@ -33,6 +33,7 @@ type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: Consol
 type SetupTaskEnvelope = { task: SetupTaskResult };
 type DiscoveryScanResponse = { task: SetupTaskResult; nodes: DiscoveredNodeRecord[] };
 type DiscoveryPairResponse = { task: SetupTaskResult; pairing_status: PairingStatus; node_id: string | null };
+type ManualPairRequest = { host: string; pairing_port: number; pairing_key: string; gateway_base_url: string; node_id?: string };
 type LauncherState = "stopped" | "starting" | "running" | "degraded" | "failed";
 type LauncherRedisSource = "github" | "mirror";
 type LauncherNodeCachePolicy = "disabled" | "optional" | "enabled";
@@ -40,13 +41,26 @@ type LauncherComponentStatus = { name: string; state: LauncherState; pid: number
 type LauncherProfile = { workdir: string; gateway_port: number; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
 type LauncherWorkdirLayout = { root: string; host_redis_dir: string; transcript_dir: string; identity_dir: string; memory_dir: string; log_dir: string; runtime_dir: string; config_dir: string; node_cache_dir: string };
 type LauncherRedisInstallState = { installed: boolean; source: LauncherRedisSource; archive_path: string; executable_path: string; version: string; detail: string };
-type LauncherStatusResponse = { profile: LauncherProfile; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; components: LauncherComponentStatus[] };
+type LauncherEnvironmentCheck = { name: string; ready: boolean; detail: string };
+type LauncherEnvironmentStatus = { ready: boolean; python_version: string; checks: LauncherEnvironmentCheck[] };
+type LauncherStatusResponse = { profile: LauncherProfile; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[] };
 type LauncherLogResponse = { component: string; log_path: string | null; content: string };
 type SelectWorkdirResponse = { profile: LauncherProfile; layout: LauncherWorkdirLayout };
 type WorkspaceTab = "quick_setup" | "sessions" | "connection";
 type SessionFilter = "all" | "processing" | "human" | "recent";
 type SetupMode = "status" | "role" | "config" | "preview" | "result";
 type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cache-redis";
+type ManualPairDraft = { host: string; pairing_port: number; pairing_key: string; node_id: string };
+type PairingDebugEntry = {
+  id: string;
+  kind: "discovery_scan" | "discovery_pair" | "manual_pair" | "client_error";
+  title: string;
+  status: SetupTaskStatus | "failed";
+  summary: string;
+  logs: string[];
+  target: string;
+  updated_at: string;
+};
 
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
@@ -89,6 +103,12 @@ const DEFAULT_WORKER_SETUP: WorkerNodeSetupConfig = {
 const DEFAULT_CONSOLE_SETUP: ConsoleSetupConfig = {
   gateway_base_url: "",
 };
+const DEFAULT_MANUAL_PAIR: ManualPairDraft = {
+  host: "",
+  pairing_port: 9532,
+  pairing_key: "",
+  node_id: "",
+};
 
 const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope OpenAI Compatible（默认 qwen3.5-plus）";
 const GATEWAY_NODE_TOKEN_LOCATION = "apps/gateway/.env → WCH_NODE_TOKENS";
@@ -130,6 +150,8 @@ export function App() {
   const [discoveredNodes, setDiscoveredNodes] = useState<DiscoveredNodeRecord[]>([]);
   const [pairingSecrets, setPairingSecrets] = useState<Record<string, string>>({});
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, PairingStatus>>({});
+  const [manualPair, setManualPair] = useState<ManualPairDraft>(DEFAULT_MANUAL_PAIR);
+  const [pairingDebugEntries, setPairingDebugEntries] = useState<PairingDebugEntry[]>([]);
   const [reconfigureConfirmOpen, setReconfigureConfirmOpen] = useState(false);
   const [launcherStatus, setLauncherStatus] = useState<LauncherStatusResponse | null>(null);
   const [launcherAvailable, setLauncherAvailable] = useState(false);
@@ -192,6 +214,11 @@ export function App() {
       }),
     );
   }, [setupRole, gatewaySetup, workerSetup, consoleSetup]);
+
+  useEffect(() => {
+    if (!workerSetup.pairing_key.trim()) return;
+    setManualPair((current) => (current.pairing_key.trim() ? current : { ...current, pairing_key: workerSetup.pairing_key.trim() }));
+  }, [workerSetup.pairing_key]);
 
   useEffect(() => {
     let cancelled = false;
@@ -431,8 +458,40 @@ export function App() {
     };
   }, [setupRole, setupTask]);
 
+  useEffect(() => {
+    if (!setupTask || !isPairingTaskKind(setupTask.kind)) return;
+    pushPairingDebugEntry({
+      id: setupTask.task_id,
+      kind: setupTask.kind,
+      title: setupTask.title,
+      status: setupTask.status,
+      summary: setupTask.summary,
+      logs: setupTask.logs,
+      target: setupTask.metadata.lan_ip || setupTask.metadata.host || setupTask.metadata.node_id || "局域网配对",
+      updated_at: setupTask.updated_at,
+    });
+  }, [setupTask]);
+
   async function withBusy<T>(name: string, fn: () => Promise<T>) { setBusy(name); try { return await fn(); } finally { setBusy(null); } }
   async function runModelCheck() { try { const result = await withBusy("model-check", () => requestJson<ModelCheck>("/api/models/builtin/check", { method: "POST" })); setModelCheck(result); setNotice(result.configured_model_available ? `内置模型 ${result.configured_model} 可用。` : `内置模型 ${result.configured_model} 未出现在模型列表中，请检查配置。`); } catch (error) { setNotice(`模型检测失败：${(error as Error).message}`); } }
+  function pushPairingDebugEntry(entry: PairingDebugEntry) {
+    setPairingDebugEntries((current) => {
+      const next = [entry, ...current.filter((item) => item.id !== entry.id)];
+      return next.slice(0, 12);
+    });
+  }
+  function appendPairingClientError(title: string, target: string, error: Error) {
+    pushPairingDebugEntry({
+      id: `client-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      kind: "client_error",
+      title,
+      status: "failed",
+      summary: error.message,
+      logs: [`前端请求失败：${error.message}`],
+      target,
+      updated_at: new Date().toISOString(),
+    });
+  }
   async function startQrFlow() { try { const result = await withBusy("wechat-qr", () => requestJson<QrStart>("/api/wechat/onboard/start", { method: "POST" })); setQr(result); setPollState({ status: "wait" }); setNotice("二维码已生成。请扫码并轮询状态。"); } catch (error) { setNotice(`获取二维码失败：${(error as Error).message}`); } }
   async function pollQrStatus() {
     if (!qr?.qrcode) return setNotice("请先生成二维码。");
@@ -539,6 +598,7 @@ export function App() {
     setDiscoveredNodes([]);
     setPairingSecrets({});
     setPairingStatuses({});
+    setManualPair((current) => ({ ...DEFAULT_MANUAL_PAIR, pairing_key: current.pairing_key || workerSetup.pairing_key || "" }));
     setSetupTask(null);
     setNotice("已重置当前填写内容。");
   }
@@ -677,6 +737,16 @@ export function App() {
   }
   async function scanLanNodes() {
     try {
+      pushPairingDebugEntry({
+        id: `scan-${Date.now()}`,
+        kind: "discovery_scan",
+        title: "扫描局域网节点",
+        status: "running",
+        summary: "正在发送广播并等待节点响应。",
+        logs: [`开始扫描，回连网关地址：${currentGatewayBaseUrl}`],
+        target: "局域网广播",
+        updated_at: new Date().toISOString(),
+      });
       const result = await withBusy(
         "setup-discovery-scan",
         () => requestJson<DiscoveryScanResponse>("/api/setup/discovery/scan", { method: "POST", body: JSON.stringify({ timeout_ms: 1500 }) }),
@@ -693,6 +763,7 @@ export function App() {
       });
       setNotice(result.task.summary || `已发现 ${result.nodes.length} 台局域网候选机器。`);
     } catch (error) {
+      appendPairingClientError("扫描局域网节点", "局域网广播", error as Error);
       setNotice(`搜索局域网节点失败：${(error as Error).message}`);
     }
   }
@@ -830,7 +901,22 @@ export function App() {
   async function pairLanNode(discovered: DiscoveredNodeRecord) {
     const pairingKey = pairingSecrets[discovered.discovery_id]?.trim();
     if (!pairingKey) return setNotice(`请先为 ${discovered.pairing_label || discovered.hostname} 输入配对密钥。`);
+    const target = `${discovered.lan_ip || discovered.hostname}:${discovered.pairing_port}`;
     setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: "pending" }));
+    pushPairingDebugEntry({
+      id: `pair-${discovered.discovery_id}-${Date.now()}`,
+      kind: "discovery_pair",
+      title: "扫描结果配对",
+      status: "running",
+      summary: `准备连接 ${target}`,
+      logs: [
+        `目标节点：${discovered.pairing_label || discovered.hostname}`,
+        `目标地址：${target}`,
+        `网关回连地址：${currentGatewayBaseUrl}`,
+      ],
+      target,
+      updated_at: new Date().toISOString(),
+    });
     try {
       const result = await withBusy(
         "setup-discovery-pair",
@@ -851,7 +937,54 @@ export function App() {
       syncNodes(refreshedNodes.nodes, setNodes, setSelectedNodeId);
     } catch (error) {
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: "offline" }));
+      appendPairingClientError("扫描结果配对", target, error as Error);
       setNotice(`配对节点失败：${(error as Error).message}`);
+    }
+  }
+  async function manualPairNode() {
+    const payload: ManualPairRequest = {
+      host: manualPair.host.trim(),
+      pairing_port: manualPair.pairing_port || 9532,
+      pairing_key: manualPair.pairing_key.trim(),
+      gateway_base_url: currentGatewayBaseUrl,
+      node_id: manualPair.node_id.trim() || undefined,
+    };
+    if (!payload.host) return setNotice("请先填写目标节点的 IP 或主机名。");
+    if (!payload.pairing_key) return setNotice("请先填写目标节点的配对密钥。");
+    const target = `${payload.host}:${payload.pairing_port}`;
+    pushPairingDebugEntry({
+      id: `manual-${target}-${Date.now()}`,
+      kind: "manual_pair",
+      title: "按地址配对",
+      status: "running",
+      summary: `准备直连 ${target}`,
+      logs: [
+        `目标地址：${target}`,
+        `网关回连地址：${currentGatewayBaseUrl}`,
+        `指定节点 ID：${payload.node_id || "未指定"}`,
+      ],
+      target,
+      updated_at: new Date().toISOString(),
+    });
+    try {
+      const result = await withBusy(
+        "setup-manual-pair",
+        () => requestJson<DiscoveryPairResponse>("/api/setup/manual-pair", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      );
+      setSetupTask(result.task);
+      setNotice(result.task.summary || `节点 ${payload.host} 配对结果：${result.pairing_status}`);
+      setManualPair((current) => ({
+        ...current,
+        node_id: result.node_id || current.node_id,
+      }));
+      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
+      syncNodes(refreshedNodes.nodes, setNodes, setSelectedNodeId);
+    } catch (error) {
+      appendPairingClientError("按地址配对", target, error as Error);
+      setNotice(`按地址配对失败：${(error as Error).message}`);
     }
   }
   function submitSetupRole() {
@@ -899,6 +1032,9 @@ export function App() {
   }
   function updateConsoleSetup<K extends keyof ConsoleSetupConfig>(key: K, value: ConsoleSetupConfig[K]) {
     setConsoleSetup((current) => ({ ...current, [key]: value }));
+  }
+  function updateManualPair<K extends keyof ManualPairDraft>(key: K, value: ManualPairDraft[K]) {
+    setManualPair((current) => ({ ...current, [key]: value }));
   }
   function applyPreferredGatewayBaseUrlToWorker() {
     const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(setupProfile, systemStatus);
@@ -984,6 +1120,13 @@ export function App() {
     { label: "网关侧查看位置", value: GATEWAY_NODE_TOKEN_LOCATION },
     { label: "节点侧查看位置", value: workerEnvLocations(workerSetup.install_dir) },
   ]), [setupCompletedRoles, workerSetup.install_dir, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
+  const installProgressSummary = useMemo(() => {
+    if (!setupTask || setupTask.kind !== "node_install") return "";
+    if (setupTask.status === "running") return "正在安装工作节点，日志会持续刷新。";
+    if (setupTask.status === "succeeded") return "工作节点安装完成。";
+    if (setupTask.status === "failed") return "工作节点安装失败，请根据日志排查。";
+    return "工作节点安装任务已创建。";
+  }, [setupTask]);
   const currentGatewayBaseUrl = consoleSetup.gateway_base_url || window.location.origin;
 
   return (
@@ -1057,6 +1200,18 @@ export function App() {
                       <InfoRow label="节点缓存策略" value={launcherStatus?.profile.node_cache_policy === "disabled" ? "关闭" : "已启用可选节点缓存 Redis"} />
                       <InfoRow label="分发模式" value={gatewaySetup.dispatch_mode_enabled ? "已开启（主机只分发）" : "已关闭（本机节点可处理）"} />
                     </div>
+                    <section className="surface surface-subsection">
+                      <div className="section-head">
+                        <div><div className="section-kicker">环境检测</div><h3>初始化前先检查运行环境，防止重复安装</h3></div>
+                      </div>
+                      <div className="info-stack">
+                        <InfoRow label="整体状态" value={launcherStatus?.environment.ready ? "已具备安装条件" : "存在缺失项"} />
+                        <InfoRow label="Python 版本" value={launcherStatus?.environment.python_version || "未检测到"} />
+                        {(launcherStatus?.environment.checks || []).map((item) => (
+                          <InfoRow key={item.name} label={launcherEnvironmentLabel(item.name)} value={`${item.ready ? "已就绪" : "缺失"} · ${item.detail}`} multiline />
+                        ))}
+                      </div>
+                    </section>
                     <div className="inline-actions quick-setup-actions">
                       <button type="button" onClick={() => installLauncherRedis("host", launcherStatus?.profile.redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-host" ? "下载中..." : "安装主机 Redis"}</button>
                       <button type="button" className="ghost-button" onClick={() => startLauncherStack({ enableLocalNode: !(launcherStatus?.profile.enable_local_node ?? true) })} disabled={busy !== null}>{launcherStatus?.profile.enable_local_node ? "关闭本机 Claw 节点" : "启用本机 Claw 节点"}</button>
@@ -1264,6 +1419,7 @@ export function App() {
                       ) : (
                         <div className="snippet-stack">
                           <SnippetBlock label="执行摘要" content={setupTask?.summary || "任务尚未启动。"} />
+                          {setupTask?.kind === "node_install" ? <SnippetBlock label="安装进度" content={installProgressSummary} /> : null}
                           <SnippetBlock label="最新日志" content={setupTask?.logs?.length ? setupTask.logs.join("\n") : "等待日志输出…"} />
                         </div>
                       )}
@@ -1408,6 +1564,23 @@ export function App() {
               <div className="connection-action-column">
                 <section className="surface">
                   <div className="section-head">
+                    <div><div className="section-kicker">直连配对</div><h3>按地址直接纳管工作节点</h3></div>
+                  </div>
+                  <div className="inline-tip">
+                    如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
+                  </div>
+                  <div className="form-grid">
+                    <label><span>目标 IP / 主机名</span><input value={manualPair.host} onChange={(event) => updateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
+                    <label><span>配对端口</span><input type="number" value={manualPair.pairing_port} onChange={(event) => updateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
+                    <label><span>配对密钥</span><input type="password" value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
+                    <label><span>指定节点 ID（可选）</span><input value={manualPair.node_id} onChange={(event) => updateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
+                  </div>
+                  <div className="inline-actions">
+                    <button type="button" onClick={() => void manualPairNode()} disabled={busy !== null}>{busy === "setup-manual-pair" ? "连接中..." : "按地址配对"}</button>
+                  </div>
+                </section>
+                <section className="surface">
+                  <div className="section-head">
                     <div><div className="section-kicker">节点配对</div><h3>扫描并纳管局域网工作节点</h3></div>
                     <button type="button" onClick={scanLanNodes} disabled={busy !== null}>{busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}</button>
                   </div>
@@ -1436,6 +1609,32 @@ export function App() {
                             <button type="button" onClick={() => pairLanNode(item)} disabled={busy !== null}>{busy === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}</button>
                           </div>
                         </div>
+                      ))}
+                    </div>
+                  )}
+                </section>
+                <section className="surface">
+                  <div className="section-head">
+                    <div><div className="section-kicker">调试日志</div><h3>配对过程与问题定位</h3></div>
+                    <div className="inline-actions">
+                      <span className="small-note">保留最近 12 条扫描/配对记录</span>
+                      <button type="button" className="ghost-button" onClick={() => setPairingDebugEntries([])} disabled={!pairingDebugEntries.length}>清空日志</button>
+                    </div>
+                  </div>
+                  {!pairingDebugEntries.length ? <div className="empty-state">这里会显示扫描、直连配对、失败原因和返回日志，方便快速定位问题。</div> : (
+                    <div className="pairing-debug-list">
+                      {pairingDebugEntries.map((entry) => (
+                        <article key={entry.id} className="pairing-debug-card">
+                          <div className="pairing-debug-top">
+                            <div>
+                              <div className="node-card-title">{entry.title}</div>
+                              <div className="node-card-subtitle">{entry.target} · {formatTimeLabel(entry.updated_at, true)}</div>
+                            </div>
+                            <span className={`session-badge session-badge-${entry.status === "succeeded" ? "human" : entry.status === "running" || entry.status === "pending" ? "typing" : "queued"}`}>{pairingDebugStatusLabel(entry.status)}</span>
+                          </div>
+                          <div className="pairing-debug-summary">{entry.summary || "等待更多日志..."}</div>
+                          <pre className="pairing-debug-log">{entry.logs.length ? entry.logs.join("\n") : "暂无详细日志"}</pre>
+                        </article>
                       ))}
                     </div>
                   )}
@@ -1599,6 +1798,9 @@ function roleName(role: SetupRole) {
   if (role === "worker_node") return "工作节点";
   return "控制台";
 }
+function isPairingTaskKind(kind: SetupTaskResult["kind"]) {
+  return kind === "discovery_scan" || kind === "discovery_pair" || kind === "manual_pair";
+}
 function roleDescription(role: SetupRole) {
   if (role === "gateway_host") return "保存网关基础配置，并主动搜索局域网里已经运行的可配对节点。";
   if (role === "gateway_host_console") return "一次完成网关配置保存与控制台目标校验，适合本机同时承担主网关和运维控制台。";
@@ -1660,6 +1862,10 @@ function previewOutcome(role: SetupRole) {
   return "成功后会记录控制台默认网关地址，并可继续进入接入中心或会话观察台。";
 }
 function pairingStatusLabel(status: PairingStatus) { return status === "paired" ? "已配对" : status === "auth_failed" ? "密钥错误" : status === "already_paired" ? "已纳管" : status === "offline" ? "离线" : "待连接"; }
+function pairingDebugStatusLabel(status: PairingDebugEntry["status"]) { return status === "succeeded" ? "成功" : status === "running" ? "进行中" : status === "pending" ? "等待中" : "失败"; }
+function launcherEnvironmentLabel(name: string) {
+  return name === "python" ? "Python 运行时" : name === "node_install_script" ? "节点安装脚本" : name === "node_bundle" ? "节点 bundle" : name === "winsw" ? "Windows 服务包装器" : name;
+}
 function launcherComponentName(name: string) { return name === "host-redis" ? "主机 Redis" : name === "node-cache-redis" ? "节点缓存 Redis" : name === "gateway" ? "主网关" : name === "local-node" ? "本机 Claw 节点" : name === "console" ? "控制台" : name === "launcher" ? "桌面启动器" : name; }
 function launcherStateLabel(state: LauncherState) { return state === "running" ? "运行中" : state === "starting" ? "启动中" : state === "degraded" ? "降级" : state === "failed" ? "失败" : "已停止"; }
 function launcherBadgeTone(state: LauncherState) { return state === "running" ? "human" : state === "starting" ? "typing" : state === "degraded" ? "queued" : state === "failed" ? "queued" : "idle"; }

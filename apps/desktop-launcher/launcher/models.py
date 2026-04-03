@@ -55,6 +55,18 @@ class LauncherRedisInstallState(BaseModel):
     detail: str = ""
 
 
+class LauncherEnvironmentCheck(BaseModel):
+    name: str
+    ready: bool
+    detail: str = ""
+
+
+class LauncherEnvironmentStatus(BaseModel):
+    ready: bool = False
+    python_version: str = ""
+    checks: list[LauncherEnvironmentCheck] = Field(default_factory=list)
+
+
 class LauncherProfile(BaseModel):
     workdir: str = ""
     gateway_port: int = 8300
@@ -74,6 +86,7 @@ class LauncherStatusResponse(BaseModel):
     layout: LauncherWorkdirLayout
     host_redis: LauncherRedisInstallState
     node_cache_redis: LauncherRedisInstallState
+    environment: LauncherEnvironmentStatus
     components: list[LauncherComponentStatus] = Field(default_factory=list)
 
 

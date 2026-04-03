@@ -20,6 +20,7 @@ from app.models.setup import (
     DiscoveryPairRequest,
     DiscoveryPairResponse,
     DiscoveryScanResponse,
+    ManualPairRequest,
     GatewaySetupConfig,
     PairingStatus,
     SetupProfileResponse,
@@ -28,7 +29,7 @@ from app.models.setup import (
     WorkerNodeSetupConfig,
     utcnow,
 )
-from app.utils.network import preferred_gateway_base_url
+from app.utils.network import directed_broadcast_targets, preferred_gateway_base_url
 
 
 @dataclass
@@ -197,54 +198,30 @@ class SetupService:
             self._append_log(task, task.summary)
             self._finish_task(task, "failed")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline")
+        return await self._pair_node(
+            task=task,
+            host=discovered.lan_ip,
+            pairing_port=discovered.pairing_port,
+            pairing_key=payload.pairing_key,
+            gateway_base_url=payload.gateway_base_url,
+            node_id=payload.node_id or discovered.node_id,
+            discovered=discovered,
+            suggested_label=discovered.pairing_label or discovered.hostname,
+        )
 
-        resolved_node_id = payload.node_id or discovered.node_id or self._suggest_node_id(discovered)
-        node_token = self._settings.node_tokens.get(resolved_node_id) or f"node-{uuid4().hex}"
-        pair_url = f"http://{discovered.lan_ip}:{discovered.pairing_port}/pair"
-        self._append_log(task, f"开始请求 {pair_url}。")
-        try:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                response = await client.post(
-                    pair_url,
-                    json={
-                        "pairing_key": payload.pairing_key,
-                        "gateway_base_url": payload.gateway_base_url,
-                        "node_id": resolved_node_id,
-                        "node_token": node_token,
-                    },
-                )
-        except Exception as exc:
-            task.summary = f"连接目标节点失败：{exc}"
-            self._append_log(task, task.summary)
-            self._finish_task(task, "failed")
-            return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
-
-        if response.status_code == 401:
-            task.summary = "配对密钥错误，目标节点拒绝连接。"
-            self._append_log(task, task.summary)
-            self._finish_task(task, "failed")
-            return DiscoveryPairResponse(task=task.to_result(), pairing_status="auth_failed", node_id=resolved_node_id)
-        response.raise_for_status()
-        data = response.json()
-        pairing_status = data.get("pairing_status", "paired")
-        if pairing_status in {"paired", "already_paired"}:
-            self._settings.node_tokens[resolved_node_id] = node_token
-            self._persist_node_tokens()
-            updated = discovered.model_copy(update={"node_id": resolved_node_id, "already_paired": True, "last_seen_at": utcnow()})
-            self._discovered_nodes[updated.discovery_id] = updated
-            task.metadata = {
-                "node_id": resolved_node_id,
-                "lan_ip": discovered.lan_ip,
-                "pairing_port": str(discovered.pairing_port),
-            }
-            task.summary = "节点配对成功，已下发正式 node token。"
-            self._append_log(task, task.summary)
-            self._finish_task(task, "succeeded")
-            return DiscoveryPairResponse(task=task.to_result(), pairing_status=pairing_status, node_id=resolved_node_id)  # type: ignore[arg-type]
-        task.summary = f"节点返回未识别的配对状态：{pairing_status}"
-        self._append_log(task, task.summary)
-        self._finish_task(task, "failed")
-        return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
+    async def manual_pair_node(self, payload: ManualPairRequest) -> DiscoveryPairResponse:
+        task = self._create_task("manual_pair", "按地址配对工作节点")
+        task.status = "running"
+        host = payload.host.strip()
+        return await self._pair_node(
+            task=task,
+            host=host,
+            pairing_port=payload.pairing_port,
+            pairing_key=payload.pairing_key,
+            gateway_base_url=payload.gateway_base_url,
+            node_id=payload.node_id,
+            suggested_label=host,
+        )
 
     async def connect_console(self, config: ConsoleSetupConfig) -> SetupTaskResult:
         task = self._create_task("console_connect", "校验控制台目标网关")
@@ -495,11 +472,11 @@ class SetupService:
             stderr=PIPE,
             cwd=str(self._repo_root),
         )
-        stdout, stderr = await process.communicate()
-        for chunk in (stdout.decode("utf-8", errors="ignore"), stderr.decode("utf-8", errors="ignore")):
-            for line in chunk.splitlines():
-                if line.strip():
-                    self._append_log(task, line.strip())
+        await asyncio.gather(
+            self._stream_process_output(task, process.stdout, prefix="stdout"),
+            self._stream_process_output(task, process.stderr, prefix="stderr"),
+        )
+        await process.wait()
         task.metadata.update(
             {
                 "node_id": config.node_id,
@@ -546,6 +523,23 @@ class SetupService:
             }
         )
 
+    async def _stream_process_output(
+        self,
+        task: SetupTaskState,
+        stream: asyncio.StreamReader | None,
+        *,
+        prefix: str,
+    ) -> None:
+        if stream is None:
+            return
+        while not stream.at_eof():
+            line = await stream.readline()
+            if not line:
+                break
+            message = line.decode("utf-8", errors="ignore").strip()
+            if message:
+                self._append_log(task, message if prefix == "stdout" else f"[{prefix}] {message}")
+
     def _write_env_updates(self, path: Path, updates: dict[str, str]) -> None:
         existing_lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
         kept_lines: list[str] = []
@@ -581,52 +575,139 @@ class SetupService:
             return f"node-{discovered.lan_ip.replace('.', '-')}"
         return f"node-{uuid4().hex[:8]}"
 
+    def _suggest_node_id_from_host(self, host: str) -> str:
+        candidate = host.strip().lower().replace(" ", "-")
+        candidate = "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "-" for ch in candidate).strip("-")
+        if candidate:
+            return candidate.replace(".", "-")[:64]
+        return f"node-{uuid4().hex[:8]}"
+
+    async def _pair_node(
+        self,
+        task: SetupTaskState,
+        host: str,
+        pairing_port: int,
+        pairing_key: str,
+        gateway_base_url: str,
+        node_id: str | None = None,
+        discovered: DiscoveredNodeRecord | None = None,
+        suggested_label: str | None = None,
+    ) -> DiscoveryPairResponse:
+        resolved_node_id = (
+            (node_id or "").strip()
+            or (discovered.node_id if discovered else None)
+            or (self._suggest_node_id(discovered) if discovered else self._suggest_node_id_from_host(host))
+        )
+        node_token = self._settings.node_tokens.get(resolved_node_id) or f"node-{uuid4().hex}"
+        pair_url = f"http://{host}:{pairing_port}/pair"
+        self._append_log(task, f"开始请求 {pair_url}。")
+        try:
+            async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+                response = await client.post(
+                    pair_url,
+                    json={
+                        "pairing_key": pairing_key,
+                        "gateway_base_url": gateway_base_url.rstrip("/"),
+                        "node_id": resolved_node_id,
+                        "node_token": node_token,
+                    },
+                )
+        except httpx.RequestError as exc:
+            task.summary = f"连接目标节点失败：{exc}"
+            self._append_log(task, task.summary)
+            self._finish_task(task, "failed")
+            return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
+
+        if response.status_code == 401:
+            task.summary = "配对密钥错误，目标节点拒绝连接。"
+            self._append_log(task, task.summary)
+            self._finish_task(task, "failed")
+            return DiscoveryPairResponse(task=task.to_result(), pairing_status="auth_failed", node_id=resolved_node_id)
+        if response.status_code >= 400:
+            task.summary = f"目标节点返回异常状态：HTTP {response.status_code}"
+            self._append_log(task, task.summary)
+            self._finish_task(task, "failed")
+            return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
+        data = response.json()
+        pairing_status = data.get("pairing_status", "paired")
+        returned_node_id = str(data.get("node_id") or resolved_node_id)
+        if pairing_status in {"paired", "already_paired"}:
+            if returned_node_id != resolved_node_id:
+                self._settings.node_tokens.pop(resolved_node_id, None)
+            self._settings.node_tokens[returned_node_id] = node_token
+            self._persist_node_tokens()
+            if discovered is not None:
+                updated = discovered.model_copy(update={"node_id": returned_node_id, "already_paired": True, "last_seen_at": utcnow()})
+                self._discovered_nodes[updated.discovery_id] = updated
+            task.metadata = {
+                "node_id": returned_node_id,
+                "lan_ip": host,
+                "pairing_port": str(pairing_port),
+            }
+            task.summary = f"节点 {suggested_label or returned_node_id} 配对成功，已下发正式 node token。"
+            self._append_log(task, task.summary)
+            self._finish_task(task, "succeeded")
+            return DiscoveryPairResponse(task=task.to_result(), pairing_status=pairing_status, node_id=returned_node_id)  # type: ignore[arg-type]
+        task.summary = f"节点返回未识别的配对状态：{pairing_status}"
+        self._append_log(task, task.summary)
+        self._finish_task(task, "failed")
+        return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=returned_node_id)
+
     async def _udp_broadcast_scan(self, timeout_ms: int) -> list[DiscoveredNodeRecord]:
         loop = asyncio.get_running_loop()
         results: dict[str, DiscoveredNodeRecord] = {}
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(("0.0.0.0", 0))
-        sock.setblocking(False)
-        request_id = uuid4().hex
-        payload = json.dumps({"type": "discover", "request_id": request_id}).encode("utf-8")
-        await loop.sock_sendto(sock, payload, ("255.255.255.255", self._settings.discovery_port))
-        deadline = loop.time() + timeout_ms / 1000
-        while True:
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                break
-            try:
-                data, addr = await asyncio.wait_for(loop.sock_recvfrom(sock, 8192), timeout=remaining)
-            except TimeoutError:
-                break
-            except Exception:
-                continue
-            try:
-                raw = json.loads(data.decode("utf-8"))
-            except Exception:
-                continue
-            if raw.get("type") != "discover_response" or raw.get("request_id") != request_id:
-                continue
-            lan_ip = raw.get("lan_ip") or addr[0]
-            pairing_port = int(raw.get("pairing_port") or (self._settings.discovery_port + 1))
-            discovery_id = f"{lan_ip}:{pairing_port}:{raw.get('node_id') or raw.get('hostname') or 'node'}"
-            results[discovery_id] = DiscoveredNodeRecord(
-                discovery_id=discovery_id,
-                node_id=raw.get("node_id") or None,
-                pairing_label=raw.get("pairing_label") or None,
-                hostname=raw.get("hostname") or lan_ip,
-                lan_ip=lan_ip,
-                platform=raw.get("platform") or None,
-                node_version=raw.get("node_version") or None,
-                capabilities=list(raw.get("capabilities") or []),
-                advertised_address=raw.get("advertised_address") or None,
-                pairing_required=bool(raw.get("pairing_required", True)),
-                already_paired=bool(raw.get("already_paired", False)),
-                pairing_port=pairing_port,
-                last_seen_at=utcnow(),
-            )
-        sock.close()
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.bind(("0.0.0.0", 0))
+            sock.setblocking(False)
+            request_id = uuid4().hex
+            payload = json.dumps({"type": "discover", "request_id": request_id}).encode("utf-8")
+            broadcast_targets = directed_broadcast_targets()
+            if not broadcast_targets:
+                broadcast_targets = ["255.255.255.255"]
+            for target in broadcast_targets:
+                try:
+                    await loop.sock_sendto(sock, payload, (target, self._settings.discovery_port))
+                except Exception:
+                    continue
+            deadline = loop.time() + timeout_ms / 1000
+            while True:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    break
+                try:
+                    data, addr = await asyncio.wait_for(loop.sock_recvfrom(sock, 8192), timeout=remaining)
+                except TimeoutError:
+                    break
+                except Exception:
+                    continue
+                try:
+                    raw = json.loads(data.decode("utf-8"))
+                except Exception:
+                    continue
+                if raw.get("type") != "discover_response" or raw.get("request_id") != request_id:
+                    continue
+                lan_ip = raw.get("lan_ip") or addr[0]
+                pairing_port = int(raw.get("pairing_port") or (self._settings.discovery_port + 1))
+                discovery_id = f"{lan_ip}:{pairing_port}:{raw.get('node_id') or raw.get('hostname') or 'node'}"
+                results[discovery_id] = DiscoveredNodeRecord(
+                    discovery_id=discovery_id,
+                    node_id=raw.get("node_id") or None,
+                    pairing_label=raw.get("pairing_label") or None,
+                    hostname=raw.get("hostname") or lan_ip,
+                    lan_ip=lan_ip,
+                    platform=raw.get("platform") or None,
+                    node_version=raw.get("node_version") or None,
+                    capabilities=list(raw.get("capabilities") or []),
+                    advertised_address=raw.get("advertised_address") or None,
+                    pairing_required=bool(raw.get("pairing_required", True)),
+                    already_paired=bool(raw.get("already_paired", False)),
+                    pairing_port=pairing_port,
+                    last_seen_at=utcnow(),
+                )
+        finally:
+            sock.close()
         return sorted(results.values(), key=lambda item: (item.already_paired, item.hostname.lower()))
 
     def _escape_env_value(self, value: str) -> str:
