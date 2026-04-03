@@ -776,15 +776,10 @@ export function App() {
       setWorkerSetup((current) => ({
         ...current,
         gateway_base_url: result.task.metadata.gateway_base_url || current.gateway_base_url,
-        node_token: result.task.metadata.node_token || current.node_token,
       }));
       workerGatewayAutoProbeKeyRef.current = "";
       await refreshSetupProfile();
-      setNotice(
-        result.task.metadata.node_token_source === "generated"
-          ? "工作节点安装任务已启动，已自动生成节点 Token 并写入网关。"
-          : "工作节点安装任务已启动，正在读取执行日志。",
-      );
+      setNotice("工作节点安装任务已启动；本次不会生成 token，请安装完成后回到网关端配对。");
     } catch (error) {
       setNotice(`启动工作节点安装失败：${(error as Error).message}`);
     }
@@ -1261,10 +1256,11 @@ export function App() {
     }
     if (connectionState === "auth_failed" || connectionState === "register_failed") {
       const lastError = task.metadata.node_last_error?.trim();
+      const realNodeId = task.metadata.node_id?.trim() || nodeId;
       return {
         state: "gateway_reachable_node_register_failed" as WorkerGatewayConnectionState,
         label: "网关可达，注册失败/鉴权失败",
-        detail: lastError || task.summary || `节点 ${nodeId} 注册失败，请重新配对。`,
+        detail: lastError || task.summary || `当前节点 ${realNodeId} 的 token 与网关记录不一致，请重新输入配对密钥，让网关重新下发 token。`,
         remoteNode: inventoryNode,
       };
     }
@@ -1302,9 +1298,9 @@ export function App() {
         },
         {
           title: "节点凭据",
-          value: workerSetup.node_token.trim() ? "Token 已填写" : "Token 待处理",
-          tone: workerSetup.node_token.trim() ? "good" : "warn",
-          detail: workerSetup.pairing_key.trim() ? "配对密钥已准备" : "配对密钥尚未填写",
+          value: "等待网关下发",
+          tone: workerSetup.pairing_key.trim() ? "good" : "warn",
+          detail: workerSetup.pairing_key.trim() ? "安装阶段不会生成 token；配对时会由网关自动下发。" : "请先填写配对密钥，后续由网关自动下发 token。",
         },
         {
           title: "发现响应",
@@ -1340,7 +1336,7 @@ export function App() {
         detail: latestSetupSummary,
       },
     ];
-  }, [currentNodeLanIp, currentRoleIsWorker, gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.state, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
+  }, [currentNodeLanIp, currentRoleIsWorker, gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.state, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.node_id, workerSetup.pairing_key]);
   const reconfigureWarnings = useMemo(() => {
     const warnings: string[] = [];
     if (wechatStatus?.running) warnings.push("微信当前处于轮询中；继续后会先断开微信连接，再进入重新配置。");
@@ -1363,15 +1359,15 @@ export function App() {
     { label: "节点 ID", value: workerSetup.node_id || "未填写" },
     {
       label: "节点 Token 状态",
-      value: workerSetup.node_token.trim() ? "当前草稿已填写，可直接复制；若节点已纳管，网关侧也有保存。" : "当前草稿未填写；已纳管节点请到网关配置查看。",
+      value: "安装阶段不会生成 token；只有配对成功后，网关才会自动签发并写入节点。",
     },
     {
       label: "配对密钥状态",
       value: workerSetup.pairing_key.trim() ? "当前草稿已填写，可通过“显示密钥”临时查看。" : "当前草稿未填写；若已安装节点，请到节点本机 .env 查看或重新设置。",
     },
-    { label: "网关侧查看位置", value: GATEWAY_NODE_TOKEN_LOCATION },
-    { label: "节点侧查看位置", value: workerEnvLocations(workerSetup.install_dir) },
-  ]), [setupCompletedRoles, workerSetup.install_dir, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
+    { label: "网关侧查看位置", value: `配对成功后可在 ${GATEWAY_NODE_TOKEN_LOCATION} 查看` },
+    { label: "节点侧查看位置", value: `配对成功后可在 ${workerEnvLocations(workerSetup.install_dir)} 查看` },
+  ]), [setupCompletedRoles, workerSetup.install_dir, workerSetup.node_id, workerSetup.pairing_key]);
   const installProgressSummary = useMemo(() => {
     if (!setupTask || setupTask.kind !== "node_install") return "";
     if (setupTask.status === "running") return "正在安装工作节点，日志会持续刷新。";
@@ -1414,7 +1410,7 @@ export function App() {
           <section className="workspace-frame quick-setup-workspace">
             <div className="workspace-heading">
               <div><div className="section-kicker">首次启动向导</div><h2>先选角色，再用最短路径把本机跑起来</h2></div>
-              <div className="workspace-caption">{currentRoleIsWorker ? "当前按工作节点视角收敛界面，只展示节点安装、回连和凭据相关能力。" : currentRoleIsConsole ? "当前按控制台视角收敛界面，只保留控制台连接与观察相关能力。" : "首版支持当前这台机器上的受控执行：保存网关配置、组合完成“网关主机+控制台”、单独校验控制台目标，以及调用现有工作节点安装脚本。"}</div>
+              <div className="workspace-caption">{currentRoleIsWorker ? "当前按工作节点视角收敛界面，只展示远端节点安装、回连和凭据相关能力；若这台机器本身就是网关，优先使用桌面启动器托管本机节点。" : currentRoleIsConsole ? "当前按控制台视角收敛界面，只保留控制台连接与观察相关能力。" : "首版支持当前这台机器上的受控执行：保存网关配置、组合完成“网关主机+控制台”、单独校验控制台目标，并为远端工作节点提供安装与配对入口。"}</div>
             </div>
 
             <div className="quick-setup-layout">
@@ -1442,7 +1438,7 @@ export function App() {
                 {launcherAvailable ? (
                   <section className="surface surface-subsection">
                     <div className="section-head">
-                      <div><div className="section-kicker">桌面启动器</div><h3>{currentRoleIsWorker ? "本机节点运行环境" : "单机一体化运行与存储库目录"}</h3></div>
+                      <div><div className="section-kicker">桌面启动器</div><h3>{currentRoleIsWorker ? "本机节点托管环境" : "单机一体化运行与存储库目录"}</h3></div>
                       <div className="inline-actions">
                         <button type="button" className="ghost-button" onClick={chooseLauncherWorkdir} disabled={busy !== null}>{busy === "launcher-select-workdir" ? "选择中..." : "选择存储库目录"}</button>
                         <button type="button" className="ghost-button" onClick={refreshLauncherStatus}>刷新状态</button>
@@ -1539,7 +1535,7 @@ export function App() {
                       <div className="info-stack">
                         {workerCredentialRows.map((item) => <InfoRow key={item.label} label={item.label} value={item.value} multiline />)}
                       </div>
-                      {workerSetup.node_token.trim() ? <SnippetBlock label="当前草稿中的节点 Token" content={workerSetup.node_token} /> : null}
+                      <SnippetBlock label="当前 token 发放方式" content="安装阶段不会生成 token。请在网关端扫描配对或手动配对，配对成功后由网关自动下发并覆盖节点 token。" />
                     </section>
                     {reconfigureConfirmOpen ? (
                       <section className="surface surface-subsection reconfigure-panel">
@@ -1649,7 +1645,6 @@ export function App() {
                                   <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前主机地址</button>
                                 </div>
                               </label>
-                              <label><span>节点 Token</span><textarea value={workerSetup.node_token} onChange={(event) => updateWorkerSetup("node_token", event.target.value)} placeholder="将写入节点本机 .env，同时主网关会在 WCH_NODE_TOKENS 中保存该节点 token。" /></label>
                               <label>
                                 <span>配对密钥</span>
                                 <div className="field-with-action">
@@ -1687,7 +1682,7 @@ export function App() {
                               <div className="info-stack">
                                 {workerCredentialRows.map((item) => <InfoRow key={item.label} label={item.label} value={item.value} multiline />)}
                               </div>
-                              {workerSetup.node_token.trim() ? <SnippetBlock label="当前节点 Token" content={workerSetup.node_token} /> : null}
+                              <SnippetBlock label="当前 token 发放方式" content="当前不会生成节点 token。安装完成后，请回到网关端输入配对密钥，由网关自动下发 token 并确认注册。" />
                             </section>
                           </>
                         ) : (
@@ -1825,16 +1820,15 @@ export function App() {
                 </section> : null}
                 <section className="surface">
                   <div className="section-head">
-                    <div><div className="section-kicker">{currentRoleIsWorker ? "节点安装" : "节点纳管"}</div><h3>{currentRoleIsWorker ? "安装或重装本机工作节点" : "网关配置后继续添加工作节点"}</h3></div>
+                    <div><div className="section-kicker">{currentRoleIsWorker ? "远端节点安装" : "节点纳管"}</div><h3>{currentRoleIsWorker ? "安装或重装远端工作节点" : "网关配置后继续添加工作节点"}</h3></div>
                     <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前主机地址</button>
                   </div>
                   <div className="inline-tip">
-                    {currentRoleIsWorker ? "这里聚焦本机节点安装、回连主网关和发现响应配置，不提供网关纳管动作。" : "这里复用同一套安装与配对接口，适合网关已经保存完成后继续扩容、重装节点或做联调。"}
+                    {currentRoleIsWorker ? "这里聚焦远端工作节点安装、回连主网关和发现响应配置；若当前机器本身就是网关，请优先让桌面启动器托管本机节点，不再额外安装本机 Windows 节点服务。" : "这里复用同一套安装与配对接口，适合网关已经保存完成后继续扩容、重装远端节点或做联调。"}
                   </div>
                   <div className="form-grid">
                     <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
                     <label><span>目标网关地址（局域网网关）</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="填写局域网内实际要连接的网关地址，例如 http://192.168.0.18:8300" /></label>
-                    <label><span>节点 Token（可留空）</span><textarea value={workerSetup.node_token} onChange={(event) => updateWorkerSetup("node_token", event.target.value)} placeholder="留空会自动生成并同步保存到网关的 WCH_NODE_TOKENS。" /></label>
                     <label>
                       <span>配对密钥</span>
                       <div className="field-with-action">
@@ -1853,9 +1847,9 @@ export function App() {
                   <div className="info-stack">
                     {workerCredentialRows.map((item) => <InfoRow key={`connection-${item.label}`} label={item.label} value={item.value} multiline />)}
                   </div>
-                  {workerSetup.node_token.trim() ? <SnippetBlock label="当前工作节点 Token" content={workerSetup.node_token} /> : null}
+                  <SnippetBlock label="当前 token 发放方式" content="远端节点安装阶段不会生成 token。只有网关发起配对时，才会自动签发并写入节点与网关配置。" />
                   <div className="inline-actions">
-                    <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>{busy === "setup-worker" ? "安装中..." : "安装这个工作节点"}</button>
+                    <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>{busy === "setup-worker" ? "安装中..." : "安装这个远端工作节点"}</button>
                     {currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={() => void probeWorkerGateway()} disabled={busy !== null}>{busy === "setup-gateway-probe" ? "检测中..." : "检测目标网关"}</button> : null}
                   </div>
                 </section>
@@ -2179,7 +2173,7 @@ function previewContent(role: SetupRole, gateway: GatewaySetupConfig, worker: Wo
     `连接局域网网关=${worker.gateway_base_url || "未填写"}`,
     `安装目录=${worker.install_dir}`,
     `最大并发=${worker.max_concurrency}`,
-    `节点 Token=${worker.node_token ? "已填写" : "未填写（执行时可自动生成）"}`,
+    "节点 Token=安装阶段不生成，将在配对时由网关自动下发",
     `配对密钥=${worker.pairing_key ? "已填写" : "未填写"}`,
     `发现响应=${worker.discovery_enabled ? `开启（UDP ${worker.discovery_port}）` : "关闭"}`,
     `Bundle=${worker.bundle_path || "自动查找常见路径；缺失时尝试现打包"}`,

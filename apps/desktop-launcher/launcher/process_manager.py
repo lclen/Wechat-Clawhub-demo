@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -92,8 +93,9 @@ class ProcessManager:
         env = os.environ.copy()
         node_tokens = {}
         gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
+        local_node_id = profile.local_node_id.strip() or "local-node"
         if profile.enable_local_node and not profile.dispatch_mode_enabled:
-            node_tokens["local-node"] = env.get("CLAW_NODE_TOKEN", "local-node-token")
+            node_tokens[local_node_id] = profile.local_node_token
         env.update(
             {
                 "WCH_REDIS_URL": f"redis://127.0.0.1:{profile.host_redis_port}/0",
@@ -102,6 +104,7 @@ class ProcessManager:
                 "WCH_MEMORY_DIR": layout.memory_dir,
                 "WCH_RUNTIME_ROOT": layout.runtime_dir,
                 "WCH_DISPATCH_MODE_ENABLED": "true" if profile.dispatch_mode_enabled else "false",
+                "WCH_LOCAL_NODE_ID": local_node_id,
                 "WCH_CORS_ALLOW_ORIGINS": json.dumps(launcher_cors_origins(profile.launcher_port), ensure_ascii=False),
                 "WCH_NODE_TOKENS": json.dumps(node_tokens, ensure_ascii=False),
             }
@@ -118,11 +121,13 @@ class ProcessManager:
     def start_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         env = os.environ.copy()
         gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
+        local_node_id = profile.local_node_id.strip() or "local-node"
+        stopped_services = self._stop_conflicting_local_node_services()
         env.update(
             {
-                "CLAW_NODE_ID": "local-node",
+                "CLAW_NODE_ID": local_node_id,
                 "CLAW_GATEWAY_BASE_URL": gateway_base_url,
-                "CLAW_NODE_TOKEN": env.get("CLAW_NODE_TOKEN", "local-node-token"),
+                "CLAW_NODE_TOKEN": profile.local_node_token,
                 "CLAW_PAIRING_KEY": env.get("CLAW_PAIRING_KEY", "local-pairing-key"),
                 "CLAW_DISCOVERY_ENABLED": "true",
                 "CLAW_DISCOVERY_PORT": "9531",
@@ -140,8 +145,39 @@ class ProcessManager:
             ["run-node"],
             env=env,
             log_path=log_path,
-            detail="本机 claw-node",
+            detail=(
+                "本机 claw-node"
+                if not stopped_services
+                else f"本机 claw-node（已停用冲突服务：{', '.join(stopped_services)}）"
+            ),
         )
+
+    def _stop_conflicting_local_node_services(self) -> list[str]:
+        try:
+            output = subprocess.run(  # noqa: S603
+                ["sc.exe", "query", "state=", "all"],
+                capture_output=True,
+                text=True,
+                check=False,
+                encoding="utf-8",
+                errors="ignore",
+            ).stdout
+        except Exception:
+            return []
+        service_names = re.findall(r"SERVICE_NAME:\s+([^\r\n]+)", output)
+        conflicting = [
+            item.strip()
+            for item in service_names
+            if item.strip().startswith("wechat-claw-node-") and "local" in item.lower()
+        ]
+        stopped: list[str] = []
+        for service_name in conflicting:
+            try:
+                subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+                stopped.append(service_name)
+            except Exception:
+                continue
+        return stopped
 
     def _spawn_self(
         self,
