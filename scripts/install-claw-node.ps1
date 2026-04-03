@@ -77,6 +77,59 @@ function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
     }
     throw "Service '$Name' did not stop within the expected time."
 }
+function Wait-ForServiceDeletion([string]$Name) {
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        if (-not (Test-ServiceInstalled $Name)) {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Service '$Name' did not uninstall within the expected time."
+}
+function Remove-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
+    if (-not (Test-ServiceInstalled $Name)) {
+        return
+    }
+    Stop-ServiceIfInstalled -Name $Name -ExecutablePath $ExecutablePath
+    Write-Step "清理历史节点服务：$Name"
+    if (Test-Path -LiteralPath $ExecutablePath) {
+        & $ExecutablePath uninstall 2>$null
+    }
+    if (Test-ServiceInstalled $Name) {
+        $null = & sc.exe delete $Name 2>$null
+    }
+    Wait-ForServiceDeletion -Name $Name
+}
+function Get-StaleServiceNames([string]$InstallDir, [string]$CurrentServiceName, [hashtable]$PreviousState) {
+    $serviceNames = New-Object System.Collections.Generic.HashSet[string]([System.StringComparer]::OrdinalIgnoreCase)
+    if ($PreviousState.ContainsKey("service_name")) {
+        $previousServiceName = [string]$PreviousState["service_name"]
+        if (-not [string]::IsNullOrWhiteSpace($previousServiceName) -and $previousServiceName -ne $CurrentServiceName) {
+            $null = $serviceNames.Add($previousServiceName)
+        }
+    }
+    Get-ChildItem -LiteralPath $InstallDir -Filter "wechat-claw-node-*.xml" -ErrorAction SilentlyContinue | ForEach-Object {
+        $candidate = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and $candidate -ne $CurrentServiceName) {
+            $null = $serviceNames.Add($candidate)
+        }
+    }
+    return [string[]]$serviceNames
+}
+function Remove-StaleNodeServices([string]$InstallDir, [string]$CurrentServiceName, [hashtable]$PreviousState) {
+    $staleNames = Get-StaleServiceNames -InstallDir $InstallDir -CurrentServiceName $CurrentServiceName -PreviousState $PreviousState
+    foreach ($staleName in $staleNames) {
+        $staleExePath = Join-Path $InstallDir "$staleName.exe"
+        $staleXmlPath = Join-Path $InstallDir "$staleName.xml"
+        Remove-ServiceIfInstalled -Name $staleName -ExecutablePath $staleExePath
+        if (Test-Path -LiteralPath $staleExePath) {
+            Remove-Item -LiteralPath $staleExePath -Force
+        }
+        if (Test-Path -LiteralPath $staleXmlPath) {
+            Remove-Item -LiteralPath $staleXmlPath -Force
+        }
+    }
+}
 function Convert-ToBoolean([object]$Value, [bool]$Default = $false) {
     if ($null -eq $Value) {
         return $Default
@@ -215,6 +268,7 @@ $StatePath = Join-Path $InstallDir "install-state.json"
 $BundleHash = Get-FileSha256 $BundlePath
 $PreviousState = Read-InstallState $StatePath
 $PythonVersion = (& python --version 2>&1).ToString().Trim()
+Remove-StaleNodeServices -InstallDir $InstallDir -CurrentServiceName $ServiceName -PreviousState $PreviousState
 
 $StagingDir = Join-Path $InstallDir "bundle"
 $ReuseBundle = (
