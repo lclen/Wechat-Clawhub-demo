@@ -370,25 +370,40 @@ class SetupService:
 
             matched_node = self._find_registered_node_in_probe_payload(nodes_payload, normalized_node_id)
             inventory_node = self._find_inventory_node_in_probe_payload(nodes_payload, normalized_node_id)
+            local_issue_state, local_issue_detail = self._detect_local_node_registration_issue(normalized_node_id, target)
+            if local_issue_state:
+                task.metadata["local_node_connection_state"] = local_issue_state
+            if local_issue_detail:
+                task.metadata["local_node_last_error"] = local_issue_detail
+                self._append_log(task, f"本机节点最近日志提示：{local_issue_detail}")
             if matched_node is None:
                 task.metadata["node_registered"] = "false"
+                derived_connection_state = ""
+                derived_last_error = ""
                 if inventory_node is not None:
-                    connection_state = str(inventory_node.get("connection_state") or "")
-                    task.metadata["node_connection_state"] = connection_state
-                    task.metadata["node_last_error"] = str(inventory_node.get("last_error") or "")
-                    if connection_state == "auth_failed":
-                        task.summary = f"目标网关可达，但节点注册失败/鉴权失败：{normalized_node_id}"
-                    elif connection_state == "register_failed":
-                        task.summary = f"目标网关可达，但节点注册失败：{normalized_node_id}"
-                    elif connection_state == "pairing_pending":
-                        task.summary = f"目标网关可达，节点已下发配置，等待注册确认：{normalized_node_id}"
-                    else:
-                        task.summary = f"目标网关可达，但节点未注册/未在线：{normalized_node_id}"
+                    derived_connection_state = str(inventory_node.get("connection_state") or "")
+                    derived_last_error = str(inventory_node.get("last_error") or "")
+                if local_issue_state == "auth_failed":
+                    derived_connection_state = "auth_failed"
+                    derived_last_error = local_issue_detail or derived_last_error
+                elif local_issue_state == "register_failed" and derived_connection_state in {"", "pairing_pending"}:
+                    derived_connection_state = "register_failed"
+                    derived_last_error = local_issue_detail or derived_last_error
+                if derived_connection_state:
+                    task.metadata["node_connection_state"] = derived_connection_state
+                if derived_last_error:
+                    task.metadata["node_last_error"] = derived_last_error
+                if derived_connection_state == "auth_failed":
+                    task.summary = f"目标网关可达，但节点注册鉴权失败：{normalized_node_id}"
+                elif derived_connection_state == "register_failed":
+                    task.summary = f"目标网关可达，但节点注册失败：{normalized_node_id}"
+                elif derived_connection_state == "pairing_pending":
+                    task.summary = f"目标网关可达，节点已下发配置，等待注册确认：{normalized_node_id}"
                 else:
                     task.summary = f"目标网关可达，但节点未注册/未在线：{normalized_node_id}"
                 self._append_log(task, task.summary)
-                if inventory_node is not None and inventory_node.get("last_error"):
-                    self._append_log(task, f"最近错误：{inventory_node.get('last_error')}")
+                if derived_last_error:
+                    self._append_log(task, f"最近错误：{derived_last_error}")
                 self._finish_task(task, "succeeded")
                 return task.to_result()
 
@@ -417,6 +432,78 @@ class SetupService:
         task.summary = f"目标网关可达：{target}"
         self._finish_task(task, "succeeded")
         return task.to_result()
+
+    def _detect_local_node_registration_issue(
+        self,
+        node_id: str,
+        gateway_base_url: str,
+    ) -> tuple[str, str]:
+        normalized_gateway = gateway_base_url.strip().rstrip("/").lower()
+        for path in self._candidate_local_node_log_paths(node_id):
+            if not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except OSError:
+                continue
+            for raw_line in reversed(lines[-120:]):
+                line = raw_line.strip()
+                if not line:
+                    continue
+                lowered = line.lower()
+                if normalized_gateway and normalized_gateway not in lowered:
+                    if "/api/nodes/register" not in lowered and "gateway registration is not ready yet" not in lowered:
+                        continue
+                detail = self._extract_local_registration_issue_detail(line)
+                if self._looks_like_auth_failure(detail):
+                    return "auth_failed", detail
+                if "/api/nodes/register" in lowered and any(token in lowered for token in ("timed out", "connect", "all connection attempts failed")):
+                    return "register_failed", detail
+                if "gateway registration is not ready yet" in lowered:
+                    return "register_failed", detail
+        return "", ""
+
+    def _candidate_local_node_log_paths(self, node_id: str) -> list[Path]:
+        install_dirs: list[Path] = []
+        for task in reversed(list(self._tasks.values())):
+            if task.kind != "node_install":
+                continue
+            if task.metadata.get("node_id", "").strip() != node_id:
+                continue
+            install_dir = task.metadata.get("install_dir", "").strip()
+            if install_dir:
+                path = Path(install_dir)
+                if path not in install_dirs:
+                    install_dirs.append(path)
+        default_install_dir = Path("C:/wechat-claw-node")
+        if default_install_dir not in install_dirs:
+            install_dirs.append(default_install_dir)
+
+        log_paths: list[Path] = []
+        for install_dir in install_dirs:
+            log_dir = install_dir / "logs"
+            for name in (f"wechat-claw-node-{node_id}.err.log", f"wechat-claw-node-{node_id}.wrapper.log"):
+                path = log_dir / name
+                if path not in log_paths:
+                    log_paths.append(path)
+        return log_paths
+
+    def _extract_local_registration_issue_detail(self, line: str) -> str:
+        if "reason=" in line:
+            return line.split("reason=", 1)[1].strip()
+        return line.strip()
+
+    def _looks_like_auth_failure(self, detail: str) -> bool:
+        normalized = detail.lower()
+        return any(
+            marker in normalized
+            for marker in (
+                "401 unauthorized",
+                "unauthorized",
+                "invalid node token",
+                "node token is not configured",
+            )
+        )
 
     def get_task(self, task_id: str) -> SetupTaskResult | None:
         task = self._tasks.get(task_id)

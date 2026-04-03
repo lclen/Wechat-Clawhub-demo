@@ -1241,6 +1241,8 @@ export function App() {
       };
     }
     const connectionState = task.metadata.node_connection_state || "";
+    const lastError = task.metadata.node_last_error?.trim() || task.metadata.local_node_last_error?.trim() || "";
+    const tokenMismatchHint = gatewayTokenMismatchHint(nodeId);
     const inventoryNode = nodeInventory.find((item) => item.node_id === nodeId) ?? null;
     const onlineNode = nodes.find((item) => item.node_id === nodeId) ?? null;
     if (task.metadata.node_registered === "true") {
@@ -1251,19 +1253,26 @@ export function App() {
         remoteNode: inventoryNode ?? onlineNode,
       };
     }
+    if (connectionState === "auth_failed" || looksLikeGatewayAuthFailure(lastError || task.summary || "")) {
+      return {
+        state: "gateway_reachable_node_register_failed" as WorkerGatewayConnectionState,
+        label: "网关可达，节点鉴权失败",
+        detail: `${lastError || task.summary || `节点 ${nodeId} 注册被网关拒绝。`} ${tokenMismatchHint}`.trim(),
+        remoteNode: inventoryNode,
+      };
+    }
     if (connectionState === "pairing_pending") {
       return {
         state: "gateway_reachable_node_pending_confirm" as WorkerGatewayConnectionState,
         label: "网关可达，等待注册确认",
-        detail: task.summary || `节点 ${nodeId} 已接收配置，正在等待 register/heartbeat。`,
+        detail: lastError || task.summary || `节点 ${nodeId} 已接收配置，正在等待 register/heartbeat。`,
         remoteNode: inventoryNode,
       };
     }
-    if (connectionState === "auth_failed" || connectionState === "register_failed") {
-      const lastError = task.metadata.node_last_error?.trim();
+    if (connectionState === "register_failed") {
       return {
         state: "gateway_reachable_node_register_failed" as WorkerGatewayConnectionState,
-        label: "网关可达，注册失败/鉴权失败",
+        label: "网关可达，节点注册失败",
         detail: lastError || task.summary || `节点 ${nodeId} 注册失败，请重新配对。`,
         remoteNode: inventoryNode,
       };
@@ -2255,6 +2264,13 @@ function summarizeRemoteNode(node: NodeInventoryRecord | NodeRecord) {
     node.last_error || node.status || "未上报状态",
     node.last_heartbeat_at ? formatTimeLabel(node.last_heartbeat_at, true) : "暂无心跳",
   ].join(" · ");
+}
+function looksLikeGatewayAuthFailure(detail: string) {
+  const normalized = detail.toLowerCase();
+  return ["401 unauthorized", "unauthorized", "invalid node token", "node token is not configured"].some((marker) => normalized.includes(marker));
+}
+function gatewayTokenMismatchHint(nodeId: string) {
+  return `请核对目标网关 ${GATEWAY_NODE_TOKEN_LOCATION} 中 ${nodeId} 对应的 token，是否与当前节点保存的一致。`;
 }
 function pairingDebugStatusLabel(status: PairingDebugEntry["status"]) { return status === "succeeded" ? "成功" : status === "running" ? "进行中" : status === "pending" ? "等待中" : "失败"; }
 function launcherEnvironmentLabel(name: string) {
