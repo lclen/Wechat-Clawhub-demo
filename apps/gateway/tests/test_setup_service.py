@@ -29,7 +29,7 @@ class FakeResponse:
 
 
 class FakeAsyncClient:
-    def __init__(self, response: FakeResponse | Exception) -> None:
+    def __init__(self, response: FakeResponse | Exception | dict[str, FakeResponse | Exception]) -> None:
         self._response = response
 
     async def __aenter__(self) -> "FakeAsyncClient":
@@ -39,13 +39,20 @@ class FakeAsyncClient:
         return None
 
     async def post(self, url: str, json: dict[str, object]) -> FakeResponse:
-        if isinstance(self._response, Exception):
-            raise self._response
-        return self._response
+        response = self._resolve(url)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
     async def get(self, url: str) -> FakeResponse:
-        if isinstance(self._response, Exception):
-            raise self._response
+        response = self._resolve(url)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    def _resolve(self, url: str) -> FakeResponse | Exception:
+        if isinstance(self._response, dict):
+            return self._response[url]
         return self._response
 
 
@@ -207,7 +214,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         try:
-            task = await self.service.probe_gateway("http://192.168.0.18:8300", 2500)
+            task = await self.service.probe_gateway("http://192.168.0.18:8300", timeout_ms=2500)
         finally:
             setup_service_module.httpx.AsyncClient = original_client
 
@@ -226,7 +233,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
             httpx.ConnectError("connection refused")
         )
         try:
-            task = await self.service.probe_gateway("http://192.168.0.18:8300", 2500)
+            task = await self.service.probe_gateway("http://192.168.0.18:8300", timeout_ms=2500)
         finally:
             setup_service_module.httpx.AsyncClient = original_client
 
@@ -234,6 +241,89 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.status, "failed")
         self.assertIn("无法连接目标网关", task.summary)
         self.assertTrue(any("防火墙" in line for line in task.logs))
+
+    async def test_probe_gateway_marks_node_unregistered_when_missing(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=3.0, trust_env=False: FakeAsyncClient(
+            {
+                "http://192.168.0.18:8300/api/system/status": FakeResponse(
+                    200,
+                    {
+                        "app_name": "wechat-claw-hub gateway",
+                        "environment": "development",
+                        "preferred_lan_ip": "192.168.0.18",
+                        "preferred_gateway_base_url": "http://192.168.0.18:8300",
+                        "active_nodes": 1,
+                        "dispatch_mode_enabled": False,
+                    },
+                ),
+                "http://192.168.0.18:8300/api/nodes": FakeResponse(200, {"nodes": []}),
+            }
+        )
+        try:
+            task = await self.service.probe_gateway(
+                "http://192.168.0.18:8300",
+                node_id="node-b",
+                timeout_ms=2500,
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertEqual(task.metadata["node_id"], "node-b")
+        self.assertEqual(task.metadata["node_registered"], "false")
+        self.assertIn("节点未注册/未在线", task.summary)
+
+    async def test_probe_gateway_reports_registered_node_details(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=3.0, trust_env=False: FakeAsyncClient(
+            {
+                "http://192.168.0.18:8300/api/system/status": FakeResponse(
+                    200,
+                    {
+                        "app_name": "wechat-claw-hub gateway",
+                        "environment": "development",
+                        "preferred_lan_ip": "192.168.0.18",
+                        "preferred_gateway_base_url": "http://192.168.0.18:8300",
+                        "active_nodes": 1,
+                        "dispatch_mode_enabled": False,
+                    },
+                ),
+                "http://192.168.0.18:8300/api/nodes": FakeResponse(
+                    200,
+                    {
+                        "nodes": [
+                            {
+                                "node_id": "node-b",
+                                "status": "healthy",
+                                "lan_ip": "192.168.0.9",
+                                "hostname": "NODE-B",
+                                "last_heartbeat_at": "2026-04-03T03:44:23.236457Z",
+                            }
+                        ]
+                    },
+                ),
+            }
+        )
+        try:
+            task = await self.service.probe_gateway(
+                "http://192.168.0.18:8300",
+                node_id="node-b",
+                timeout_ms=2500,
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertEqual(task.metadata["node_registered"], "true")
+        self.assertEqual(task.metadata["node_status"], "healthy")
+        self.assertEqual(task.metadata["matched_lan_ip"], "192.168.0.9")
+        self.assertEqual(task.metadata["matched_hostname"], "NODE-B")
+        self.assertIn("节点已连接", task.summary)
 
     async def test_set_dispatch_mode_updates_settings_and_env(self) -> None:
         task = await self.service.set_dispatch_mode(True)

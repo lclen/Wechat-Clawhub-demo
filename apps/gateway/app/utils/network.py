@@ -87,12 +87,8 @@ def is_usable_ipv4(value: str) -> bool:
 def directed_broadcast_targets(gateway_base_url: str | None = None) -> list[str]:
     targets: list[str] = []
     seen: set[str] = set()
-    interfaces = list_ipv4_interfaces()
     scoped_gateway_ip = _extract_rfc1918_ipv4(gateway_base_url or "")
-    if scoped_gateway_ip is not None:
-        scoped_interfaces = [interface for interface in interfaces if scoped_gateway_ip in interface.network]
-        if scoped_interfaces:
-            interfaces = scoped_interfaces
+    interfaces = scoped_ipv4_interfaces(gateway_base_url)
 
     for interface in interfaces:
         broadcast = interface.broadcast
@@ -100,11 +96,35 @@ def directed_broadcast_targets(gateway_base_url: str | None = None) -> list[str]
             continue
         seen.add(broadcast)
         targets.append(broadcast)
+
+    if scoped_gateway_ip is not None:
+        fallback_broadcast = str(
+            ipaddress.IPv4Network(f"{scoped_gateway_ip}/24", strict=False).broadcast_address
+        )
+        if fallback_broadcast not in seen:
+            targets.append(fallback_broadcast)
     return targets
+
+
+def scoped_ipv4_interfaces(gateway_base_url: str | None = None) -> list[IPv4InterfaceRecord]:
+    interfaces = list_ipv4_interfaces()
+    scoped_gateway_ip = _extract_rfc1918_ipv4(gateway_base_url or "")
+    if scoped_gateway_ip is None:
+        return interfaces
+
+    exact_interfaces = [interface for interface in interfaces if interface.address == str(scoped_gateway_ip)]
+    if exact_interfaces:
+        return exact_interfaces
+
+    scoped_interfaces = [interface for interface in interfaces if scoped_gateway_ip in interface.network]
+    if scoped_interfaces:
+        return scoped_interfaces
+    return interfaces
 
 
 def list_ipv4_interfaces() -> list[IPv4InterfaceRecord]:
     interfaces = _list_interfaces_from_ipconfig() or _list_interfaces_from_ip_addr()
+    interfaces = _merge_interface_records(interfaces, _list_interfaces_from_hostname())
     if interfaces:
         return interfaces
 
@@ -155,6 +175,34 @@ def _list_interfaces_from_ipconfig() -> list[IPv4InterfaceRecord]:
         interfaces.append(IPv4InterfaceRecord(address=current_ip, prefix_length=prefix_length))
         current_ip = None
     return interfaces
+
+
+def _list_interfaces_from_hostname() -> list[IPv4InterfaceRecord]:
+    interfaces: list[IPv4InterfaceRecord] = []
+    try:
+        host_name = socket.gethostname()
+        for _, _, _, _, sockaddr in socket.getaddrinfo(host_name, None, family=socket.AF_INET):
+            ip = sockaddr[0]
+            if not is_preferred_lan_ip(ip):
+                continue
+            interfaces.append(IPv4InterfaceRecord(address=ip, prefix_length=24))
+    except OSError:
+        return []
+    return _merge_interface_records([], interfaces)
+
+
+def _merge_interface_records(
+    base: list[IPv4InterfaceRecord], extras: list[IPv4InterfaceRecord]
+) -> list[IPv4InterfaceRecord]:
+    merged: list[IPv4InterfaceRecord] = []
+    seen: set[tuple[str, int]] = set()
+    for interface in [*base, *extras]:
+        key = (interface.address, interface.prefix_length)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(interface)
+    return merged
 
 
 def _list_interfaces_from_ip_addr() -> list[IPv4InterfaceRecord]:

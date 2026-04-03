@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -73,8 +74,40 @@ class NodeRecord(BaseModel):
     channel_in_use: int = 0
 
 
+NodeInventoryConnectionState = Literal["connected", "paired_offline", "online_unpaired"]
+
+
+class NodeInventoryRecord(BaseModel):
+    node_id: str
+    paired: bool
+    online: bool
+    connection_state: NodeInventoryConnectionState
+    status: NodeStatus | None = None
+    last_heartbeat_at: datetime | None = None
+    updated_at: datetime | None = None
+    hostname: str | None = None
+    lan_ip: str | None = None
+    platform: str | None = None
+    node_version: str | None = None
+    advertised_address: str | None = None
+    last_error: str | None = None
+    base_url: str | None = None
+    max_concurrency: int | None = None
+    current_load: int | None = None
+    channel_capacity: int | None = None
+    channel_in_use: int | None = None
+
+
+class NodeInventorySummary(BaseModel):
+    paired_total: int = 0
+    online_total: int = 0
+    offline_total: int = 0
+
+
 class NodeListResponse(BaseModel):
     nodes: list[NodeRecord]
+    inventory: list[NodeInventoryRecord] = Field(default_factory=list)
+    summary: NodeInventorySummary = Field(default_factory=NodeInventorySummary)
 
 
 class NodeOperationResponse(BaseModel):

@@ -88,7 +88,7 @@ async def probe_worker_gateway(
     payload: GatewayProbeRequest,
     setup_service: SetupService = Depends(get_setup_service),
 ) -> SetupTaskEnvelope:
-    task = await setup_service.probe_gateway(payload.gateway_base_url, payload.timeout_ms)
+    task = await setup_service.probe_gateway(payload.gateway_base_url, payload.node_id, payload.timeout_ms)
     return SetupTaskEnvelope(task=task)
 
 

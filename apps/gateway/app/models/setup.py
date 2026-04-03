@@ -105,6 +105,7 @@ class ConsoleConnectRequest(BaseModel):
 
 class GatewayProbeRequest(BaseModel):
     gateway_base_url: str = Field(min_length=1)
+    node_id: str | None = None
     timeout_ms: int = Field(default=3000, ge=500, le=15000)
 
 

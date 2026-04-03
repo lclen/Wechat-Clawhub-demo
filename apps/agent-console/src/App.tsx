@@ -11,7 +11,10 @@ type RoutingMode = "auto" | "manual";
 type SessionRecord = { session_id: string; channel: string; user_id: string; agent_id: string; status: SessionStatus; assigned_node_id: string | null; assigned_slot_id: string | null; active_task_id: string | null; queue_status: QueueStatus; context_summary: string; context_version: number; routing_mode: RoutingMode; slot_bound_at: string | null; slot_expires_at: string | null; reply_context_token: string | null; handoff_ticket_id: string | null; claimed_by: string | null; message_count: number; last_message_at: string; last_dispatch_at: string | null; created_at: string; updated_at: string; version: number };
 type MessageRecord = { message_id: string; session_id: string; channel: string; user_id: string; role: "user" | "bot" | "human" | "system"; content: string; created_at: string; actor_id: string | null; node_id: string | null; metadata: Record<string, string> };
 type NodeRecord = { node_id: string; base_url: string; advertised_address: string | null; lan_ip: string | null; max_concurrency: number; current_load: number; status: string; last_heartbeat_at: string; updated_at: string; last_error: string | null; load_ratio: number; node_version: string | null; platform: string | null; hostname: string | null; capabilities: string[]; channel_capacity: number; channel_in_use: number };
-type NodeListResponse = { nodes: NodeRecord[] };
+type NodeInventoryConnectionState = "connected" | "paired_offline" | "online_unpaired";
+type NodeInventoryRecord = { node_id: string; paired: boolean; online: boolean; connection_state: NodeInventoryConnectionState; status: string | null; last_heartbeat_at: string | null; updated_at: string | null; hostname: string | null; lan_ip: string | null; platform: string | null; node_version: string | null; advertised_address: string | null; last_error: string | null; base_url: string | null; max_concurrency: number | null; current_load: number | null; channel_capacity: number | null; channel_in_use: number | null };
+type NodeInventorySummary = { paired_total: number; online_total: number; offline_total: number };
+type NodeListResponse = { nodes: NodeRecord[]; inventory: NodeInventoryRecord[]; summary: NodeInventorySummary };
 type NodeMessageItem = { session_id: string; user_id: string; channel: string; role: MessageRecord["role"]; content: string; created_at: string; node_id: string | null };
 type SessionsResponse = { sessions: SessionRecord[] };
 type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[] };
@@ -30,7 +33,7 @@ type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection
 type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boolean; applied_runtime: string[] };
 type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_base_url?: string };
 type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };
-type GatewayProbeRequest = { gateway_base_url: string; timeout_ms?: number };
+type GatewayProbeRequest = { gateway_base_url: string; node_id?: string; timeout_ms?: number };
 type SetupTaskEnvelope = { task: SetupTaskResult };
 type DiscoveryScanResponse = { task: SetupTaskResult; nodes: DiscoveredNodeRecord[] };
 type DiscoveryPairResponse = { task: SetupTaskResult; pairing_status: PairingStatus; node_id: string | null };
@@ -62,6 +65,7 @@ type PairingDebugEntry = {
   target: string;
   updated_at: string;
 };
+type WorkerGatewayConnectionState = "idle" | "gateway_unreachable" | "gateway_reachable_node_missing" | "gateway_reachable_node_connected";
 
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
@@ -232,6 +236,8 @@ export function App() {
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
   const [wechatStatus, setWechatStatus] = useState<WeChatStatus | null>(null);
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
+  const [nodeInventory, setNodeInventory] = useState<NodeInventoryRecord[]>([]);
+  const [nodeInventorySummary, setNodeInventorySummary] = useState<NodeInventorySummary>({ paired_total: 0, online_total: 0, offline_total: 0 });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [nodeMessages, setNodeMessages] = useState<NodeMessageItem[]>([]);
   const [nodeMessagesLoaded, setNodeMessagesLoaded] = useState(false);
@@ -249,8 +255,10 @@ export function App() {
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("正在读取主网关状态。");
   const [now, setNow] = useState(Date.now());
+  const [workerGatewayProbeTask, setWorkerGatewayProbeTask] = useState<SetupTaskResult | null>(null);
   const [workerPairingKeyVisible, setWorkerPairingKeyVisible] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const workerGatewayAutoProbeKeyRef = useRef("");
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -268,6 +276,19 @@ export function App() {
     if (!workerSetup.pairing_key.trim()) return;
     setManualPair((current) => (current.pairing_key.trim() ? current : { ...current, pairing_key: workerSetup.pairing_key.trim() }));
   }, [workerSetup.pairing_key]);
+
+  useEffect(() => {
+    if (!isWorkerRole(resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []))) return;
+    const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
+    const nodeId = workerSetup.node_id.trim();
+    if (!gatewayBaseUrl || !nodeId || busy === "setup-gateway-probe") return;
+    const probeKey = `${gatewayBaseUrl}::${nodeId}`;
+    if (workerGatewayAutoProbeKeyRef.current === probeKey) return;
+    const timer = window.setTimeout(() => {
+      void probeWorkerGateway({ silent: true, reason: "auto" });
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [busy, setupProfile?.completed_roles, setupRole, workerSetup.gateway_base_url, workerSetup.node_id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -332,6 +353,7 @@ export function App() {
         setSetupProfile(profile);
         setWorkspace(profile.recommended_workspace);
         setSetupTask(profile.last_task);
+        setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
         setSetupMode(profile.setup_completed ? "status" : "role");
         setGatewaySetup(profile.gateway);
         setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
@@ -345,7 +367,7 @@ export function App() {
         setModelStatus(model);
         if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
         setWechatStatus(wechat);
-        syncNodes(nodeList.nodes, setNodes, setSelectedNodeId);
+        syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
         syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
         setSessionsLoaded(true);
         setNotice(
@@ -384,7 +406,7 @@ export function App() {
         if (cancelled) return;
         if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
         setWechatStatus(wechat);
-        syncNodes(nodeList.nodes, setNodes, setSelectedNodeId);
+        syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
         syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
         setSessionsLoaded(true);
         if (detail) {
@@ -653,12 +675,15 @@ export function App() {
     setPairingStatuses({});
     setManualPair((current) => ({ ...DEFAULT_MANUAL_PAIR, pairing_key: current.pairing_key || workerSetup.pairing_key || "" }));
     setSetupTask(null);
+    setWorkerGatewayProbeTask(null);
+    workerGatewayAutoProbeKeyRef.current = "";
     setNotice("已重置当前填写内容。");
   }
   async function refreshSetupProfile() {
     const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
     const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, systemStatus);
     setSetupProfile(profile);
+    setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
     setGatewaySetup(profile.gateway);
     setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
     setWorkerSetup((current) => ({
@@ -680,6 +705,7 @@ export function App() {
       const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
       setSetupProfile(profile);
       setSetupTask(profile.last_task);
+      setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
       setGatewaySetup(profile.gateway);
       setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
       setWorkerSetup((current) => ({
@@ -692,7 +718,7 @@ export function App() {
       setModelStatus(model);
       setWechatStatus(wechat);
       if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-      syncNodes(nodeList.nodes, setNodes, setSelectedNodeId);
+      syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
       if (launcherAvailable) {
         await refreshLauncherStatus();
       }
@@ -745,6 +771,7 @@ export function App() {
         gateway_base_url: result.task.metadata.gateway_base_url || current.gateway_base_url,
         node_token: result.task.metadata.node_token || current.node_token,
       }));
+      workerGatewayAutoProbeKeyRef.current = "";
       await refreshSetupProfile();
       setNotice(
         result.task.metadata.node_token_source === "generated"
@@ -824,9 +851,11 @@ export function App() {
       setNotice(`搜索局域网节点失败：${(error as Error).message}`);
     }
   }
-  async function probeWorkerGateway() {
+  async function probeWorkerGateway(options?: { silent?: boolean; reason?: "manual" | "auto" | "post-install" }) {
     const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
     if (!gatewayBaseUrl) return setNotice("请先填写目标网关地址。");
+    const nodeId = workerSetup.node_id.trim();
+    const silent = options?.silent ?? false;
     try {
       pushPairingDebugEntry({
         id: `gateway-probe-${Date.now()}`,
@@ -837,23 +866,29 @@ export function App() {
         logs: [
           `目标网关地址：${gatewayBaseUrl}`,
           `当前节点 IP：${currentNodeLanIp || "未识别"}`,
-          `当前节点 ID：${workerSetup.node_id || "未填写"}`,
+          `当前节点 ID：${nodeId || "未填写"}`,
           "调试说明：接口返回后会在这里追加网关探测日志。",
         ],
         target: gatewayBaseUrl,
         updated_at: new Date().toISOString(),
       });
-      const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, timeout_ms: 3000 };
+      const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, node_id: nodeId || undefined, timeout_ms: 3000 };
       const result = await withBusy(
         "setup-gateway-probe",
         () => requestJson<SetupTaskEnvelope>("/api/setup/gateway/probe", { method: "POST", body: JSON.stringify(payload) }),
       );
       setSetupTask(result.task);
-      setNotice(result.task.summary || `目标网关检测完成：${gatewayBaseUrl}`);
+      setWorkerGatewayProbeTask(result.task);
+      workerGatewayAutoProbeKeyRef.current = `${gatewayBaseUrl}::${nodeId}`;
+      if (!silent) setNotice(result.task.summary || `目标网关检测完成：${gatewayBaseUrl}`);
     } catch (error) {
+      workerGatewayAutoProbeKeyRef.current = `${gatewayBaseUrl}::${nodeId}`;
       appendPairingClientError("检测目标网关", gatewayBaseUrl, error as Error);
-      setNotice(`检测目标网关失败：${(error as Error).message}`);
+      if (!silent) setNotice(`检测目标网关失败：${(error as Error).message}`);
     }
+  }
+  function updateNodeState(next: NodeListResponse) {
+    syncNodeState(next, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
   }
   async function refreshLauncherStatus() {
     try {
@@ -978,7 +1013,7 @@ export function App() {
         }),
         refreshSessionDetail(sessionId),
         requestJson<NodeListResponse>("/api/nodes").then((nodeList) => {
-          syncNodes(nodeList.nodes, setNodes, setSelectedNodeId);
+          syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
         }),
       ]);
       setNotice(result.detail || "已提交会话切换请求。");
@@ -1022,7 +1057,7 @@ export function App() {
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: result.pairing_status }));
       setNotice(result.task.summary || `节点 ${discovered.hostname} 配对结果：${result.pairing_status}`);
       const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodes(refreshedNodes.nodes, setNodes, setSelectedNodeId);
+      syncNodeState(refreshedNodes, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
     } catch (error) {
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: "offline" }));
       appendPairingClientError("扫描结果配对", target, error as Error);
@@ -1069,7 +1104,7 @@ export function App() {
         node_id: result.node_id || current.node_id,
       }));
       const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodes(refreshedNodes.nodes, setNodes, setSelectedNodeId);
+      syncNodeState(refreshedNodes, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
     } catch (error) {
       appendPairingClientError("按地址配对", target, error as Error);
       setNotice(`按地址配对失败：${(error as Error).message}`);
@@ -1152,9 +1187,52 @@ export function App() {
     [setupProfile?.completed_roles, setupRole],
   );
   const currentNodeLanIp = systemStatus?.preferred_lan_ip || setupTask?.metadata.lan_ip || "";
+  const workerGatewayConnection = useMemo(() => {
+    const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
+    const nodeId = workerSetup.node_id.trim();
+    if (!gatewayBaseUrl || !nodeId) {
+      return {
+        state: "idle" as WorkerGatewayConnectionState,
+        label: "未检测",
+        detail: "请先填写目标网关地址和节点 ID。",
+        remoteNode: null as NodeInventoryRecord | NodeRecord | null,
+      };
+    }
+    const task = workerGatewayProbeTask;
+    if (!task || task.kind !== "gateway_probe" || task.metadata.gateway_base_url !== gatewayBaseUrl || (task.metadata.node_id || nodeId) !== nodeId) {
+      return {
+        state: "idle" as WorkerGatewayConnectionState,
+        label: "未检测",
+        detail: "已填写目标网关地址，可自动或手动检测当前节点是否注册到该网关。",
+        remoteNode: null as NodeInventoryRecord | NodeRecord | null,
+      };
+    }
+    if (task.status === "failed") {
+      return {
+        state: "gateway_unreachable" as WorkerGatewayConnectionState,
+        label: "网关不可达",
+        detail: task.summary || "无法连接目标网关。",
+        remoteNode: null as NodeInventoryRecord | NodeRecord | null,
+      };
+    }
+    if (task.metadata.node_registered === "true") {
+      return {
+        state: "gateway_reachable_node_connected" as WorkerGatewayConnectionState,
+        label: "网关可达，节点已连接",
+        detail: task.summary || `节点 ${nodeId} 已在目标网关注册。`,
+        remoteNode: nodeInventory.find((item) => item.node_id === nodeId) ?? nodes.find((item) => item.node_id === nodeId) ?? null,
+      };
+    }
+    return {
+      state: "gateway_reachable_node_missing" as WorkerGatewayConnectionState,
+      label: "网关可达，节点未注册",
+      detail: task.summary || `目标网关可访问，但尚未发现节点 ${nodeId}。`,
+      remoteNode: null as NodeInventoryRecord | NodeRecord | null,
+    };
+  }, [nodeInventory, nodes, workerGatewayProbeTask, workerSetup.gateway_base_url, workerSetup.node_id]);
   const latestSetupSummary = useMemo(
-    () => setupTask?.summary || setupProfile?.last_task?.summary || (currentRoleIsWorker ? "暂无最近节点安装或回连记录。" : (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。")),
-    [currentRoleIsWorker, nodes.length, setupProfile?.last_task?.summary, setupTask?.summary],
+    () => workerGatewayProbeTask?.summary || setupTask?.summary || setupProfile?.last_task?.summary || (currentRoleIsWorker ? "暂无最近节点安装或回连记录。" : (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。")),
+    [currentRoleIsWorker, nodes.length, setupProfile?.last_task?.summary, setupTask?.summary, workerGatewayProbeTask?.summary],
   );
   const quickSetupStatusRows = useMemo<Array<{ title: string; value: string; tone: "good" | "warn"; detail: string }>>(() => {
     if (currentRoleIsWorker) {
@@ -1166,10 +1244,10 @@ export function App() {
           detail: workerSetup.node_id || "尚未填写节点 ID",
         },
         {
-          title: "主网关回连",
-          value: workerSetup.gateway_base_url || "未配置",
-          tone: workerSetup.gateway_base_url ? "good" : "warn",
-          detail: workerSetup.gateway_base_url ? "节点将连接这个局域网网关地址。" : "建议填写局域网内目标网关地址。",
+          title: "网关连接状态",
+          value: workerGatewayConnection.label,
+          tone: workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn",
+          detail: workerGatewayConnection.detail,
         },
         {
           title: "当前节点 IP",
@@ -1217,7 +1295,7 @@ export function App() {
         detail: latestSetupSummary,
       },
     ];
-  }, [currentNodeLanIp, currentRoleIsWorker, gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.gateway_base_url, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
+  }, [currentNodeLanIp, currentRoleIsWorker, gatewaySetup.wechat_base_url, latestSetupSummary, modelStatus?.configured, modelStatus?.model, nodes.length, setupCompletedRoles, setupProfile?.console.gateway_base_url, systemStatus?.redis_ok, wechatStatus?.base_url, wechatStatus?.has_token, wechatStatus?.running, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.state, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.node_id, workerSetup.node_token, workerSetup.pairing_key]);
   const reconfigureWarnings = useMemo(() => {
     const warnings: string[] = [];
     if (wechatStatus?.running) warnings.push("微信当前处于轮询中；继续后会先断开微信连接，再进入重新配置。");
@@ -1256,6 +1334,10 @@ export function App() {
     if (setupTask.status === "failed") return "工作节点安装失败，请根据日志排查。";
     return "工作节点安装任务已创建。";
   }, [setupTask]);
+  const nodeInventoryHeadline = useMemo(
+    () => `已配对 ${nodeInventorySummary.paired_total} / 在线 ${nodeInventorySummary.online_total} / 离线 ${nodeInventorySummary.offline_total}`,
+    [nodeInventorySummary.offline_total, nodeInventorySummary.online_total, nodeInventorySummary.paired_total],
+  );
   const currentGatewayBaseUrl = consoleSetup.gateway_base_url || window.location.origin;
 
   return (
@@ -1391,6 +1473,7 @@ export function App() {
                         <>
                           <InfoRow label="当前节点 IP" value={currentNodeLanIp || "-"} multiline />
                           <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "-"} multiline />
+                          <InfoRow label="网关连接状态" value={workerGatewayConnection.label} multiline />
                           <InfoRow label="节点安装目录" value={workerSetup.install_dir || "-"} multiline />
                           <InfoRow label="发现响应" value={workerSetup.discovery_enabled ? `已启用 · UDP ${workerSetup.discovery_port}` : "已关闭"} multiline />
                           <InfoRow label="最近任务" value={latestSetupSummary} multiline />
@@ -1539,6 +1622,23 @@ export function App() {
                             </div>
                             <section className="surface surface-subsection">
                               <div className="section-head">
+                                <div><div className="section-kicker">连接状态</div><h3>当前节点与目标网关</h3></div>
+                                <button type="button" className="ghost-button" onClick={() => void probeWorkerGateway({ reason: "manual" })} disabled={busy !== null}>{busy === "setup-gateway-probe" ? "检测中..." : "立即检测"}</button>
+                              </div>
+                              <div className="info-stack">
+                                <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
+                                <InfoRow label="当前连接状态" value={workerGatewayConnection.label} multiline />
+                                <InfoRow label="状态说明" value={workerGatewayConnection.detail} multiline />
+                                {workerGatewayConnection.remoteNode ? <InfoRow label="远端节点回报" value={[
+                                  workerGatewayConnection.remoteNode.hostname || workerGatewayConnection.remoteNode.node_id,
+                                  workerGatewayConnection.remoteNode.lan_ip || "未上报 IP",
+                                  workerGatewayConnection.remoteNode.status || "未上报状态",
+                                  workerGatewayConnection.remoteNode.last_heartbeat_at ? formatTimeLabel(workerGatewayConnection.remoteNode.last_heartbeat_at, true) : "暂无心跳",
+                                ].join(" · ")} multiline /> : null}
+                              </div>
+                            </section>
+                            <section className="surface surface-subsection">
+                              <div className="section-head">
                                 <div><div className="section-kicker">凭据与查看位置</div><h3>安装前确认节点凭据保存位置</h3></div>
                               </div>
                               <div className="inline-tip">
@@ -1632,21 +1732,21 @@ export function App() {
                 {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head">
                     <div><div className="section-kicker">节点清单</div><h3>已接入节点</h3></div>
-                    <span className="small-note">{nodes.length} 个节点</span>
+                    <span className="small-note">{nodeInventoryHeadline}</span>
                   </div>
-                  {!nodes.length ? (
+                  {!nodeInventory.length ? (
                     <div className="empty-state">当前还没有已接入节点。</div>
                   ) : (
                     <div className="node-cards">
-                      {nodes.map((node) => (
+                      {nodeInventory.map((node) => (
                         <div key={node.node_id} className="node-card">
                           <div className="node-card-top">
                             <div>
                               <div className="node-card-title">{node.hostname || node.node_id}</div>
                               <div className="node-card-subtitle">{node.node_id}</div>
                             </div>
-                            <span className={`session-badge session-badge-${node.status === "healthy" ? "typing" : node.status === "degraded" ? "queued" : "idle"}`}>
-                              {node.status}
+                            <span className={`session-badge session-badge-${node.online ? "human" : node.paired ? "queued" : "idle"}`}>
+                              {node.online ? "在线" : node.paired ? "离线" : "未纳管"}
                             </span>
                           </div>
                           <div className="node-card-grid">
@@ -1656,7 +1756,7 @@ export function App() {
                             </div>
                             <div>
                               <div className="node-card-label">上报地址</div>
-                              <div className="node-card-value">{getNodeAddress(node)}</div>
+                              <div className="node-card-value">{getInventoryNodeAddress(node)}</div>
                             </div>
                             <div>
                               <div className="node-card-label">平台</div>
@@ -1667,12 +1767,12 @@ export function App() {
                               <div className="node-card-value">{node.node_version || "未知"}</div>
                             </div>
                             <div>
-                              <div className="node-card-label">负载</div>
-                              <div className="node-card-value">{`${node.current_load}/${node.max_concurrency}`}</div>
+                              <div className="node-card-label">连接状态</div>
+                              <div className="node-card-value">{node.online ? (node.status || "healthy") : "暂未上报"}</div>
                             </div>
                             <div>
-                              <div className="node-card-label">通道槽位</div>
-                              <div className="node-card-value">{`${node.channel_in_use}/${node.channel_capacity}`}</div>
+                              <div className="node-card-label">最近心跳</div>
+                              <div className="node-card-value">{node.last_heartbeat_at ? formatTimeLabel(node.last_heartbeat_at, true) : "暂未上报"}</div>
                             </div>
                           </div>
                         </div>
@@ -1780,8 +1880,16 @@ export function App() {
                     </div>
                     <div className="info-stack">
                       <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
+                      <InfoRow label="网关连接状态" value={workerGatewayConnection.label} multiline />
+                      <InfoRow label="连接详情" value={workerGatewayConnection.detail} multiline />
                       <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
                       <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
+                      {workerGatewayConnection.remoteNode ? <InfoRow label="远端节点信息" value={[
+                        workerGatewayConnection.remoteNode.hostname || workerGatewayConnection.remoteNode.node_id,
+                        workerGatewayConnection.remoteNode.lan_ip || "未上报 IP",
+                        workerGatewayConnection.remoteNode.status || "未上报状态",
+                        workerGatewayConnection.remoteNode.last_heartbeat_at ? formatTimeLabel(workerGatewayConnection.remoteNode.last_heartbeat_at, true) : "暂无心跳",
+                      ].join(" · ")} multiline /> : null}
                     </div>
                   </section>
                 )}
@@ -1949,9 +2057,17 @@ function syncSessions(next: SessionRecord[], setSessions: React.Dispatch<React.S
   setSelectedSessionId((current) => current && next.some((item) => item.session_id === current) ? current : (next[0]?.session_id ?? null));
   setActiveSession((current) => current ? (next.find((item) => item.session_id === current.session_id) ?? next[0] ?? null) : (next[0] ?? null));
 }
-function syncNodes(next: NodeRecord[], setNodes: React.Dispatch<React.SetStateAction<NodeRecord[]>>, setSelectedNodeId: React.Dispatch<React.SetStateAction<string | null>>) {
-  setNodes(next);
-  setSelectedNodeId((current) => current && next.some((item) => item.node_id === current) ? current : (next[0]?.node_id ?? null));
+function syncNodeState(
+  next: NodeListResponse,
+  setNodes: React.Dispatch<React.SetStateAction<NodeRecord[]>>,
+  setNodeInventory: React.Dispatch<React.SetStateAction<NodeInventoryRecord[]>>,
+  setNodeInventorySummary: React.Dispatch<React.SetStateAction<NodeInventorySummary>>,
+  setSelectedNodeId: React.Dispatch<React.SetStateAction<string | null>>,
+) {
+  setNodes(next.nodes);
+  setNodeInventory(next.inventory);
+  setNodeInventorySummary(next.summary);
+  setSelectedNodeId((current) => current && next.nodes.some((item) => item.node_id === current) ? current : (next.nodes[0]?.node_id ?? null));
 }
 function matchesFilter(session: SessionRecord, filter: SessionFilter, now: number) { return filter === "processing" ? session.queue_status !== "none" || Boolean(session.active_task_id) : filter === "human" ? session.status === "human_active" || session.status === "handoff_pending" : filter === "recent" ? isRecent(session, now) : true; }
 function isRecent(session: SessionRecord, now: number) { const updatedAt = new Date(session.updated_at).getTime(); return !Number.isNaN(updatedAt) && now - updatedAt <= 30 * 60 * 1000; }
@@ -1963,6 +2079,13 @@ function getNodeAddress(node: NodeRecord) {
   if (node.lan_ip) return node.lan_ip;
   if (node.hostname) return node.hostname;
   return node.base_url || "未上报";
+}
+function getInventoryNodeAddress(node: NodeInventoryRecord) {
+  if (node.advertised_address) return node.advertised_address;
+  if (node.base_url && /^https?:\/\//i.test(node.base_url)) return node.base_url;
+  if (node.lan_ip) return node.lan_ip;
+  if (node.hostname) return node.hostname;
+  return node.base_url || "暂未上报";
 }
 function roleName(role: SetupRole) {
   if (role === "gateway_host") return "网关主机";

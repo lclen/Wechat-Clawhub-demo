@@ -30,7 +30,12 @@ from app.models.setup import (
     WorkerNodeSetupConfig,
     utcnow,
 )
-from app.utils.network import directed_broadcast_targets, preferred_gateway_base_url
+from app.utils.network import (
+    directed_broadcast_targets,
+    list_ipv4_interfaces,
+    preferred_gateway_base_url,
+    scoped_ipv4_interfaces,
+)
 
 
 @dataclass
@@ -242,7 +247,12 @@ class SetupService:
         self._finish_task(task, "succeeded")
         return task.to_result()
 
-    async def probe_gateway(self, gateway_base_url: str, timeout_ms: int | None = None) -> SetupTaskResult:
+    async def probe_gateway(
+        self,
+        gateway_base_url: str,
+        node_id: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> SetupTaskResult:
         task = self._create_task("gateway_probe", "检测节点目标网关")
         task.status = "running"
         target = gateway_base_url.strip().rstrip("/")
@@ -251,6 +261,9 @@ class SetupService:
             "gateway_base_url": target,
             "timeout_ms": str(effective_timeout_ms),
         }
+        normalized_node_id = (node_id or "").strip()
+        if normalized_node_id:
+            task.metadata["node_id"] = normalized_node_id
         self._append_log(task, f"开始检测目标网关：{target}")
         self._append_log(task, f"请求地址：{target}/api/system/status")
         self._append_log(task, f"超时时间：{effective_timeout_ms} ms")
@@ -309,6 +322,59 @@ class SetupService:
             self._append_log(task, f"网关上报的首选访问地址：{preferred_gateway_url}")
         self._append_log(task, f"当前在线节点数：{active_nodes}")
         self._append_log(task, f"分发模式：{dispatch_mode}")
+        if normalized_node_id:
+            self._append_log(task, f"开始检查节点注册状态：{normalized_node_id}")
+            try:
+                async with httpx.AsyncClient(timeout=effective_timeout_ms / 1000, trust_env=False) as client:
+                    nodes_response = await client.get(f"{target}/api/nodes")
+            except httpx.RequestError as exc:
+                task.summary = f"目标网关可达，但无法查询节点清单：{exc}"
+                self._append_log(task, task.summary)
+                self._finish_task(task, "failed")
+                return task.to_result()
+
+            task.metadata["nodes_http_status"] = str(nodes_response.status_code)
+            self._append_log(task, f"节点清单返回 HTTP {nodes_response.status_code}")
+            if nodes_response.status_code >= 400:
+                task.summary = f"目标网关可达，但查询节点清单失败：HTTP {nodes_response.status_code}"
+                self._finish_task(task, "failed")
+                return task.to_result()
+            try:
+                nodes_payload = nodes_response.json()
+            except ValueError:
+                task.summary = "目标网关可达，但节点清单响应不是合法 JSON。"
+                self._finish_task(task, "failed")
+                return task.to_result()
+
+            matched_node = self._find_node_in_probe_payload(nodes_payload, normalized_node_id)
+            if matched_node is None:
+                task.metadata["node_registered"] = "false"
+                task.summary = f"目标网关可达，但节点未注册/未在线：{normalized_node_id}"
+                self._append_log(task, task.summary)
+                self._finish_task(task, "succeeded")
+                return task.to_result()
+
+            task.metadata.update(
+                {
+                    "node_registered": "true",
+                    "node_status": str(matched_node.get("status") or ""),
+                    "node_last_heartbeat_at": str(matched_node.get("last_heartbeat_at") or ""),
+                    "matched_lan_ip": str(matched_node.get("lan_ip") or ""),
+                    "matched_hostname": str(matched_node.get("hostname") or ""),
+                }
+            )
+            if matched_node.get("lan_ip"):
+                self._append_log(task, f"节点局域网 IP：{matched_node.get('lan_ip')}")
+            if matched_node.get("hostname"):
+                self._append_log(task, f"节点主机名：{matched_node.get('hostname')}")
+            if matched_node.get("status"):
+                self._append_log(task, f"节点状态：{matched_node.get('status')}")
+            if matched_node.get("last_heartbeat_at"):
+                self._append_log(task, f"最近心跳：{matched_node.get('last_heartbeat_at')}")
+            task.summary = f"目标网关可达，节点已连接：{normalized_node_id}"
+            self._finish_task(task, "succeeded")
+            return task.to_result()
+
         task.summary = f"目标网关可达：{target}"
         self._finish_task(task, "succeeded")
         return task.to_result()
@@ -499,6 +565,20 @@ class SetupService:
         self._console_gateway_base_url = target
         self._settings.console_gateway_base_url = target
         self._write_env_updates(self._gateway_env_path, {"WCH_CONSOLE_GATEWAY_BASE_URL": target})
+
+    def _find_node_in_probe_payload(
+        self,
+        payload: dict[str, object],
+        node_id: str,
+    ) -> dict[str, object] | None:
+        for section_name in ("nodes", "inventory"):
+            raw_items = payload.get(section_name)
+            if not isinstance(raw_items, list):
+                continue
+            for item in raw_items:
+                if isinstance(item, dict) and str(item.get("node_id") or "") == node_id:
+                    return item
+        return None
 
     async def _probe_console_gateway(self, target: str) -> dict[str, object]:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -822,6 +902,20 @@ class SetupService:
             payload = json.dumps({"type": "discover", "request_id": request_id}).encode("utf-8")
             gateway_scan_base_url = self._console_gateway_base_url.strip() or preferred_gateway_base_url()
             self._append_log(task, f"本次按网关地址所属子网扫描：{gateway_scan_base_url}")
+            interfaces = list_ipv4_interfaces()
+            if interfaces:
+                interface_summary = ", ".join(
+                    f"{interface.address}/{interface.prefix_length}->{interface.broadcast}"
+                    for interface in interfaces
+                )
+                self._append_log(task, f"本机可用 IPv4 网卡：{interface_summary}。")
+            scoped_interfaces = scoped_ipv4_interfaces(gateway_scan_base_url)
+            if scoped_interfaces:
+                scoped_summary = ", ".join(
+                    f"{interface.address}/{interface.prefix_length}->{interface.broadcast}"
+                    for interface in scoped_interfaces
+                )
+                self._append_log(task, f"本次命中的扫描网卡：{scoped_summary}。")
             broadcast_targets = directed_broadcast_targets(gateway_scan_base_url)
             if not broadcast_targets:
                 self._append_log(task, "未识别到定向广播地址，回退到 255.255.255.255。")
