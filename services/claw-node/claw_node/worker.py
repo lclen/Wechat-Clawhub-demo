@@ -201,6 +201,9 @@ class Worker:
         self._last_error = None
         self._persist_runtime_pairing()
         await self._ensure_gateway_loops_started()
+        if self._heartbeat_task is None or self._polling_task is None:
+            detail = self._last_error or self._inference_error or "Node accepted the pairing parameters but failed to register on the gateway."
+            return 200, {"pairing_status": "register_failed", "node_id": self._settings.node_id, "detail": detail}
         return 200, {"pairing_status": "paired", "node_id": self._settings.node_id}
 
     def _persist_runtime_pairing(self) -> None:

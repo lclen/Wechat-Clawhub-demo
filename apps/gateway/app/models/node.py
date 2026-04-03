@@ -74,7 +74,14 @@ class NodeRecord(BaseModel):
     channel_in_use: int = 0
 
 
-NodeInventoryConnectionState = Literal["connected", "paired_offline", "online_unpaired"]
+NodeInventoryConnectionState = Literal[
+    "connected",
+    "pairing_pending",
+    "register_failed",
+    "auth_failed",
+    "paired_offline",
+    "online_unpaired",
+]
 
 
 class NodeInventoryRecord(BaseModel):

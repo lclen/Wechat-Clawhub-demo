@@ -11,7 +11,7 @@ type RoutingMode = "auto" | "manual";
 type SessionRecord = { session_id: string; channel: string; user_id: string; agent_id: string; status: SessionStatus; assigned_node_id: string | null; assigned_slot_id: string | null; active_task_id: string | null; queue_status: QueueStatus; context_summary: string; context_version: number; routing_mode: RoutingMode; slot_bound_at: string | null; slot_expires_at: string | null; reply_context_token: string | null; handoff_ticket_id: string | null; claimed_by: string | null; message_count: number; last_message_at: string; last_dispatch_at: string | null; created_at: string; updated_at: string; version: number };
 type MessageRecord = { message_id: string; session_id: string; channel: string; user_id: string; role: "user" | "bot" | "human" | "system"; content: string; created_at: string; actor_id: string | null; node_id: string | null; metadata: Record<string, string> };
 type NodeRecord = { node_id: string; base_url: string; advertised_address: string | null; lan_ip: string | null; max_concurrency: number; current_load: number; status: string; last_heartbeat_at: string; updated_at: string; last_error: string | null; load_ratio: number; node_version: string | null; platform: string | null; hostname: string | null; capabilities: string[]; channel_capacity: number; channel_in_use: number };
-type NodeInventoryConnectionState = "connected" | "paired_offline" | "online_unpaired";
+type NodeInventoryConnectionState = "connected" | "pairing_pending" | "register_failed" | "auth_failed" | "paired_offline" | "online_unpaired";
 type NodeInventoryRecord = { node_id: string; paired: boolean; online: boolean; connection_state: NodeInventoryConnectionState; status: string | null; last_heartbeat_at: string | null; updated_at: string | null; hostname: string | null; lan_ip: string | null; platform: string | null; node_version: string | null; advertised_address: string | null; last_error: string | null; base_url: string | null; max_concurrency: number | null; current_load: number | null; channel_capacity: number | null; channel_in_use: number | null };
 type NodeInventorySummary = { paired_total: number; online_total: number; offline_total: number };
 type NodeListResponse = { nodes: NodeRecord[]; inventory: NodeInventoryRecord[]; summary: NodeInventorySummary };
@@ -26,7 +26,7 @@ type SetupTaskStatus = "pending" | "running" | "succeeded" | "failed";
 type GatewaySetupConfig = { redis_url: string; default_agent_id: string; dify_base_url: string; dify_api_key: string; builtin_model_base_url: string; builtin_model_api_key: string; builtin_model_name: string; wechat_base_url: string; wechat_token: string; dispatch_mode_enabled: boolean };
 type WorkerNodeSetupConfig = { node_id: string; gateway_base_url: string; node_token: string; pairing_key: string; dify_base_url: string; dify_api_key: string; max_concurrency: number; install_dir: string; bundle_path: string; discovery_enabled: boolean; discovery_port: number };
 type ConsoleSetupConfig = { gateway_base_url: string };
-type PairingStatus = "pending" | "paired" | "auth_failed" | "already_paired" | "offline";
+type PairingStatus = "pending" | "paired" | "paired_pending_confirm" | "register_failed" | "auth_failed" | "already_paired" | "offline";
 type DiscoveredNodeRecord = { discovery_id: string; node_id: string | null; pairing_label: string | null; hostname: string; lan_ip: string | null; platform: string | null; node_version: string | null; capabilities: string[]; advertised_address: string | null; pairing_required: boolean; already_paired: boolean; pairing_port: number; last_seen_at: string };
 type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "gateway_probe" | "discovery_scan" | "discovery_pair" | "manual_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
 type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; preferred_gateway_base_url: string; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
@@ -66,7 +66,13 @@ type PairingDebugEntry = {
   target: string;
   updated_at: string;
 };
-type WorkerGatewayConnectionState = "idle" | "gateway_unreachable" | "gateway_reachable_node_missing" | "gateway_reachable_node_connected";
+type WorkerGatewayConnectionState =
+  | "idle"
+  | "gateway_unreachable"
+  | "gateway_reachable_node_missing"
+  | "gateway_reachable_node_pending_confirm"
+  | "gateway_reachable_node_register_failed"
+  | "gateway_reachable_node_connected";
 
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
@@ -1234,19 +1240,39 @@ export function App() {
         remoteNode: null as NodeInventoryRecord | NodeRecord | null,
       };
     }
+    const connectionState = task.metadata.node_connection_state || "";
+    const inventoryNode = nodeInventory.find((item) => item.node_id === nodeId) ?? null;
+    const onlineNode = nodes.find((item) => item.node_id === nodeId) ?? null;
     if (task.metadata.node_registered === "true") {
       return {
         state: "gateway_reachable_node_connected" as WorkerGatewayConnectionState,
         label: "网关可达，节点已连接",
         detail: task.summary || `节点 ${nodeId} 已在目标网关注册。`,
-        remoteNode: nodeInventory.find((item) => item.node_id === nodeId) ?? nodes.find((item) => item.node_id === nodeId) ?? null,
+        remoteNode: inventoryNode ?? onlineNode,
+      };
+    }
+    if (connectionState === "pairing_pending") {
+      return {
+        state: "gateway_reachable_node_pending_confirm" as WorkerGatewayConnectionState,
+        label: "网关可达，等待注册确认",
+        detail: task.summary || `节点 ${nodeId} 已接收配置，正在等待 register/heartbeat。`,
+        remoteNode: inventoryNode,
+      };
+    }
+    if (connectionState === "auth_failed" || connectionState === "register_failed") {
+      const lastError = task.metadata.node_last_error?.trim();
+      return {
+        state: "gateway_reachable_node_register_failed" as WorkerGatewayConnectionState,
+        label: "网关可达，注册失败/鉴权失败",
+        detail: lastError || task.summary || `节点 ${nodeId} 注册失败，请重新配对。`,
+        remoteNode: inventoryNode,
       };
     }
     return {
       state: "gateway_reachable_node_missing" as WorkerGatewayConnectionState,
       label: "网关可达，节点未注册",
       detail: task.summary || `目标网关可访问，但尚未发现节点 ${nodeId}。`,
-      remoteNode: null as NodeInventoryRecord | NodeRecord | null,
+      remoteNode: inventoryNode,
     };
   }, [nodeInventory, nodes, workerGatewayProbeTask, workerSetup.gateway_base_url, workerSetup.node_id]);
   const latestSetupSummary = useMemo(
@@ -1591,7 +1617,7 @@ export function App() {
                                           <div className="node-card-title">{item.pairing_label || item.hostname}</div>
                                           <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
                                         </div>
-                                        <span className={`session-badge session-badge-${pairingStatuses[item.discovery_id] === "paired" ? "human" : pairingStatuses[item.discovery_id] === "auth_failed" ? "queued" : item.already_paired ? "typing" : "idle"}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
+                                        <span className={`session-badge session-badge-${pairingStatusTone(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
                                       </div>
                                       <div className="node-card-grid">
                                         <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
@@ -1648,12 +1674,7 @@ export function App() {
                                 <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
                                 <InfoRow label="当前连接状态" value={workerGatewayConnection.label} multiline />
                                 <InfoRow label="状态说明" value={workerGatewayConnection.detail} multiline />
-                                {workerGatewayConnection.remoteNode ? <InfoRow label="远端节点回报" value={[
-                                  workerGatewayConnection.remoteNode.hostname || workerGatewayConnection.remoteNode.node_id,
-                                  workerGatewayConnection.remoteNode.lan_ip || "未上报 IP",
-                                  workerGatewayConnection.remoteNode.status || "未上报状态",
-                                  workerGatewayConnection.remoteNode.last_heartbeat_at ? formatTimeLabel(workerGatewayConnection.remoteNode.last_heartbeat_at, true) : "暂无心跳",
-                                ].join(" · ")} multiline /> : null}
+                                {workerGatewayConnection.remoteNode ? <InfoRow label="远端节点回报" value={summarizeRemoteNode(workerGatewayConnection.remoteNode)} multiline /> : null}
                               </div>
                             </section>
                             <section className="surface surface-subsection">
@@ -1762,11 +1783,11 @@ export function App() {
                           <div className="node-card-top">
                             <div>
                               <div className="node-card-title">{node.hostname || node.node_id}</div>
-                              <div className="node-card-subtitle">{node.node_id}</div>
+                              <div className="node-card-subtitle">{node.node_id} · {nodeRoleLabel(node.node_id)}</div>
                             </div>
                             <div className="inline-actions">
-                              <span className={`session-badge session-badge-${node.online ? "human" : node.paired ? "queued" : "idle"}`}>
-                                {node.online ? "在线" : node.paired ? "离线" : "未纳管"}
+                              <span className={`session-badge session-badge-${nodeInventoryBadgeTone(node.connection_state)}`}>
+                                {nodeInventoryBadgeLabel(node.connection_state, node.paired)}
                               </span>
                               {node.paired ? <button type="button" className="ghost-button" onClick={() => void deletePairedNode(node)} disabled={busy !== null}>{busy === `delete-node-${node.node_id}` ? "删除中..." : "删除节点"}</button> : null}
                             </div>
@@ -1790,7 +1811,7 @@ export function App() {
                             </div>
                             <div>
                               <div className="node-card-label">连接状态</div>
-                              <div className="node-card-value">{node.online ? (node.status || "healthy") : "暂未上报"}</div>
+                              <div className="node-card-value">{describeInventoryConnection(node)}</div>
                             </div>
                             <div>
                               <div className="node-card-label">最近心跳</div>
@@ -1876,7 +1897,7 @@ export function App() {
                                   <div className="node-card-title">{item.pairing_label || item.hostname}</div>
                                   <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
                                 </div>
-                                <span className={`session-badge session-badge-${pairingStatuses[item.discovery_id] === "paired" ? "human" : pairingStatuses[item.discovery_id] === "auth_failed" ? "queued" : item.already_paired ? "typing" : "idle"}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
+                                <span className={`session-badge session-badge-${pairingStatusTone(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
                               </div>
                               <div className="node-card-grid">
                                 <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
@@ -1906,12 +1927,7 @@ export function App() {
                       <InfoRow label="连接详情" value={workerGatewayConnection.detail} multiline />
                       <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
                       <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
-                      {workerGatewayConnection.remoteNode ? <InfoRow label="远端节点信息" value={[
-                        workerGatewayConnection.remoteNode.hostname || workerGatewayConnection.remoteNode.node_id,
-                        workerGatewayConnection.remoteNode.lan_ip || "未上报 IP",
-                        workerGatewayConnection.remoteNode.status || "未上报状态",
-                        workerGatewayConnection.remoteNode.last_heartbeat_at ? formatTimeLabel(workerGatewayConnection.remoteNode.last_heartbeat_at, true) : "暂无心跳",
-                      ].join(" · ")} multiline /> : null}
+                      {workerGatewayConnection.remoteNode ? <InfoRow label="远端节点信息" value={summarizeRemoteNode(workerGatewayConnection.remoteNode)} multiline /> : null}
                     </div>
                   </section>
                 )}
@@ -2179,7 +2195,67 @@ function previewOutcome(role: SetupRole) {
   if (role === "worker_node") return "成功后会返回本机节点安装日志、节点 ID、主网关回连信息和安装目录；失败时保留错误摘要，便于重试。";
   return "成功后会记录控制台默认网关地址，并可继续进入接入中心或会话观察台。";
 }
-function pairingStatusLabel(status: PairingStatus) { return status === "paired" ? "已配对" : status === "auth_failed" ? "密钥错误" : status === "already_paired" ? "已纳管" : status === "offline" ? "离线" : "待连接"; }
+function pairingStatusLabel(status: PairingStatus) {
+  return status === "paired"
+    ? "已确认连接"
+    : status === "paired_pending_confirm"
+    ? "待确认"
+    : status === "register_failed"
+    ? "注册失败"
+    : status === "auth_failed"
+    ? "密钥错误"
+    : status === "already_paired"
+    ? "已纳管"
+    : status === "offline"
+    ? "离线"
+    : "待连接";
+}
+function pairingStatusTone(status: PairingStatus) {
+  return status === "paired"
+    ? "human"
+    : status === "paired_pending_confirm" || status === "already_paired"
+    ? "typing"
+    : status === "register_failed" || status === "auth_failed"
+    ? "queued"
+    : "idle";
+}
+function nodeRoleLabel(nodeId: string) {
+  return nodeId === "local-node" || nodeId.startsWith("claw-node-local") ? "本机节点" : "远端节点";
+}
+function nodeInventoryBadgeLabel(connectionState: NodeInventoryConnectionState, paired: boolean) {
+  if (connectionState === "connected") return "在线";
+  if (connectionState === "pairing_pending") return "待确认";
+  if (connectionState === "register_failed" || connectionState === "auth_failed") return "异常";
+  if (connectionState === "paired_offline") return "离线";
+  return paired ? "离线" : "未纳管";
+}
+function nodeInventoryBadgeTone(connectionState: NodeInventoryConnectionState) {
+  return connectionState === "connected"
+    ? "human"
+    : connectionState === "pairing_pending"
+    ? "typing"
+    : connectionState === "register_failed" || connectionState === "auth_failed"
+    ? "queued"
+    : connectionState === "paired_offline"
+    ? "queued"
+    : "idle";
+}
+function describeInventoryConnection(node: NodeInventoryRecord) {
+  if (node.connection_state === "connected") return node.status || "healthy";
+  if (node.connection_state === "pairing_pending") return node.last_error || "已下发配置，等待注册确认";
+  if (node.connection_state === "register_failed") return node.last_error || "注册失败";
+  if (node.connection_state === "auth_failed") return node.last_error || "鉴权失败，需要重新配对";
+  if (node.connection_state === "paired_offline") return node.last_error || "暂未上报";
+  return node.status || "未纳管";
+}
+function summarizeRemoteNode(node: NodeInventoryRecord | NodeRecord) {
+  return [
+    `${node.hostname || node.node_id}（${nodeRoleLabel(node.node_id)}）`,
+    node.lan_ip || "未上报 IP",
+    node.last_error || node.status || "未上报状态",
+    node.last_heartbeat_at ? formatTimeLabel(node.last_heartbeat_at, true) : "暂无心跳",
+  ].join(" · ");
+}
 function pairingDebugStatusLabel(status: PairingDebugEntry["status"]) { return status === "succeeded" ? "成功" : status === "running" ? "进行中" : status === "pending" ? "等待中" : "失败"; }
 function launcherEnvironmentLabel(name: string) {
   return name === "python" ? "Python 运行时" : name === "node_install_script" ? "节点安装脚本" : name === "node_bundle" ? "节点 bundle" : name === "winsw" ? "Windows 服务包装器" : name;

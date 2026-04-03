@@ -100,7 +100,11 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
         worker = Worker(settings)
         worker._persist_runtime_pairing = MagicMock()
-        worker._ensure_gateway_loops_started = AsyncMock()
+        async def activate_gateway_loops() -> None:
+            worker._heartbeat_task = object()  # type: ignore[assignment]
+            worker._polling_task = object()  # type: ignore[assignment]
+
+        worker._ensure_gateway_loops_started = AsyncMock(side_effect=activate_gateway_loops)
 
         status_code, payload = await worker._handle_pair_request(
             {
@@ -117,6 +121,33 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker._settings.node_token, "fresh-token")
         worker._persist_runtime_pairing.assert_called_once()
         worker._ensure_gateway_loops_started.assert_awaited_once()
+
+    async def test_pair_request_reports_register_failure_when_gateway_activation_fails(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="stale-token",
+            CLAW_PAIRING_KEY="123456",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        worker._persist_runtime_pairing = MagicMock()
+        worker._ensure_gateway_loops_started = AsyncMock(side_effect=lambda: setattr(worker, "_last_error", "401 Unauthorized"))
+
+        status_code, payload = await worker._handle_pair_request(
+            {
+                "pairing_key": "123456",
+                "gateway_base_url": "http://192.168.0.17:8300",
+                "node_token": "fresh-token",
+                "node_id": "node-local-1",
+            }
+        )
+
+        self.assertEqual(status_code, 200)
+        self.assertEqual(payload["pairing_status"], "register_failed")
+        self.assertIn("401", str(payload["detail"]))
 
 
 if __name__ == "__main__":

@@ -38,11 +38,12 @@ async def list_nodes(
     store: RedisStore = Depends(get_redis_store),
     registry: NodeRegistry = Depends(get_node_registry),
     settings: Settings = Depends(get_settings_dep),
+    setup_service: SetupService = Depends(get_setup_service),
 ) -> NodeListResponse:
     await ensure_redis_available(store)
     try:
         nodes = await registry.list_nodes()
-        inventory = build_node_inventory(nodes, settings.node_tokens)
+        inventory = build_node_inventory(nodes, settings.node_tokens, setup_service.get_pairing_diagnostics())
         summary = NodeInventorySummary(
             paired_total=sum(1 for node_id in settings.node_tokens if node_id.strip()),
             online_total=sum(1 for item in inventory if item.online),
@@ -70,14 +71,23 @@ async def register_node(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
-def build_node_inventory(nodes: list[NodeRecord], node_tokens: dict[str, str]) -> list[NodeInventoryRecord]:
+def build_node_inventory(
+    nodes: list[NodeRecord],
+    node_tokens: dict[str, str],
+    pairing_diagnostics: dict[str, dict[str, str]] | None = None,
+) -> list[NodeInventoryRecord]:
     online_by_id = {node.node_id: node for node in nodes}
     paired_ids = {node_id.strip() for node_id in node_tokens if node_id.strip()}
     inventory_ids = sorted(paired_ids | set(online_by_id))
+    pairing_diagnostics = pairing_diagnostics or {}
     inventory: list[NodeInventoryRecord] = []
     for node_id in inventory_ids:
         online = online_by_id.get(node_id)
         paired = node_id in paired_ids
+        diagnostic = pairing_diagnostics.get(node_id, {})
+        offline_state = diagnostic.get("connection_state") or "paired_offline"
+        if offline_state not in {"pairing_pending", "register_failed", "auth_failed", "paired_offline"}:
+            offline_state = "paired_offline"
         inventory.append(
             NodeInventoryRecord(
                 node_id=node_id,
@@ -88,7 +98,7 @@ def build_node_inventory(nodes: list[NodeRecord], node_tokens: dict[str, str]) -
                     if online is not None and paired
                     else "online_unpaired"
                     if online is not None
-                    else "paired_offline"
+                    else offline_state
                     if paired
                     else "online_unpaired"
                 ),
@@ -100,7 +110,7 @@ def build_node_inventory(nodes: list[NodeRecord], node_tokens: dict[str, str]) -
                 platform=online.platform if online else None,
                 node_version=online.node_version if online else None,
                 advertised_address=online.advertised_address if online else None,
-                last_error=online.last_error if online else None,
+                last_error=online.last_error if online else (diagnostic.get("last_error") or None),
                 base_url=online.base_url if online else None,
                 max_concurrency=online.max_concurrency if online else None,
                 current_load=online.current_load if online else None,

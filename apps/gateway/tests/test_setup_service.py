@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from asyncio.subprocess import PIPE
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -19,6 +21,7 @@ class FakeResponse:
     def __init__(self, status_code: int, payload: dict[str, object]) -> None:
         self.status_code = status_code
         self._payload = payload
+        self.text = json.dumps(payload, ensure_ascii=False)
 
     def json(self) -> dict[str, object]:
         return self._payload
@@ -325,6 +328,55 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.metadata["matched_hostname"], "NODE-B")
         self.assertIn("节点已连接", task.summary)
 
+    async def test_probe_gateway_reports_register_failure_from_inventory(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=3.0, trust_env=False: FakeAsyncClient(
+            {
+                "http://192.168.0.18:8300/api/system/status": FakeResponse(
+                    200,
+                    {
+                        "app_name": "wechat-claw-hub gateway",
+                        "environment": "development",
+                        "preferred_lan_ip": "192.168.0.18",
+                        "preferred_gateway_base_url": "http://192.168.0.18:8300",
+                        "active_nodes": 1,
+                        "dispatch_mode_enabled": False,
+                    },
+                ),
+                "http://192.168.0.18:8300/api/nodes": FakeResponse(
+                    200,
+                    {
+                        "nodes": [],
+                        "inventory": [
+                            {
+                                "node_id": "node-b",
+                                "paired": True,
+                                "online": False,
+                                "connection_state": "auth_failed",
+                                "last_error": "401 Unauthorized",
+                            }
+                        ],
+                    },
+                ),
+            }
+        )
+        try:
+            task = await self.service.probe_gateway(
+                "http://192.168.0.18:8300",
+                node_id="node-b",
+                timeout_ms=2500,
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertEqual(task.metadata["node_registered"], "false")
+        self.assertEqual(task.metadata["node_connection_state"], "auth_failed")
+        self.assertEqual(task.metadata["node_last_error"], "401 Unauthorized")
+        self.assertIn("注册失败/鉴权失败", task.summary)
+
     async def test_set_dispatch_mode_updates_settings_and_env(self) -> None:
         task = await self.service.set_dispatch_mode(True)
 
@@ -454,9 +506,78 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_manual_pair_node_success_persists_gateway_token(self) -> None:
         import app.services.setup_service as setup_service_module
 
+        confirmed_node = SimpleNamespace(
+            node_id="node-remote",
+            lan_ip="192.168.0.23",
+            hostname="NODE-REMOTE",
+            last_heartbeat_at=datetime.now(UTC),
+        )
+        registry = SimpleNamespace(list_nodes=AsyncMock(return_value=[confirmed_node]))
         original_client = setup_service_module.httpx.AsyncClient
         setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
             FakeResponse(200, {"pairing_status": "paired", "node_id": "node-remote"})
+        )
+        try:
+            result = await self.service.manual_pair_node(
+                SimpleNamespace(
+                    host="192.168.0.23",
+                    pairing_port=9532,
+                    pairing_key="pairing-secret",
+                    gateway_base_url="http://192.168.0.17:8300",
+                    node_id="node-remote",
+                ),
+                registry,
+            )
+        finally:
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(result.pairing_status, "paired")
+        self.assertEqual(result.node_id, "node-remote")
+        self.assertIn("node-remote", self.settings.node_tokens)
+        self.assertEqual(result.task.status, "succeeded")
+        self.assertEqual(result.task.metadata["matched_lan_ip"], "192.168.0.23")
+        self.assertEqual(result.task.metadata["matched_hostname"], "NODE-REMOTE")
+
+    async def test_manual_pair_node_returns_pending_confirm_when_registration_not_confirmed(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        registry = SimpleNamespace(list_nodes=AsyncMock(return_value=[]))
+        original_client = setup_service_module.httpx.AsyncClient
+        original_timeout = self.service._PAIR_CONFIRM_TIMEOUT_SECONDS
+        original_interval = self.service._PAIR_CONFIRM_INTERVAL_SECONDS
+        self.service._PAIR_CONFIRM_TIMEOUT_SECONDS = 0.01
+        self.service._PAIR_CONFIRM_INTERVAL_SECONDS = 0.001
+        setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
+            FakeResponse(200, {"pairing_status": "paired", "node_id": "node-remote"})
+        )
+        try:
+            result = await self.service.manual_pair_node(
+                SimpleNamespace(
+                    host="192.168.0.23",
+                    pairing_port=9532,
+                    pairing_key="pairing-secret",
+                    gateway_base_url="http://192.168.0.17:8300",
+                    node_id="node-remote",
+                ),
+                registry,
+            )
+        finally:
+            self.service._PAIR_CONFIRM_TIMEOUT_SECONDS = original_timeout
+            self.service._PAIR_CONFIRM_INTERVAL_SECONDS = original_interval
+            setup_service_module.httpx.AsyncClient = original_client
+
+        self.assertEqual(result.pairing_status, "paired_pending_confirm")
+        self.assertEqual(result.task.status, "failed")
+        diagnostics = self.service.get_pairing_diagnostics()
+        self.assertEqual(diagnostics["node-remote"]["connection_state"], "pairing_pending")
+        self.assertIn("未在确认窗口内完成注册", diagnostics["node-remote"]["last_error"])
+
+    async def test_manual_pair_node_surfaces_register_auth_failure(self) -> None:
+        import app.services.setup_service as setup_service_module
+
+        original_client = setup_service_module.httpx.AsyncClient
+        setup_service_module.httpx.AsyncClient = lambda timeout=8.0, trust_env=False: FakeAsyncClient(
+            FakeResponse(200, {"pairing_status": "register_failed", "node_id": "node-remote", "detail": "401 Unauthorized: invalid node token"})
         )
         try:
             result = await self.service.manual_pair_node(
@@ -471,10 +592,12 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         finally:
             setup_service_module.httpx.AsyncClient = original_client
 
-        self.assertEqual(result.pairing_status, "paired")
-        self.assertEqual(result.node_id, "node-remote")
-        self.assertIn("node-remote", self.settings.node_tokens)
-        self.assertEqual(result.task.status, "succeeded")
+        self.assertEqual(result.pairing_status, "register_failed")
+        self.assertEqual(result.task.status, "failed")
+        self.assertIn("注册失败", result.task.summary)
+        diagnostics = self.service.get_pairing_diagnostics()
+        self.assertEqual(diagnostics["node-remote"]["connection_state"], "auth_failed")
+        self.assertIn("Unauthorized", diagnostics["node-remote"]["last_error"])
 
     async def test_manual_pair_node_returns_auth_failed(self) -> None:
         import app.services.setup_service as setup_service_module

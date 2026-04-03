@@ -65,9 +65,19 @@ class SetupTaskState:
         )
 
 
+@dataclass
+class PairingDiagnosticState:
+    node_id: str
+    connection_state: str
+    last_error: str = ""
+    updated_at: object = field(default_factory=utcnow)
+
+
 class SetupService:
     _DEFAULT_BUILTIN_MODEL_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     _DEFAULT_BUILTIN_MODEL_NAME = "qwen3.5-plus"
+    _PAIR_CONFIRM_TIMEOUT_SECONDS = 8.0
+    _PAIR_CONFIRM_INTERVAL_SECONDS = 0.5
 
     def __init__(self, settings: Settings, wechat_bot: WeChatBotService) -> None:
         self._settings = settings
@@ -81,6 +91,7 @@ class SetupService:
         self._repo_root = Path(__file__).resolve().parents[4]
         self._node_install_script = self._repo_root / "scripts" / "install-claw-node.ps1"
         self._discovered_nodes: dict[str, DiscoveredNodeRecord] = {}
+        self._pairing_diagnostics: dict[str, PairingDiagnosticState] = {}
 
     def get_profile(self) -> SetupProfileResponse:
         gateway = GatewaySetupConfig(
@@ -199,7 +210,11 @@ class SetupService:
         self._finish_task(task, "succeeded")
         return DiscoveryScanResponse(task=task.to_result(), nodes=discovered)
 
-    async def pair_discovered_node(self, payload: DiscoveryPairRequest) -> DiscoveryPairResponse:
+    async def pair_discovered_node(
+        self,
+        payload: DiscoveryPairRequest,
+        registry: NodeRegistry | None = None,
+    ) -> DiscoveryPairResponse:
         task = self._create_task("discovery_pair", "为局域网节点发起配对")
         task.status = "running"
         discovered = self._discovered_nodes.get(payload.discovery_id)
@@ -222,9 +237,14 @@ class SetupService:
             node_id=payload.node_id or discovered.node_id,
             discovered=discovered,
             suggested_label=discovered.pairing_label or discovered.hostname,
+            registry=registry,
         )
 
-    async def manual_pair_node(self, payload: ManualPairRequest) -> DiscoveryPairResponse:
+    async def manual_pair_node(
+        self,
+        payload: ManualPairRequest,
+        registry: NodeRegistry | None = None,
+    ) -> DiscoveryPairResponse:
         task = self._create_task("manual_pair", "按地址配对工作节点")
         task.status = "running"
         host = payload.host.strip()
@@ -236,6 +256,7 @@ class SetupService:
             gateway_base_url=payload.gateway_base_url,
             node_id=payload.node_id,
             suggested_label=host,
+            registry=registry,
         )
 
     async def connect_console(self, config: ConsoleSetupConfig) -> SetupTaskResult:
@@ -347,17 +368,34 @@ class SetupService:
                 self._finish_task(task, "failed")
                 return task.to_result()
 
-            matched_node = self._find_node_in_probe_payload(nodes_payload, normalized_node_id)
+            matched_node = self._find_registered_node_in_probe_payload(nodes_payload, normalized_node_id)
+            inventory_node = self._find_inventory_node_in_probe_payload(nodes_payload, normalized_node_id)
             if matched_node is None:
                 task.metadata["node_registered"] = "false"
-                task.summary = f"目标网关可达，但节点未注册/未在线：{normalized_node_id}"
+                if inventory_node is not None:
+                    connection_state = str(inventory_node.get("connection_state") or "")
+                    task.metadata["node_connection_state"] = connection_state
+                    task.metadata["node_last_error"] = str(inventory_node.get("last_error") or "")
+                    if connection_state == "auth_failed":
+                        task.summary = f"目标网关可达，但节点注册失败/鉴权失败：{normalized_node_id}"
+                    elif connection_state == "register_failed":
+                        task.summary = f"目标网关可达，但节点注册失败：{normalized_node_id}"
+                    elif connection_state == "pairing_pending":
+                        task.summary = f"目标网关可达，节点已下发配置，等待注册确认：{normalized_node_id}"
+                    else:
+                        task.summary = f"目标网关可达，但节点未注册/未在线：{normalized_node_id}"
+                else:
+                    task.summary = f"目标网关可达，但节点未注册/未在线：{normalized_node_id}"
                 self._append_log(task, task.summary)
+                if inventory_node is not None and inventory_node.get("last_error"):
+                    self._append_log(task, f"最近错误：{inventory_node.get('last_error')}")
                 self._finish_task(task, "succeeded")
                 return task.to_result()
 
             task.metadata.update(
                 {
                     "node_registered": "true",
+                    "node_connection_state": str(matched_node.get("connection_state") or "connected"),
                     "node_status": str(matched_node.get("status") or ""),
                     "node_last_heartbeat_at": str(matched_node.get("last_heartbeat_at") or ""),
                     "matched_lan_ip": str(matched_node.get("lan_ip") or ""),
@@ -415,6 +453,29 @@ class SetupService:
     def _finish_task(self, task: SetupTaskState, status: SetupTaskStatus) -> None:
         task.status = status
         task.updated_at = utcnow()
+
+    def get_pairing_diagnostics(self) -> dict[str, dict[str, str]]:
+        return {
+            node_id: {
+                "connection_state": item.connection_state,
+                "last_error": item.last_error,
+                "updated_at": str(item.updated_at),
+            }
+            for node_id, item in self._pairing_diagnostics.items()
+        }
+
+    def _set_pairing_diagnostic(self, node_id: str, connection_state: str, last_error: str = "") -> None:
+        normalized_node_id = node_id.strip()
+        if not normalized_node_id:
+            return
+        self._pairing_diagnostics[normalized_node_id] = PairingDiagnosticState(
+            node_id=normalized_node_id,
+            connection_state=connection_state,
+            last_error=last_error.strip(),
+        )
+
+    def _clear_pairing_diagnostic(self, node_id: str) -> None:
+        self._pairing_diagnostics.pop(node_id.strip(), None)
 
     async def _apply_gateway_config(
         self,
@@ -567,18 +628,30 @@ class SetupService:
         self._settings.console_gateway_base_url = target
         self._write_env_updates(self._gateway_env_path, {"WCH_CONSOLE_GATEWAY_BASE_URL": target})
 
-    def _find_node_in_probe_payload(
+    def _find_registered_node_in_probe_payload(
         self,
         payload: dict[str, object],
         node_id: str,
     ) -> dict[str, object] | None:
-        for section_name in ("nodes", "inventory"):
-            raw_items = payload.get(section_name)
-            if not isinstance(raw_items, list):
-                continue
-            for item in raw_items:
-                if isinstance(item, dict) and str(item.get("node_id") or "") == node_id:
-                    return item
+        raw_items = payload.get("nodes")
+        if not isinstance(raw_items, list):
+            return None
+        for item in raw_items:
+            if isinstance(item, dict) and str(item.get("node_id") or "") == node_id:
+                return item
+        return None
+
+    def _find_inventory_node_in_probe_payload(
+        self,
+        payload: dict[str, object],
+        node_id: str,
+    ) -> dict[str, object] | None:
+        raw_items = payload.get("inventory")
+        if not isinstance(raw_items, list):
+            return None
+        for item in raw_items:
+            if isinstance(item, dict) and str(item.get("node_id") or "") == node_id:
+                return item
         return None
 
     async def _probe_console_gateway(self, target: str) -> dict[str, object]:
@@ -802,6 +875,7 @@ class SetupService:
         removed_pairing = self._settings.node_tokens.pop(normalized_node_id, None) is not None
         if removed_pairing:
             self._persist_node_tokens()
+        self._clear_pairing_diagnostic(normalized_node_id)
         removed_runtime = await registry.remove(normalized_node_id)
         return removed_pairing, removed_runtime
 
@@ -832,6 +906,7 @@ class SetupService:
         node_id: str | None = None,
         discovered: DiscoveredNodeRecord | None = None,
         suggested_label: str | None = None,
+        registry: NodeRegistry | None = None,
     ) -> DiscoveryPairResponse:
         resolved_node_id = (
             (node_id or "").strip()
@@ -855,23 +930,27 @@ class SetupService:
         except httpx.RequestError as exc:
             task.summary = f"连接目标节点失败：{exc}"
             self._append_log(task, task.summary)
+            self._set_pairing_diagnostic(resolved_node_id, "register_failed", task.summary)
             self._finish_task(task, "failed")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
 
         if response.status_code == 401:
             task.summary = "配对密钥错误，目标节点拒绝连接。"
             self._append_log(task, task.summary)
+            self._set_pairing_diagnostic(resolved_node_id, "auth_failed", task.summary)
             self._finish_task(task, "failed")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="auth_failed", node_id=resolved_node_id)
         if response.status_code >= 400:
             task.summary = f"目标节点返回异常状态：HTTP {response.status_code}"
             self._append_log(task, task.summary)
+            self._set_pairing_diagnostic(resolved_node_id, "register_failed", task.summary)
             self._finish_task(task, "failed")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
         data = response.json()
         pairing_status = data.get("pairing_status", "paired")
         returned_node_id = str(data.get("node_id") or resolved_node_id)
-        if pairing_status in {"paired", "already_paired"}:
+        detail = str(data.get("detail") or "")
+        if pairing_status in {"paired", "already_paired", "register_failed"}:
             if returned_node_id != resolved_node_id:
                 self._settings.node_tokens.pop(resolved_node_id, None)
             self._settings.node_tokens[returned_node_id] = node_token
@@ -884,14 +963,72 @@ class SetupService:
                 "lan_ip": host,
                 "pairing_port": str(pairing_port),
             }
-            task.summary = f"节点 {suggested_label or returned_node_id} 配对成功，已下发正式 node token。"
+            self._append_log(task, f"节点已接受配对参数，返回状态：{pairing_status}。")
+            if detail:
+                self._append_log(task, f"节点返回详情：{detail}")
+            if pairing_status == "register_failed":
+                diagnostic_state = self._normalize_register_failure_state(detail)
+                self._set_pairing_diagnostic(returned_node_id, diagnostic_state, detail or "节点注册失败")
+                task.summary = f"节点 {suggested_label or returned_node_id} 已接收配置，但注册失败：{detail or '请重新配对'}"
+                self._finish_task(task, "failed")
+                return DiscoveryPairResponse(task=task.to_result(), pairing_status="register_failed", node_id=returned_node_id)
+            if registry is None:
+                self._set_pairing_diagnostic(returned_node_id, "pairing_pending", "等待网关确认节点注册")
+                task.summary = f"节点 {suggested_label or returned_node_id} 已接收配置，等待注册确认。"
+                self._finish_task(task, "failed")
+                return DiscoveryPairResponse(task=task.to_result(), pairing_status="paired_pending_confirm", node_id=returned_node_id)
+            self._set_pairing_diagnostic(returned_node_id, "pairing_pending", "等待网关确认节点注册")
+            self._append_log(task, "开始等待节点完成 register/heartbeat。")
+            confirmed_node = await self._confirm_paired_node_registration(task, registry, returned_node_id)
+            if confirmed_node is None:
+                task.summary = f"节点 {suggested_label or returned_node_id} 已接收配置，但未在确认窗口内完成注册。"
+                self._append_log(task, task.summary)
+                self._finish_task(task, "failed")
+                return DiscoveryPairResponse(task=task.to_result(), pairing_status="paired_pending_confirm", node_id=returned_node_id)
+            self._clear_pairing_diagnostic(returned_node_id)
+            task.metadata.update(
+                {
+                    "matched_lan_ip": confirmed_node.lan_ip or "",
+                    "matched_hostname": confirmed_node.hostname or "",
+                    "node_last_heartbeat_at": confirmed_node.last_heartbeat_at.isoformat(),
+                }
+            )
+            task.summary = f"节点 {suggested_label or returned_node_id} 配对成功，已确认注册并开始心跳。"
             self._append_log(task, task.summary)
             self._finish_task(task, "succeeded")
-            return DiscoveryPairResponse(task=task.to_result(), pairing_status=pairing_status, node_id=returned_node_id)  # type: ignore[arg-type]
+            return DiscoveryPairResponse(task=task.to_result(), pairing_status="paired", node_id=returned_node_id)
         task.summary = f"节点返回未识别的配对状态：{pairing_status}"
         self._append_log(task, task.summary)
         self._finish_task(task, "failed")
         return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=returned_node_id)
+
+    async def _confirm_paired_node_registration(
+        self,
+        task: SetupTaskState,
+        registry: NodeRegistry,
+        node_id: str,
+    ):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._PAIR_CONFIRM_TIMEOUT_SECONDS
+        while loop.time() < deadline:
+            try:
+                nodes = await registry.list_nodes()
+            except NodeRegistryError as exc:
+                self._append_log(task, f"确认节点注册状态失败：{exc}")
+                break
+            for node in nodes:
+                if node.node_id == node_id:
+                    self._append_log(task, f"已确认节点注册成功：{node_id}（最近心跳 {node.last_heartbeat_at.isoformat()}）")
+                    return node
+            await asyncio.sleep(self._PAIR_CONFIRM_INTERVAL_SECONDS)
+        self._set_pairing_diagnostic(node_id, "pairing_pending", "节点已接收配置，但未在确认窗口内完成注册")
+        return None
+
+    def _normalize_register_failure_state(self, detail: str) -> str:
+        normalized = detail.lower()
+        if "401" in normalized or "unauthorized" in normalized or "invalid node token" in normalized:
+            return "auth_failed"
+        return "register_failed"
 
     async def _udp_broadcast_scan(
         self,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.core.deps import get_setup_service
+from app.core.deps import get_node_registry, get_setup_service
 from app.models.setup import (
     ConsoleConnectRequest,
     GatewayDispatchModeRequest,
@@ -20,6 +20,7 @@ from app.models.setup import (
     SetupTaskEnvelope,
 )
 from app.services.setup_service import SetupService
+from app.services.node_registry import NodeRegistry
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 
@@ -104,16 +105,18 @@ async def scan_discovery_nodes(
 async def pair_discovered_node(
     payload: DiscoveryPairRequest,
     setup_service: SetupService = Depends(get_setup_service),
+    registry: NodeRegistry = Depends(get_node_registry),
 ) -> DiscoveryPairResponse:
-    return await setup_service.pair_discovered_node(payload)
+    return await setup_service.pair_discovered_node(payload, registry)
 
 
 @router.post("/manual-pair", response_model=DiscoveryPairResponse)
 async def manual_pair_node(
     payload: ManualPairRequest,
     setup_service: SetupService = Depends(get_setup_service),
+    registry: NodeRegistry = Depends(get_node_registry),
 ) -> DiscoveryPairResponse:
-    return await setup_service.manual_pair_node(payload)
+    return await setup_service.manual_pair_node(payload, registry)
 
 
 @router.get("/tasks/{task_id}", response_model=SetupTaskEnvelope)

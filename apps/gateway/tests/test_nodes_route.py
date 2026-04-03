@@ -67,6 +67,39 @@ class NodeInventoryTests(unittest.TestCase):
         self.assertTrue(inventory[0].paired)
         self.assertTrue(inventory[0].online)
 
+    def test_inventory_marks_pairing_pending_from_diagnostics(self) -> None:
+        inventory = build_node_inventory(
+            [],
+            {"node-a": "token-a"},
+            {"node-a": {"connection_state": "pairing_pending", "last_error": "等待注册确认"}},
+        )
+
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0].connection_state, "pairing_pending")
+        self.assertEqual(inventory[0].last_error, "等待注册确认")
+
+    def test_inventory_marks_register_failure_from_diagnostics(self) -> None:
+        inventory = build_node_inventory(
+            [],
+            {"node-a": "token-a"},
+            {"node-a": {"connection_state": "register_failed", "last_error": "register returned 500"}},
+        )
+
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0].connection_state, "register_failed")
+        self.assertEqual(inventory[0].last_error, "register returned 500")
+
+    def test_inventory_marks_auth_failure_from_diagnostics(self) -> None:
+        inventory = build_node_inventory(
+            [],
+            {"node-a": "token-a"},
+            {"node-a": {"connection_state": "auth_failed", "last_error": "401 Unauthorized"}},
+        )
+
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0].connection_state, "auth_failed")
+        self.assertEqual(inventory[0].last_error, "401 Unauthorized")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,15 @@ from pydantic import BaseModel, Field
 
 SetupRole = Literal["gateway_host", "gateway_host_console", "worker_node", "console_only"]
 SetupTaskStatus = Literal["pending", "running", "succeeded", "failed"]
-PairingStatus = Literal["pending", "paired", "auth_failed", "already_paired", "offline"]
+PairingStatus = Literal[
+    "pending",
+    "paired",
+    "paired_pending_confirm",
+    "register_failed",
+    "auth_failed",
+    "already_paired",
+    "offline",
+]
 
 
 class GatewaySetupConfig(BaseModel):
