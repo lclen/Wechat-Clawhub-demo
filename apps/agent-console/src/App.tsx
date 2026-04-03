@@ -34,6 +34,7 @@ type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boole
 type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_base_url?: string };
 type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };
 type GatewayProbeRequest = { gateway_base_url: string; node_id?: string; timeout_ms?: number };
+type NodeCredentialResetRequest = { node_id: string; install_dir: string };
 type SetupTaskEnvelope = { task: SetupTaskResult };
 type NodeDeleteResponse = { ok: boolean; node_id: string; removed_pairing: boolean; removed_runtime: boolean; detail: string };
 type DiscoveryScanResponse = { task: SetupTaskResult; nodes: DiscoveredNodeRecord[] };
@@ -153,7 +154,7 @@ function loadSetupDraft() {
     return {
       role: parsed.role ?? null,
       gateway: { ...DEFAULT_GATEWAY_SETUP, ...(parsed.gateway ?? {}) },
-      worker: { ...DEFAULT_WORKER_SETUP, ...(parsed.worker ?? {}) },
+      worker: { ...DEFAULT_WORKER_SETUP, ...(parsed.worker ?? {}), node_token: "" },
       console: { ...DEFAULT_CONSOLE_SETUP, ...(parsed.console ?? {}) },
     };
   } catch {
@@ -676,6 +677,7 @@ export function App() {
       gateway_base_url: setupProfile?.console.gateway_base_url || preferredGatewayBaseUrl,
       dify_base_url: setupProfile?.gateway.dify_base_url || DEFAULT_WORKER_SETUP.dify_base_url,
       dify_api_key: setupProfile?.gateway.dify_api_key || DEFAULT_WORKER_SETUP.dify_api_key,
+      node_token: "",
     }));
     setDiscoveredNodes([]);
     setPairingSecrets({});
@@ -698,6 +700,7 @@ export function App() {
       gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
       dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
       dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+      node_token: "",
     }));
   }
   async function refreshQuickSetupStatus() {
@@ -720,6 +723,7 @@ export function App() {
         gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
         dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
         dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+        node_token: "",
       }));
       setSystemStatus(system);
       setModelStatus(model);
@@ -776,6 +780,7 @@ export function App() {
       setWorkerSetup((current) => ({
         ...current,
         gateway_base_url: result.task.metadata.gateway_base_url || current.gateway_base_url,
+        node_token: "",
       }));
       workerGatewayAutoProbeKeyRef.current = "";
       await refreshSetupProfile();
@@ -1157,6 +1162,21 @@ export function App() {
         );
         await refreshLauncherStatus();
         stoppedActions.push("已停止本机节点");
+      }
+      if ((setupCompletedRoles.has("worker_node") || workerSetup.node_id.trim()) && workerSetup.install_dir.trim()) {
+        const result = await withBusy(
+          "reconfigure-reset-worker-token",
+          () => requestJson<SetupTaskEnvelope>("/api/setup/node/reset-credentials", {
+            method: "POST",
+            body: JSON.stringify({
+              node_id: workerSetup.node_id.trim(),
+              install_dir: workerSetup.install_dir.trim(),
+            } satisfies NodeCredentialResetRequest),
+          }),
+        );
+        setSetupTask(result.task);
+        setWorkerSetup((current) => ({ ...current, node_token: "" }));
+        stoppedActions.push("已清空本机节点 token");
       }
       setReconfigureConfirmOpen(false);
       setSetupRole(null);

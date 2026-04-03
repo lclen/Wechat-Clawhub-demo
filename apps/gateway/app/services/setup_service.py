@@ -268,6 +268,37 @@ class SetupService:
         self._finish_task(task, "succeeded")
         return task.to_result()
 
+    async def reset_worker_node_credentials(self, node_id: str, install_dir: str) -> SetupTaskResult:
+        task = self._create_task("node_install", f"重置工作节点凭据 {node_id}")
+        task.status = "running"
+        normalized_node_id = node_id.strip()
+        normalized_install_dir = install_dir.strip()
+        task.metadata = {
+            "node_id": normalized_node_id,
+            "install_dir": normalized_install_dir,
+            "token_reset": "requested",
+        }
+        self._append_log(task, f"开始重置工作节点本地凭据：{normalized_node_id}")
+        env_paths = self._candidate_worker_env_paths(normalized_install_dir)
+        updated_paths: list[str] = []
+        for env_path in env_paths:
+            if not env_path.exists():
+                continue
+            self._clear_env_keys(env_path, {"CLAW_NODE_TOKEN"})
+            updated_paths.append(str(env_path))
+            self._append_log(task, f"已清空节点 token：{env_path}")
+        if not updated_paths:
+            task.summary = f"未找到可写入的节点 .env 文件：{normalized_install_dir}"
+            self._append_log(task, task.summary)
+            self._finish_task(task, "failed")
+            return task.to_result()
+        self._clear_pairing_diagnostic(normalized_node_id)
+        task.metadata["env_paths"] = " | ".join(updated_paths)
+        task.summary = "已清空本机节点 token；节点重新启动后将回到待配对状态。"
+        self._append_log(task, task.summary)
+        self._finish_task(task, "succeeded")
+        return task.to_result()
+
     async def probe_gateway(
         self,
         gateway_base_url: str,
@@ -450,6 +481,8 @@ class SetupService:
                 if not line:
                     continue
                 lowered = line.lower()
+                if self._looks_like_local_waiting_state(lowered):
+                    return "", ""
                 if normalized_gateway and normalized_gateway not in lowered:
                     if "/api/nodes/register" not in lowered and "gateway registration is not ready yet" not in lowered:
                         continue
@@ -461,6 +494,16 @@ class SetupService:
                 if "gateway registration is not ready yet" in lowered:
                     return "register_failed", detail
         return "", ""
+
+    def _looks_like_local_waiting_state(self, line: str) -> bool:
+        return any(
+            marker in line
+            for marker in (
+                "node is discoverable but not paired yet; waiting for pairing",
+                "gateway client is not configured yet; pair this node first",
+                "node registered successfully",
+            )
+        )
 
     def _candidate_local_node_log_paths(self, node_id: str) -> list[Path]:
         install_dirs: list[Path] = []
@@ -486,6 +529,50 @@ class SetupService:
                 if path not in log_paths:
                     log_paths.append(path)
         return log_paths
+
+    def _candidate_worker_env_paths(self, install_dir: str) -> list[Path]:
+        normalized_install_dir = install_dir.strip()
+        candidates: list[Path] = []
+        if normalized_install_dir:
+            root = Path(normalized_install_dir)
+            candidates.extend(
+                [
+                    root / "bundle" / "claw-node" / ".env",
+                    root / "bundle" / "claw-node" / "services" / "claw-node" / ".env",
+                ]
+            )
+        default_root = Path("C:/wechat-claw-node")
+        for path in (
+            default_root / "bundle" / "claw-node" / ".env",
+            default_root / "bundle" / "claw-node" / "services" / "claw-node" / ".env",
+        ):
+            if path not in candidates:
+                candidates.append(path)
+        return candidates
+
+    def _clear_env_keys(self, path: Path, keys: set[str]) -> None:
+        existing_lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+        kept_lines: list[str] = []
+        seen: set[str] = set()
+        for raw_line in existing_lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#") or "=" not in raw_line:
+                kept_lines.append(raw_line.rstrip("\r"))
+                continue
+            key, _, _ = raw_line.partition("=")
+            normalized = key.strip()
+            if normalized in keys:
+                kept_lines.append(f"{normalized}=")
+                seen.add(normalized)
+            else:
+                kept_lines.append(raw_line.rstrip("\r"))
+        for key in keys:
+            if key not in seen:
+                kept_lines.append(f"{key}=")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
 
     def _extract_local_registration_issue_detail(self, line: str) -> str:
         if "reason=" in line:

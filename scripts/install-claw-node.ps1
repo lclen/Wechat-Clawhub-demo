@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$NodeId,
     [Parameter(Mandatory = $true)][string]$GatewayBaseUrl,
-    [Parameter(Mandatory = $true)][string]$NodeToken,
+    [string]$NodeToken = "",
     [string]$PairingKey = "",
     [string]$DifyBaseUrl = "",
     [string]$DifyApiKey = "",
@@ -364,6 +364,12 @@ CLAW_NODE_HOSTNAME=
 "@
 Write-Step "写入节点 .env 配置"
 Set-Content -Path (Join-Path $ProjectRoot ".env") -Value $EnvContent -Encoding UTF8
+if ([string]::IsNullOrWhiteSpace($NodeToken)) {
+    Write-Step "当前未写入节点 token；节点将保持待配对状态，等待网关下发凭据"
+}
+else {
+    Write-Step "已写入节点 token；节点将直接尝试向目标网关注册"
+}
 
 $LogDir = Join-Path $InstallDir "logs"
 Ensure-Directory $LogDir

@@ -15,6 +15,7 @@ from app.models.setup import (
     GatewaySetupSaveRequest,
     GatewaySetupSaveResponse,
     ManualPairRequest,
+    NodeCredentialResetRequest,
     NodeInstallRequest,
     SetupProfileResponse,
     SetupTaskEnvelope,
@@ -72,6 +73,15 @@ async def install_worker_node(
     setup_service: SetupService = Depends(get_setup_service),
 ) -> SetupTaskEnvelope:
     task = await setup_service.start_node_install(payload.config)
+    return SetupTaskEnvelope(task=task)
+
+
+@router.post("/node/reset-credentials", response_model=SetupTaskEnvelope)
+async def reset_worker_node_credentials(
+    payload: NodeCredentialResetRequest,
+    setup_service: SetupService = Depends(get_setup_service),
+) -> SetupTaskEnvelope:
+    task = await setup_service.reset_worker_node_credentials(payload.node_id, payload.install_dir)
     return SetupTaskEnvelope(task=task)
 
 

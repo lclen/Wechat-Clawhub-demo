@@ -375,7 +375,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.metadata["node_registered"], "false")
         self.assertEqual(task.metadata["node_connection_state"], "auth_failed")
         self.assertEqual(task.metadata["node_last_error"], "401 Unauthorized")
-        self.assertIn("注册失败/鉴权失败", task.summary)
+        self.assertIn("注册鉴权失败", task.summary)
 
     async def test_set_dispatch_mode_updates_settings_and_env(self) -> None:
         task = await self.service.set_dispatch_mode(True)
@@ -480,6 +480,30 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.node_token, "")
         self.assertEqual(self.settings.node_tokens["node-b"], "existing-node-token")
         self.assertTrue(any("安装阶段不会生成或写入节点 token" in line for line in task.logs))
+
+    async def test_reset_worker_node_credentials_clears_local_env_token(self) -> None:
+        install_dir = Path(self.tempdir.name) / "worker"
+        env_path = install_dir / "bundle" / "claw-node" / ".env"
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        env_path.write_text(
+            "\n".join(
+                [
+                    "CLAW_NODE_ID=node-b",
+                    "CLAW_GATEWAY_BASE_URL=http://127.0.0.1:8300",
+                    "CLAW_NODE_TOKEN=stale-token",
+                    "CLAW_PAIRING_KEY=pairing-secret",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        task = await self.service.reset_worker_node_credentials("node-b", str(install_dir))
+
+        self.assertEqual(task.status, "succeeded")
+        self.assertIn("已清空本机节点 token", task.summary)
+        env_text = env_path.read_text(encoding="utf-8")
+        self.assertIn("CLAW_NODE_TOKEN=\n", env_text)
 
     async def test_prepare_worker_install_config_inherits_builtin_openai_model(self) -> None:
         self.settings.builtin_model_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"

@@ -107,6 +107,11 @@ class NodeInstallRequest(BaseModel):
     config: WorkerNodeSetupConfig
 
 
+class NodeCredentialResetRequest(BaseModel):
+    node_id: str = Field(min_length=1)
+    install_dir: str = Field(min_length=1)
+
+
 class ConsoleConnectRequest(BaseModel):
     config: ConsoleSetupConfig
 
