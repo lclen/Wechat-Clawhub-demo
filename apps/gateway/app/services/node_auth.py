@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from functools import lru_cache
 import ipaddress
+import logging
 import socket
 
 from fastapi import HTTPException, Request, status
 
 from app.core.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class NodeAuthService:
@@ -17,20 +21,49 @@ class NodeAuthService:
 
     def verify_request(self, request: Request, node_id: str) -> None:
         if self._is_local_node_direct_request(request, node_id):
+            logger.info(
+                "Node auth bypassed for local node. node_id=%s client=%s path=%s",
+                node_id,
+                self._client_host(request),
+                request.url.path,
+            )
             return
         expected = self._settings.node_tokens.get(node_id)
+        provided = self._extract_token(request)
         if not expected:
+            logger.warning(
+                "Node auth rejected: token not configured. node_id=%s client=%s path=%s provided=%s",
+                node_id,
+                self._client_host(request),
+                request.url.path,
+                self._mask_token(provided),
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Node token is not configured for '{node_id}'",
             )
 
-        provided = self._extract_token(request)
         if provided != expected:
+            logger.warning(
+                "Node auth rejected: token mismatch. node_id=%s client=%s path=%s expected=%s provided=%s",
+                node_id,
+                self._client_host(request),
+                request.url.path,
+                self._mask_token(expected),
+                self._mask_token(provided),
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid node token",
             )
+
+        logger.info(
+            "Node auth accepted. node_id=%s client=%s path=%s token=%s",
+            node_id,
+            self._client_host(request),
+            request.url.path,
+            self._mask_token(provided),
+        )
 
     def _extract_token(self, request: Request) -> str | None:
         bearer = request.headers.get("Authorization", "")
@@ -45,6 +78,20 @@ class NodeAuthService:
         if client is None or not client.host:
             return False
         return client.host in _known_local_hosts()
+
+    def _client_host(self, request: Request) -> str:
+        client = request.client
+        return client.host if client and client.host else "-"
+
+    def _mask_token(self, token: str | None) -> str:
+        if token is None:
+            return "<missing>"
+        normalized = token.strip()
+        if not normalized:
+            return "<empty>"
+        if len(normalized) <= 12:
+            return f"{normalized[:4]}...({len(normalized)})"
+        return f"{normalized[:8]}...{normalized[-4:]}({len(normalized)})"
 
 
 @lru_cache

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
 from claw_node.config import NodeSettings
 from claw_node.node_identity import NodeIdentity, build_node_identity
+
+
+logger = logging.getLogger(__name__)
 
 
 class GatewayClient:
@@ -40,6 +44,13 @@ class GatewayClient:
             "hostname": self._identity.hostname,
             "capabilities": self._identity.capabilities,
         }
+        logger.info(
+            "[gateway-client] register start node_id=%s gateway=%s token=%s advertised=%s",
+            self._settings.node_id,
+            self._settings.gateway_base_url,
+            self._mask_token(self._settings.node_token),
+            self._identity.advertised_address or self._identity.base_url,
+        )
         response = await client.post("/api/nodes/register", json=payload)
         response.raise_for_status()
         return response.json()
@@ -150,3 +161,13 @@ class GatewayClient:
         if self._client is None:
             raise RuntimeError("Gateway client is not configured yet; pair this node first.")
         return self._client
+
+    def _mask_token(self, token: str | None) -> str:
+        if token is None:
+            return "<missing>"
+        normalized = token.strip()
+        if not normalized:
+            return "<empty>"
+        if len(normalized) <= 12:
+            return f"{normalized[:4]}...({len(normalized)})"
+        return f"{normalized[:8]}...{normalized[-4:]}({len(normalized)})"

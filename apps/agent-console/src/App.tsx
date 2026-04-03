@@ -59,7 +59,7 @@ type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cac
 type ManualPairDraft = { host: string; pairing_port: number; pairing_key: string; node_id: string };
 type PairingDebugEntry = {
   id: string;
-  kind: "discovery_scan" | "discovery_pair" | "manual_pair" | "gateway_probe" | "client_error";
+  kind: "discovery_scan" | "discovery_pair" | "manual_pair" | "gateway_probe" | "node_install" | "client_error";
   title: string;
   status: SetupTaskStatus | "failed";
   summary: string;
@@ -538,7 +538,7 @@ export function App() {
   }, [setupRole, setupTask]);
 
   useEffect(() => {
-    if (!setupTask || !isPairingTaskKind(setupTask.kind)) return;
+    if (!setupTask || (!isPairingTaskKind(setupTask.kind) && setupTask.kind !== "node_install")) return;
     pushPairingDebugEntry({
       id: setupTask.task_id,
       kind: setupTask.kind,
@@ -548,6 +548,8 @@ export function App() {
       logs: setupTask.logs,
       target: setupTask.kind === "discovery_scan"
         ? `局域网广播${setupTask.metadata.discovery_port ? ` · UDP ${setupTask.metadata.discovery_port}` : ""}`
+        : setupTask.kind === "node_install"
+          ? (setupTask.metadata.install_dir || setupTask.metadata.node_id || "当前节点")
         : setupTask.kind === "gateway_probe"
           ? (setupTask.metadata.gateway_base_url || "目标网关")
         : (setupTask.metadata.lan_ip || setupTask.metadata.host || setupTask.metadata.node_id || "局域网配对"),
@@ -1403,6 +1405,38 @@ export function App() {
     if (setupTask.status === "failed") return "当前节点安装失败，请根据日志排查。";
     return "当前节点安装任务已创建。";
   }, [setupTask]);
+  const workerConnectionLog = useMemo(() => {
+    if (!currentRoleIsWorker) return "";
+    const lines: string[] = [
+      `当前节点 ID：${workerSetup.node_id.trim() || "未填写"}`,
+      `目标网关：${workerSetup.gateway_base_url.trim() || "未填写"}`,
+      `当前连接状态：${workerGatewayConnection.label}`,
+      `状态摘要：${workerGatewayConnection.detail}`,
+    ];
+    if (setupTask?.kind === "node_install") {
+      lines.push("");
+      lines.push("安装任务日志：");
+      lines.push(...(setupTask.logs.length ? setupTask.logs : [setupTask.summary || "当前还没有安装日志。"]));
+    }
+    if (workerGatewayProbeTask) {
+      lines.push("");
+      lines.push("网关探测日志：");
+      lines.push(...(workerGatewayProbeTask.logs.length ? workerGatewayProbeTask.logs : [workerGatewayProbeTask.summary || "当前还没有网关探测日志。"]));
+    }
+    if (workerGatewayConnection.remoteNode) {
+      lines.push("");
+      lines.push("网关侧节点记录：");
+      lines.push(`节点角色：${nodeRoleLabel(workerGatewayConnection.remoteNode.node_id)}`);
+      lines.push(`主机名：${workerGatewayConnection.remoteNode.hostname || "未上报"}`);
+      lines.push(`局域网 IP：${workerGatewayConnection.remoteNode.lan_ip || "未上报"}`);
+      lines.push(`上报状态：${workerGatewayConnection.remoteNode.status || "未上报"}`);
+      lines.push(`最近心跳：${workerGatewayConnection.remoteNode.last_heartbeat_at ? formatTimeLabel(workerGatewayConnection.remoteNode.last_heartbeat_at, true) : "暂未上报"}`);
+      if (workerGatewayConnection.remoteNode.last_error) {
+        lines.push(`最近错误：${workerGatewayConnection.remoteNode.last_error}`);
+      }
+    }
+    return lines.join("\n");
+  }, [currentRoleIsWorker, setupTask, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.remoteNode, workerGatewayProbeTask, workerSetup.gateway_base_url, workerSetup.node_id]);
   const nodeInventoryHeadline = useMemo(
     () => `已配对 ${nodeInventorySummary.paired_total} / 在线 ${nodeInventorySummary.online_total} / 离线 ${nodeInventorySummary.offline_total}`,
     [nodeInventorySummary.offline_total, nodeInventorySummary.online_total, nodeInventorySummary.paired_total],
@@ -1546,6 +1580,7 @@ export function App() {
                           <InfoRow label="节点安装目录" value={workerSetup.install_dir || "-"} multiline />
                           <InfoRow label="发现响应" value={workerSetup.discovery_enabled ? `已启用 · UDP ${workerSetup.discovery_port}` : "已关闭"} multiline />
                           <InfoRow label="最近任务" value={latestSetupSummary} multiline />
+                          <SnippetBlock label="节点连接日志" content={workerConnectionLog || "这里会显示当前节点的安装、探测和注册日志。"} />
                         </>
                       ) : (
                         <>
@@ -1951,6 +1986,7 @@ export function App() {
                       <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
                       {workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点记录" value={summarizeRemoteNode(workerGatewayConnection.remoteNode)} multiline /> : null}
                     </div>
+                    <SnippetBlock label="节点连接日志" content={workerConnectionLog || "这里会显示当前节点被连接、探测、注册和心跳确认的详细日志。"} />
                   </section>
                 )}
                 <section className="surface">
