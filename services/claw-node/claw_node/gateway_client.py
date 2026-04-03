@@ -129,16 +129,21 @@ class GatewayClient:
         return response.json()
 
     def _ensure_client(self) -> None:
-        if not self._settings.gateway_base_url.strip() or not self._settings.node_token.strip():
+        if not self._settings.gateway_base_url.strip():
             self._client = None
             return
+        if not self._settings.node_token.strip() and not self._settings.local_direct_auth:
+            self._client = None
+            return
+        headers = {
+            "User-Agent": f"claw-node/{self._settings.node_version}",
+        }
+        if self._settings.node_token.strip():
+            headers["X-Node-Token"] = self._settings.node_token
         self._client = httpx.AsyncClient(
             base_url=self._settings.gateway_base_url.rstrip("/"),
             timeout=httpx.Timeout(30.0),
-            headers={
-                "X-Node-Token": self._settings.node_token,
-                "User-Agent": f"claw-node/{self._settings.node_version}",
-            },
+            headers=headers,
         )
 
     def _get_client(self) -> httpx.AsyncClient:

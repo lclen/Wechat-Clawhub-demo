@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 import time
 from contextlib import suppress
 from typing import Any
@@ -133,7 +132,11 @@ class Worker:
     async def _ensure_gateway_loops_started(self) -> None:
         if self._heartbeat_task is not None and self._polling_task is not None:
             return
-        if not self._settings.node_token.strip() or not self._settings.gateway_base_url.strip() or not self._settings.node_id.strip():
+        if (
+            (not self._settings.node_token.strip() and not self._settings.local_direct_auth)
+            or not self._settings.gateway_base_url.strip()
+            or not self._settings.node_id.strip()
+        ):
             logger.info("[worker] node is discoverable but not paired yet; waiting for pairing.")
             return
         if self._inference is None:
@@ -207,16 +210,18 @@ class Worker:
         return 200, {"pairing_status": "paired", "node_id": self._settings.node_id}
 
     def _persist_runtime_pairing(self) -> None:
-        env_path = Path(".env")
+        env_path = self._settings.resolved_env_file_path
         updates = {
             "CLAW_NODE_ID": self._settings.node_id,
             "CLAW_GATEWAY_BASE_URL": self._settings.gateway_base_url,
             "CLAW_NODE_TOKEN": self._settings.node_token,
+            "CLAW_LOCAL_DIRECT_AUTH": "true" if self._settings.local_direct_auth else "false",
             "CLAW_PAIRING_KEY": self._settings.pairing_key,
             "CLAW_DISCOVERY_ENABLED": "true" if self._settings.discovery_enabled else "false",
             "CLAW_DISCOVERY_PORT": str(self._settings.discovery_port),
             "CLAW_PAIRING_LABEL": self._settings.pairing_label,
         }
+        env_path.parent.mkdir(parents=True, exist_ok=True)
         existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
         pending = dict(updates)
         kept: list[str] = []
@@ -233,6 +238,7 @@ class Worker:
         for key, value in pending.items():
             kept.append(f"{key}={value}")
         env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        logger.info("[worker] paired config persisted to %s", env_path)
 
     async def _handle_task(self, task: dict[str, Any]) -> None:
         started_at = time.perf_counter()

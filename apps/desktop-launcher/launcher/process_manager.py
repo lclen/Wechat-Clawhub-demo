@@ -91,11 +91,8 @@ class ProcessManager:
 
     def start_gateway(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         env = os.environ.copy()
-        node_tokens = {}
         gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
         local_node_id = profile.local_node_id.strip() or "local-node"
-        if profile.enable_local_node and not profile.dispatch_mode_enabled:
-            node_tokens[local_node_id] = profile.local_node_token
         env.update(
             {
                 "WCH_REDIS_URL": f"redis://127.0.0.1:{profile.host_redis_port}/0",
@@ -106,7 +103,7 @@ class ProcessManager:
                 "WCH_DISPATCH_MODE_ENABLED": "true" if profile.dispatch_mode_enabled else "false",
                 "WCH_LOCAL_NODE_ID": local_node_id,
                 "WCH_CORS_ALLOW_ORIGINS": json.dumps(launcher_cors_origins(profile.launcher_port), ensure_ascii=False),
-                "WCH_NODE_TOKENS": json.dumps(node_tokens, ensure_ascii=False),
+                "WCH_NODE_TOKENS": json.dumps({}, ensure_ascii=False),
             }
         )
         log_path = Path(layout.log_dir) / "gateway.log"
@@ -127,7 +124,8 @@ class ProcessManager:
             {
                 "CLAW_NODE_ID": local_node_id,
                 "CLAW_GATEWAY_BASE_URL": gateway_base_url,
-                "CLAW_NODE_TOKEN": profile.local_node_token,
+                "CLAW_NODE_TOKEN": "",
+                "CLAW_LOCAL_DIRECT_AUTH": "true",
                 "CLAW_PAIRING_KEY": env.get("CLAW_PAIRING_KEY", "local-pairing-key"),
                 "CLAW_DISCOVERY_ENABLED": "true",
                 "CLAW_DISCOVERY_PORT": "9531",

@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from functools import lru_cache
 from socket import gethostname
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+DEFAULT_NODE_ENV_PATH = (Path(__file__).resolve().parent.parent / ".env").resolve()
 
 
 class NodeSettings(BaseSettings):
     node_id: str = Field(alias="CLAW_NODE_ID", default="")
     gateway_base_url: str = Field(alias="CLAW_GATEWAY_BASE_URL", default="")
     node_token: str = Field(alias="CLAW_NODE_TOKEN", default="")
+    local_direct_auth: bool = Field(alias="CLAW_LOCAL_DIRECT_AUTH", default=False)
     pairing_key: str = Field(alias="CLAW_PAIRING_KEY", default="")
     discovery_enabled: bool = Field(alias="CLAW_DISCOVERY_ENABLED", default=True)
     discovery_port: int = Field(alias="CLAW_DISCOVERY_PORT", default=9531, ge=1024, le=65535)
@@ -38,12 +43,17 @@ class NodeSettings(BaseSettings):
     advertised_host: str = Field(alias="CLAW_NODE_ADVERTISED_HOST", default="")
     advertised_port: int = Field(alias="CLAW_NODE_ADVERTISED_PORT", default=0, ge=0, le=65535)
     hostname: str = Field(alias="CLAW_NODE_HOSTNAME", default_factory=gethostname)
+    env_file_path: str = Field(alias="CLAW_ENV_FILE", default=str(DEFAULT_NODE_ENV_PATH))
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(DEFAULT_NODE_ENV_PATH),
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def resolved_env_file_path(self) -> Path:
+        return Path(self.env_file_path).expanduser().resolve()
 
 
 @lru_cache
