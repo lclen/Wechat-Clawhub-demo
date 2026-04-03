@@ -10,6 +10,7 @@ from app.core.deps import (
     get_node_registry,
     get_redis_store,
     get_settings_dep,
+    get_setup_service,
 )
 from app.dispatch.queue import DispatchQueue, DispatchQueueError, DispatchTaskNotFoundError
 from app.models.dispatch import PullTaskResponse, TaskFailureRequest, TaskResultRequest
@@ -17,6 +18,7 @@ from app.models.node import (
     NodeInventoryRecord,
     NodeInventorySummary,
     NodeHeartbeatRequest,
+    NodeDeleteResponse,
     NodeListResponse,
     NodeOperationResponse,
     NodeRegistrationRequest,
@@ -26,6 +28,7 @@ from app.models.node import (
 from app.services.node_auth import NodeAuthService
 from app.services.node_registry import NodeNotFoundError, NodeRegistry, NodeRegistryError
 from app.services.redis_store import RedisStore
+from app.services.setup_service import SetupService
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 
@@ -144,6 +147,34 @@ async def update_node(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except NodeRegistryError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.delete("/{node_id}", response_model=NodeDeleteResponse)
+async def delete_node(
+    node_id: str,
+    store: RedisStore = Depends(get_redis_store),
+    registry: NodeRegistry = Depends(get_node_registry),
+    setup_service: SetupService = Depends(get_setup_service),
+) -> NodeDeleteResponse:
+    await ensure_redis_available(store)
+    try:
+        removed_pairing, removed_runtime = await setup_service.remove_paired_node(node_id, registry)
+    except NodeRegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if not removed_pairing and not removed_runtime:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Node '{node_id}' not found")
+    return NodeDeleteResponse(
+        node_id=node_id,
+        removed_pairing=removed_pairing,
+        removed_runtime=removed_runtime,
+        detail=(
+            "已删除配对凭据并清理运行态节点记录。"
+            if removed_pairing and removed_runtime
+            else "已删除配对凭据。"
+            if removed_pairing
+            else "已清理运行态节点记录。"
+        ),
+    )
 
 
 @router.post("/{node_id}/pull-task", response_model=PullTaskResponse)

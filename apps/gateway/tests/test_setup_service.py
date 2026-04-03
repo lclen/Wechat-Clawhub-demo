@@ -580,6 +580,35 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("-OpenAIEnableThinking", command)
         self.assertIn(PIPE, create_proc.await_args.kwargs.values())
 
+    async def test_remove_paired_node_removes_token_and_runtime_record(self) -> None:
+        self.settings.node_tokens = {"node-a": "token-a"}
+        registry = SimpleNamespace(remove=AsyncMock(return_value=True))
+
+        removed_pairing, removed_runtime = await self.service.remove_paired_node("node-a", registry)
+
+        self.assertTrue(removed_pairing)
+        self.assertTrue(removed_runtime)
+        self.assertNotIn("node-a", self.settings.node_tokens)
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("WCH_NODE_TOKENS={}", env_text)
+        registry.remove.assert_awaited_once_with("node-a")
+
+    async def test_write_env_updates_normalizes_blank_lines_and_windows_newlines(self) -> None:
+        self.service._gateway_env_path.write_text(
+            "WCH_BUILTIN_MODEL_BASE_URL=https://example.com\r\r\n\r\r\nWCH_NODE_TOKENS={}\r\r\n",
+            encoding="utf-8",
+        )
+
+        self.service._write_env_updates(
+            self.service._gateway_env_path,
+            {"WCH_NODE_TOKENS": '{"node-a": "token-a"}'},
+        )
+
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertNotIn("\r\r\n", env_text)
+        self.assertNotIn("\n\n", env_text)
+        self.assertIn('WCH_NODE_TOKENS="{\\"node-a\\": \\"token-a\\"}"', env_text)
+
 
 if __name__ == "__main__":
     unittest.main()

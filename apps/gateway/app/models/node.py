@@ -115,6 +115,14 @@ class NodeOperationResponse(BaseModel):
     node: NodeRecord
 
 
+class NodeDeleteResponse(BaseModel):
+    ok: bool = True
+    node_id: str
+    removed_pairing: bool = False
+    removed_runtime: bool = False
+    detail: str = ""
+
+
 class SystemStatusResponse(BaseModel):
     app_name: str
     environment: str

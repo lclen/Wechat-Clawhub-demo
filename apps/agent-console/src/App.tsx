@@ -35,6 +35,7 @@ type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_bas
 type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };
 type GatewayProbeRequest = { gateway_base_url: string; node_id?: string; timeout_ms?: number };
 type SetupTaskEnvelope = { task: SetupTaskResult };
+type NodeDeleteResponse = { ok: boolean; node_id: string; removed_pairing: boolean; removed_runtime: boolean; detail: string };
 type DiscoveryScanResponse = { task: SetupTaskResult; nodes: DiscoveredNodeRecord[] };
 type DiscoveryPairResponse = { task: SetupTaskResult; pairing_status: PairingStatus; node_id: string | null };
 type ManualPairRequest = { host: string; pairing_port: number; pairing_key: string; gateway_base_url: string; node_id?: string };
@@ -1110,6 +1111,24 @@ export function App() {
       setNotice(`按地址配对失败：${(error as Error).message}`);
     }
   }
+  async function deletePairedNode(node: NodeInventoryRecord) {
+    const confirmed = window.confirm(`确认从网关删除节点 ${node.node_id} 吗？这会移除配对凭据，并清理当前运行态记录。`);
+    if (!confirmed) return;
+    try {
+      const result = await withBusy(
+        `delete-node-${node.node_id}`,
+        () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}`, { method: "DELETE" }),
+      );
+      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
+      syncNodeState(refreshedNodes, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+      setNotice(result.detail || `已删除节点 ${node.node_id}。`);
+      if (workerSetup.node_id.trim() === node.node_id) {
+        setWorkerGatewayProbeTask(null);
+      }
+    } catch (error) {
+      setNotice(`删除节点失败：${(error as Error).message}`);
+    }
+  }
   function submitSetupRole() {
     if (!setupRole) return setNotice("请先选择一个部署角色。");
     if (setupMode === "config") return setSetupMode("preview");
@@ -1745,9 +1764,12 @@ export function App() {
                               <div className="node-card-title">{node.hostname || node.node_id}</div>
                               <div className="node-card-subtitle">{node.node_id}</div>
                             </div>
-                            <span className={`session-badge session-badge-${node.online ? "human" : node.paired ? "queued" : "idle"}`}>
-                              {node.online ? "在线" : node.paired ? "离线" : "未纳管"}
-                            </span>
+                            <div className="inline-actions">
+                              <span className={`session-badge session-badge-${node.online ? "human" : node.paired ? "queued" : "idle"}`}>
+                                {node.online ? "在线" : node.paired ? "离线" : "未纳管"}
+                              </span>
+                              {node.paired ? <button type="button" className="ghost-button" onClick={() => void deletePairedNode(node)} disabled={busy !== null}>{busy === `delete-node-${node.node_id}` ? "删除中..." : "删除节点"}</button> : null}
+                            </div>
                           </div>
                           <div className="node-card-grid">
                             <div>

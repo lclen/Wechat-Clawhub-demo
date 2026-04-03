@@ -161,6 +161,16 @@ class NodeRegistry:
 
         return sorted(nodes, key=lambda item: (item.status.value, item.node_id))
 
+    async def remove(self, node_id: str) -> bool:
+        try:
+            removed_active = await self._store.srem(self.ACTIVE_NODES_KEY, node_id)
+            removed_meta = await self._store.delete(self._meta_key(node_id))
+            await self._store.delete(self._leases_key(node_id))
+            await self._store.delete(self._slots_key(node_id))
+        except RedisError as exc:
+            raise NodeRegistryError("Failed to remove node") from exc
+        return bool(removed_active or removed_meta)
+
     def _parse_record(self, raw: dict[str, str], channel_in_use: int) -> NodeRecord:
         max_concurrency = int(raw.get("max_concurrency", "1"))
         channel_capacity = int(raw.get("channel_capacity", "12"))

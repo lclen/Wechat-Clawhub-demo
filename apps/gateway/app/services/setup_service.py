@@ -30,6 +30,7 @@ from app.models.setup import (
     WorkerNodeSetupConfig,
     utcnow,
 )
+from app.services.node_registry import NodeRegistry
 from app.utils.network import (
     directed_broadcast_targets,
     list_ipv4_interfaces,
@@ -773,8 +774,11 @@ class SetupService:
         kept_lines: list[str] = []
         pending = dict(updates)
         for raw_line in existing_lines:
-            if not raw_line or raw_line.lstrip().startswith("#") or "=" not in raw_line:
-                kept_lines.append(raw_line)
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#") or "=" not in raw_line:
+                kept_lines.append(raw_line.rstrip("\r"))
                 continue
             key, _, _ = raw_line.partition("=")
             normalized = key.strip()
@@ -785,13 +789,21 @@ class SetupService:
         for key, value in pending.items():
             kept_lines.append(f"{key}={self._escape_env_value(value)}")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(os.linesep.join(kept_lines) + os.linesep, encoding="utf-8")
+        path.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
 
     def _persist_node_tokens(self) -> None:
         self._write_env_updates(
             self._gateway_env_path,
             {"WCH_NODE_TOKENS": json.dumps(self._settings.node_tokens, ensure_ascii=False)},
         )
+
+    async def remove_paired_node(self, node_id: str, registry: NodeRegistry) -> tuple[bool, bool]:
+        normalized_node_id = node_id.strip()
+        removed_pairing = self._settings.node_tokens.pop(normalized_node_id, None) is not None
+        if removed_pairing:
+            self._persist_node_tokens()
+        removed_runtime = await registry.remove(normalized_node_id)
+        return removed_pairing, removed_runtime
 
     def _suggest_node_id(self, discovered: DiscoveredNodeRecord) -> str:
         if discovered.hostname:
