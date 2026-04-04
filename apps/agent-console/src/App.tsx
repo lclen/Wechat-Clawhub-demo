@@ -2854,6 +2854,64 @@ export function App() {
                       </div>
                       <SnippetBlock label="节点连接日志" content={workerConnectionLog || "这里会显示当前节点被连接、探测、注册和心跳确认的详细日志。"} />
                     </section>
+                    {launcherAvailable ? (
+                    <section className="surface">
+                      <div className="section-head">
+                        <div><div className="section-kicker">推理后端</div><h3>配置当前节点的模型</h3></div>
+                        <div className="inline-actions">
+                          <button type="button" className="ghost-button" onClick={() => void saveLocalNodeModelConfig()} disabled={busy !== null}>{busy === "local-node-model-save" ? "保存中..." : "保存并应用"}</button>
+                        </div>
+                      </div>
+                      <div className="inline-tip">
+                        节点需要配置推理后端才能接单处理任务。保存后会自动重启节点服务。
+                      </div>
+                      <div className="form-grid">
+                        <label>
+                          <span>模型提供方</span>
+                          <select value={localNodeModelDraft.model_provider} onChange={(event) => updateLocalNodeModelDraft("model_provider", event.target.value)}>
+                            <option value="auto">auto</option>
+                            <option value="openai">openai</option>
+                            <option value="dify">dify</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>OpenAI Base URL</span>
+                          <input value={localNodeModelDraft.openai_base_url} onChange={(event) => updateLocalNodeModelDraft("openai_base_url", event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
+                        </label>
+                        <label>
+                          <span>OpenAI Model</span>
+                          <input value={localNodeModelDraft.openai_model} onChange={(event) => updateLocalNodeModelDraft("openai_model", event.target.value)} placeholder="qwen3.5-plus" />
+                        </label>
+                        <label>
+                          <span>OpenAI API Key</span>
+                          <input type="password" value={localNodeModelDraft.openai_api_key} onChange={(event) => updateLocalNodeModelDraft("openai_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                        </label>
+                        <label>
+                          <span>Dify Base URL</span>
+                          <input value={localNodeModelDraft.dify_base_url} onChange={(event) => updateLocalNodeModelDraft("dify_base_url", event.target.value)} placeholder="https://api.dify.ai/v1" />
+                        </label>
+                        <label>
+                          <span>Dify API Key</span>
+                          <input type="password" value={localNodeModelDraft.dify_api_key} onChange={(event) => updateLocalNodeModelDraft("dify_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                        </label>
+                      </div>
+                      <div className="inline-actions">
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_enable_thinking} onChange={(event) => updateLocalNodeModelDraft("openai_enable_thinking", event.target.checked)} />
+                          <span>启用 OpenAI Thinking</span>
+                        </label>
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.restart_service} onChange={(event) => updateLocalNodeModelDraft("restart_service", event.target.checked)} />
+                          <span>保存后自动重启服务</span>
+                        </label>
+                      </div>
+                      <div className="info-stack" style={{marginTop: 10}}>
+                        <InfoRow label="当前提供方" value={localNodeStatus?.model_settings?.model_provider || "未读取"} />
+                        <InfoRow label="OpenAI Key" value={localNodeStatus?.model_settings?.openai_api_key_configured ? "已配置" : "未配置"} />
+                        <InfoRow label="Dify Key" value={localNodeStatus?.model_settings?.dify_api_key_configured ? "已配置" : "未配置"} />
+                      </div>
+                    </section>
+                    ) : null}
                   </>
                 )}
                 <section className="surface">
