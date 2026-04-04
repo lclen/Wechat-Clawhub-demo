@@ -3,17 +3,12 @@
 本文档用于把 `wechat-claw-hub` 当前版本按 **主机 A + 节点 B** 的方式做源码启动验证。  
 本轮目标是尽快确认：主机链路、节点接入、局域网发现与配对、会话调度与日志采集都能顺畅完成。
 
+> 当前版本已支持通过桌面启动器（`apps/desktop-launcher`）统一管理所有组件，推荐使用 launcher 启动，不再需要手动分别启动各服务。
+
 ## 1. 机器分工
 
-- **电脑 A（主机）**
-  - 启动 Redis
-  - 启动 `apps/gateway`
-  - 启动 `apps/agent-console`
-  - 必要时可启动 `apps/desktop-launcher` 做对照，但不作为本轮主路径
-- **电脑 B（节点）**
-  - 从源码启动 `services/claw-node`
-  - 连接电脑 A 的网关
-  - 参与局域网 discovery / pairing
+- **电脑 A（主机）**：选择"网关主机"角色，launcher 自动管理 Redis + gateway + 内置节点
+- **电脑 B（节点）**：选择"工作节点"角色，launcher 只启动节点 Windows 服务，不启动 gateway
 
 ## 2. 上传 GitHub 前检查
 
@@ -31,12 +26,18 @@
 
 ## 3. 电脑 A：主机启动步骤
 
-### 3.1 准备 Redis
+### 3.1 使用 launcher 启动（推荐）
 
-- 若本机已有 Redis，可直接使用并确认监听 `127.0.0.1:6379`
-- 若本机没有 Redis，可先使用桌面启动器自动下载并启动 Redis，仅作对照
+```powershell
+cd apps/desktop-launcher
+uv run python -m launcher.main
+```
 
-### 3.2 启动网关
+打开 `http://localhost:8765`，选择"网关主机"角色，完成配置后点击"一键启动"。launcher 会自动拉起 Redis、gateway 和内置节点。
+
+### 3.2 手动启动（备用）
+
+如需手动启动各组件：
 
 ```powershell
 cd apps/gateway
@@ -86,7 +87,19 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
 
 ## 4. 电脑 B：节点启动步骤
 
-### 4.1 节点环境示例
+### 4.1 使用 launcher 启动（推荐）
+
+```powershell
+cd apps/desktop-launcher
+uv run python -m launcher.main
+```
+
+打开 `http://localhost:8765`，选择"工作节点"角色，填写目标网关地址（电脑 A 的局域网 IP:8300）后点击"安装当前机器节点"。
+
+> [!IMPORTANT]
+> 节点端 launcher 不会启动 gateway，页面显示"网关 未启动"是正常现象。
+
+### 4.2 节点环境示例（手动启动备用）
 
 在 `services/claw-node/.env` 中准备：
 
@@ -183,21 +196,24 @@ powershell -ExecutionPolicy Bypass -File scripts/smoke-check-host.ps1 `
 - `GET /api/nodes`
 - `GET /api/sessions`
 - transcript 目录内容
-- 网关终端输出
+- 网关终端输出或 `logs/gateway.log`
 
 ### 节点侧
 
-- `python -m claw_node.main` 终端输出
-- `.env` 是否填写正确
+- 节点服务日志：`C:\wechat-claw-node\logs\wechat-claw-node-{id}.err.log`
+- `config\node.env` 是否填写正确（节点 ID、网关地址、配对密钥）
+- `bundle\claw-node\.env` 是否包含 `CLAW_ENV_FILE` 指向主配置
 - 能否访问主机 `http://<电脑A局域网IP>:8300`
 - 主机的 `/api/nodes` 是否能看到当前节点
+- discovery 响应是否包含正确的 `node_id` 和 `lan_ip`（不应是 `198.18.x.x`）
 
-### 如果同时跑了桌面启动器
+### launcher 侧
 
-- `GET /local/bootstrap/status`
+- `GET /local/bootstrap/status` 查看各组件状态
 - `GET /local/bootstrap/logs/gateway`
 - `GET /local/bootstrap/logs/local-node`
 - `GET /local/bootstrap/logs/host-redis`
+- `%APPDATA%\wechat-claw-hub\launcher-state.json` 确认 `enable_gateway` 值
 
 ## 8. 建议固定采集的信息
 
