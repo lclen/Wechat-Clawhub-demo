@@ -676,10 +676,14 @@ export function App() {
         );
       } catch (error) {
         if (!cancelled) {
-          const draft = loadSetupDraft();
-          const isWorkerOnly = draft.role === "worker_node";
-          setNotice(isWorkerOnly ? "当前为节点角色，网关运行在远端机器上。" : `正在等待主网关启动…`);
-          if (!isWorkerOnly) retryTimer = window.setTimeout(() => void init(), RETRY_POLL_MS);
+          // 检查是否是节点角色（gateway 不在本机）
+          let isNodeRole = false;
+          try {
+            const st = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
+            isNodeRole = st.profile.enable_gateway === false;
+          } catch { /* launcher 不可用 */ }
+          setNotice(isNodeRole ? "当前为节点角色，网关运行在远端机器上。" : `正在等待主网关启动…`);
+          if (!isNodeRole) retryTimer = window.setTimeout(() => void init(), RETRY_POLL_MS);
         }
       }
     };
@@ -699,8 +703,8 @@ export function App() {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
-      // 节点角色下不轮询 gateway API
-      if (loadSetupDraft().role === "worker_node") return;
+      // 节点角色（enable_gateway=false）下不轮询 gateway API
+      if (launcherStatus?.profile.enable_gateway === false) return;
       let failed = false;
       try {
         const detailPromise = selectedSessionId ? requestJson<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`) : Promise.resolve(null);
