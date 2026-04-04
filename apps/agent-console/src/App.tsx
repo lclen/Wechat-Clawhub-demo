@@ -694,8 +694,34 @@ export function App() {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
-      // 节点角色（enable_gateway=false）下不轮询 gateway API；null 表示还未确定，等待
-      if (gatewayEnabled === false) return;
+      // 节点角色（enable_gateway=false）下直接请求远端网关，只显示本节点相关会话
+      if (gatewayEnabled === false) {
+        const remoteGateway = workerSetup.gateway_base_url.trim();
+        const nodeId = workerSetup.node_id.trim();
+        if (!remoteGateway || !nodeId) return;
+        let failed = false;
+        try {
+          const detailPromise = selectedSessionId
+            ? fetch(`${remoteGateway}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`).then(r => r.json() as Promise<SessionMessagesResponse>)
+            : Promise.resolve(null);
+          const [sessionList, detail] = await Promise.all([
+            fetch(`${remoteGateway}/api/sessions`).then(r => r.json() as Promise<SessionsResponse>),
+            detailPromise,
+          ]);
+          if (cancelled) return;
+          // 只显示分配给当前节点的会话
+          const nodeSessions = sessionList.sessions.filter(s => s.assigned_node_id === nodeId);
+          syncSessions(nodeSessions, setSessions, setSelectedSessionId, setActiveSession);
+          setSessionsLoaded(true);
+          if (detail) { setActiveSession(detail.session); setMessages(detail.messages); }
+          else { setMessages([]); }
+          setMessagesLoaded(true);
+        } catch { failed = true; }
+        finally {
+          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : shouldUseFastPolling(activeSession) ? FAST_POLL_MS : IDLE_POLL_MS);
+        }
+        return;
+      }
       if (gatewayEnabled === null) { timer = window.setTimeout(() => void run(), 500); return; }
       let failed = false;
       try {
@@ -745,7 +771,14 @@ export function App() {
     }
     let cancelled = false;
     setMessagesLoaded(false);
-    requestJson<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`).then((detail) => {
+    const remoteGateway = launcherStatus?.profile.enable_gateway === false ? workerSetup.gateway_base_url.trim() : null;
+    const fetchUrl = remoteGateway
+      ? `${remoteGateway}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`
+      : `/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`;
+    const fetchFn = remoteGateway
+      ? fetch(fetchUrl).then(r => r.json() as Promise<SessionMessagesResponse>)
+      : requestJson<SessionMessagesResponse>(fetchUrl);
+    fetchFn.then((detail) => {
       if (cancelled) return;
       setActiveSession(detail.session);
       setMessages(detail.messages);
