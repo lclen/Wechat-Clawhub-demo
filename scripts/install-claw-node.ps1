@@ -337,6 +337,18 @@ else {
     Write-Step "Bundle unchanged; reusing extracted runtime directory"
 }
 
+# Always overwrite critical Python source files from the current bundle,
+# even when reusing the bundle, to ensure fixes are applied on reinstall.
+$NodeSourceInBundle = Join-Path $StagingDir "claw-node\claw_node"
+$NodeSourceInRepo = Join-Path $RepoRoot "services\claw-node\claw_node"
+if ((Test-Path $NodeSourceInBundle) -and (Test-Path $NodeSourceInRepo)) {
+    foreach ($pyFile in Get-ChildItem $NodeSourceInRepo -Filter "*.py") {
+        $dest = Join-Path $NodeSourceInBundle $pyFile.Name
+        Copy-Item -Force $pyFile.FullName $dest
+    }
+    Write-Step "Updated Python source files in bundle from repo"
+}
+
 $NodeRoot = Join-Path $StagingDir "claw-node"
 $ProjectRoot = Join-Path $NodeRoot "services\claw-node"
 if (-not (Test-Path $ProjectRoot)) {
@@ -437,6 +449,11 @@ $EnvContent = @(
 
 Write-Step "Writing fixed node config file: $EnvPath"
 Write-Utf8NoBomFile -Path $EnvPath -Content ($EnvContent + [Environment]::NewLine)
+
+# Also write a minimal .env in the bundle working directory as fallback,
+# so the node process can find CLAW_ENV_FILE even if WinSW env injection fails.
+$BundleEnvPath = Join-Path $ProjectRoot ".env"
+Write-Utf8NoBomFile -Path $BundleEnvPath -Content ("CLAW_ENV_FILE=$EnvPath" + [Environment]::NewLine)
 
 if ([string]::IsNullOrWhiteSpace($NodeToken)) {
     Write-Step "Node token is empty; node will stay in waiting_pair until the gateway issues credentials"
