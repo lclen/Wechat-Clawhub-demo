@@ -1612,9 +1612,9 @@ export function App() {
         setWorkerSetup((current) => ({ ...current, node_token: "" }));
         stoppedActions.push("已清空本机节点 token");
       }
-      // 重置后端内存状态（completed_roles、tasks、discovered nodes）
+      // 重置后端内存状态（completed_roles、tasks、node_tokens、节点注册表）
       await withBusy("reconfigure-reset-state", () =>
-        fetch("/api/setup/reset", { method: "POST" }),
+        requestJson<{ removed_nodes: string[]; cleared_memory: boolean }>("/api/setup/reset", { method: "POST" }),
       );
       // 清理前端本地缓存
       window.localStorage.removeItem(SETUP_DRAFT_KEY);
@@ -1622,6 +1622,9 @@ export function App() {
       setSetupProfile(null);
       setSetupRole(null);
       setSetupTask(null);
+      setGatewaySetup(DEFAULT_GATEWAY_SETUP);
+      setWorkerSetup(DEFAULT_WORKER_SETUP);
+      setConsoleSetup(DEFAULT_CONSOLE_SETUP);
       setReconfigureConfirmOpen(false);
       setSetupMode("role");
       setWorkspace("quick_setup");

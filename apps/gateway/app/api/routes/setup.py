@@ -33,11 +33,12 @@ async def get_setup_profile(
     return setup_service.get_profile()
 
 
-@router.post("/reset", status_code=204)
+@router.post("/reset", status_code=200)
 async def reset_setup(
     setup_service: SetupService = Depends(get_setup_service),
-) -> None:
-    setup_service.reset_setup_state()
+    registry: NodeRegistry = Depends(get_node_registry),
+) -> dict[str, object]:
+    return await setup_service.full_reset(registry)
 
 
 @router.post("/gateway/save", response_model=GatewaySetupSaveResponse)

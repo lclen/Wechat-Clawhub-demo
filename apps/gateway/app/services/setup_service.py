@@ -294,6 +294,20 @@ class SetupService:
         self._discovered_nodes = {}
         self._pairing_diagnostics = {}
 
+    async def full_reset(self, registry: NodeRegistry) -> dict[str, object]:
+        """Full reset: clear in-memory state, remove all paired node tokens, and purge node registry."""
+        self.reset_setup_state()
+        removed_node_ids = list(self._settings.node_tokens.keys())
+        for node_id in removed_node_ids:
+            self._settings.node_tokens.pop(node_id, None)
+            await registry.remove(node_id)
+        if removed_node_ids:
+            self._persist_node_tokens()
+        return {
+            "removed_nodes": removed_node_ids,
+            "cleared_memory": True,
+        }
+
     async def reset_worker_node_credentials(self, node_id: str, install_dir: str) -> SetupTaskResult:
         task = self._create_task("node_install", f"重置工作节点凭据 {node_id}")
         task.status = "running"
