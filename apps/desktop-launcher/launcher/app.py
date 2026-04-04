@@ -359,6 +359,69 @@ def create_app() -> FastAPI:
         status = await local_node_status()
         return LocalNodeActionResponse(detail="本机节点服务已执行重装/重启。", status=status)
 
+    @app.post("/local/node/install")
+    async def install_node_local(request: Request) -> JSONResponse:
+        """Install worker node directly via PowerShell script, for worker-role machines."""
+        import asyncio
+        from asyncio.subprocess import PIPE
+        body = await request.json()
+        config = body.get("config", {})
+        node_id = str(config.get("node_id", "")).strip()
+        gateway_base_url = str(config.get("gateway_base_url", "")).strip()
+        install_dir = str(config.get("install_dir", "")).strip()
+        if not node_id or not gateway_base_url or not install_dir:
+            raise HTTPException(status_code=422, detail="node_id, gateway_base_url, install_dir are required")
+        script_path = app.state.repo_root / "scripts" / "install-claw-node.ps1"
+        if not script_path.exists():
+            return JSONResponse({"task": {"status": "failed", "summary": f"未找到安装脚本：{script_path}", "logs": [], "kind": "node_install", "title": f"安装工作节点 {node_id}"}})
+        command = [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path),
+            "-NodeId", node_id,
+            "-GatewayBaseUrl", gateway_base_url,
+            "-NodeToken", str(config.get("node_token", "")),
+            "-LocalDirectAuth", "false",
+            "-NodeKind", "remote",
+            "-PairingKey", str(config.get("pairing_key", "")),
+            "-DifyBaseUrl", str(config.get("dify_base_url", "")),
+            "-DifyApiKey", str(config.get("dify_api_key", "")),
+            "-OpenAIBaseUrl", str(config.get("openai_base_url", "")),
+            "-OpenAIApiKey", str(config.get("openai_api_key", "")),
+            "-OpenAIModel", str(config.get("openai_model", "")),
+            "-OpenAIEnableThinking", "true" if config.get("openai_enable_thinking") else "false",
+            "-MaxConcurrency", str(config.get("max_concurrency", 1)),
+            "-InstallDir", install_dir,
+            "-DiscoveryEnabled", "true" if config.get("discovery_enabled", True) else "false",
+            "-DiscoveryPort", str(config.get("discovery_port", 9531)),
+            "-ServiceMode", "windows-service",
+        ]
+        if config.get("bundle_path"):
+            command.extend(["-BundlePath", str(config["bundle_path"])])
+        logs: list[str] = [f"开始调用安装脚本：{script_path}"]
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command, stdout=PIPE, stderr=PIPE, cwd=str(app.state.repo_root),
+            )
+            stdout, stderr = await process.communicate()
+            for line in (stdout or b"").decode("utf-8", errors="ignore").splitlines():
+                if line.strip(): logs.append(f"stdout: {line}")
+            for line in (stderr or b"").decode("utf-8", errors="ignore").splitlines():
+                if line.strip(): logs.append(f"stderr: {line}")
+            if process.returncode == 0:
+                summary = f"工作节点 {node_id} 安装完成，等待网关配对下发 token。"
+                status = "succeeded"
+            else:
+                summary = f"工作节点 {node_id} 安装失败，退出码 {process.returncode}。"
+                status = "failed"
+        except Exception as exc:
+            summary = f"安装脚本执行失败：{exc}"
+            status = "failed"
+            logs.append(summary)
+        return JSONResponse({"task": {
+            "status": status, "summary": summary, "logs": logs, "kind": "node_install",
+            "title": f"安装工作节点 {node_id}",
+            "metadata": {"node_id": node_id, "install_dir": install_dir, "gateway_base_url": gateway_base_url},
+        }})
+
     @app.post("/local/node/reset-credentials")
     async def reset_node_credentials_local(request: Request) -> JSONResponse:
         """Clear node credentials from local .env files directly, for worker-role machines."""

@@ -834,6 +834,7 @@ export function App() {
 
   useEffect(() => {
     if (!setupTask || (setupTask.status !== "pending" && setupTask.status !== "running")) return;
+    if (gatewayEnabled === false) return; // 节点角色下任务由 /local/node/install 同步完成，不需要轮询
     let cancelled = false;
     const timer = window.setInterval(async () => {
       try {
@@ -1143,7 +1144,10 @@ export function App() {
     try {
       const result = await withBusy(
         "setup-worker",
-        () => requestJson<SetupTaskEnvelope>("/api/setup/node/install", { method: "POST", body: JSON.stringify({ config: workerSetup }) }),
+        () => requestJson<SetupTaskEnvelope>(
+          gatewayEnabled === false ? "/local/node/install" : "/api/setup/node/install",
+          { method: "POST", body: JSON.stringify({ config: workerSetup }) }
+        ),
       );
       setSetupTask(result.task);
       if (showResultScreen) setSetupMode("result");
