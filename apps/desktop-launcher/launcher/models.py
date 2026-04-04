@@ -81,6 +81,7 @@ class LauncherProfile(BaseModel):
     bootstrap_completed: bool = False
     local_node_id: str = "local-node"
     auto_start: bool = True
+    enable_gateway: bool = True
 
 
 class LauncherStatusResponse(BaseModel):

@@ -56,8 +56,9 @@ def create_app() -> FastAPI:
         if not host_redis.installed:
             return
         try:
-            app.state.manager.start_host_redis(p, layout, Path(host_redis.executable_path))
-            app.state.manager.start_gateway(p, layout)
+            if p.enable_gateway:
+                app.state.manager.start_host_redis(p, layout, Path(host_redis.executable_path))
+                app.state.manager.start_gateway(p, layout)
             if p.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
                 node_cache = redis_state(Path(p.workdir), "node-cache-redis", p.node_cache_redis_source)
                 if node_cache.installed:
@@ -129,6 +130,7 @@ def create_app() -> FastAPI:
             from launcher.runtime import resource_root
             profile.workdir = str(resource_root())
         profile.enable_local_node = payload.enable_local_node
+        profile.enable_gateway = payload.enable_gateway
         profile.node_cache_policy = LauncherNodeCachePolicy.ENABLED if payload.enable_node_cache_redis else LauncherNodeCachePolicy.DISABLED
         profile.dispatch_mode_enabled = payload.dispatch_mode_enabled
         profile.redis_source = payload.redis_source
