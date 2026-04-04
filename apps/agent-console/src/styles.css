@@ -938,8 +938,9 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 }
 .message-stream {
   min-height: 0;
-  max-height: 100%;
-  overflow: auto;
+  max-height: min(600px, 60vh);
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 4px;
 }
 .message-row { display: flex; margin-bottom: 14px; }
