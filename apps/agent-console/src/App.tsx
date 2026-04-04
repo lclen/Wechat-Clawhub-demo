@@ -835,6 +835,7 @@ export function App() {
   useEffect(() => {
     if (!setupTask || (setupTask.status !== "pending" && setupTask.status !== "running")) return;
     if (gatewayEnabled === false) return; // 节点角色下任务由 /local/node/install 同步完成，不需要轮询
+    if (launcherStatus?.profile.enable_gateway === false) return;
     let cancelled = false;
     const timer = window.setInterval(async () => {
       try {
@@ -1141,11 +1142,12 @@ export function App() {
   }
   async function runWorkerSetup(options?: { showResultScreen?: boolean }) {
     const showResultScreen = options?.showResultScreen ?? true;
+    const isWorkerRole = launcherStatus?.profile.enable_gateway === false;
     try {
       const result = await withBusy(
         "setup-worker",
         () => requestJson<SetupTaskEnvelope>(
-          gatewayEnabled === false ? "/local/node/install" : "/api/setup/node/install",
+          isWorkerRole ? "/local/node/install" : "/api/setup/node/install",
           { method: "POST", body: JSON.stringify({ config: workerSetup }) }
         ),
       );
@@ -1157,7 +1159,7 @@ export function App() {
         node_token: "",
       }));
       workerGatewayAutoProbeKeyRef.current = "";
-      await refreshSetupProfile();
+      if (!isWorkerRole) await refreshSetupProfile();
       setNotice("节点安装任务已启动；本次不会生成 token，安装完成后请到网关角色下完成配对。");
     } catch (error) {
       setNotice(`启动工作节点安装失败：${(error as Error).message}`);
@@ -1254,7 +1256,7 @@ export function App() {
         updated_at: new Date().toISOString(),
       });
       const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, node_id: nodeId || undefined, timeout_ms: 3000 };
-      const probeUrl = gatewayEnabled === false ? "/local/gateway/probe" : "/api/setup/gateway/probe";
+      const probeUrl = launcherStatus?.profile.enable_gateway === false ? "/local/gateway/probe" : "/api/setup/gateway/probe";
       const result = await withBusy(
         "setup-gateway-probe",
         () => requestJson<SetupTaskEnvelope>(probeUrl, { method: "POST", body: JSON.stringify(payload) }),
@@ -1650,7 +1652,7 @@ export function App() {
   async function confirmReconfigure() {
     try {
       const stoppedActions: string[] = [];
-      if (wechatStatus?.running && gatewayEnabled !== false) {
+      if (wechatStatus?.running && launcherStatus?.profile.enable_gateway !== false) {
         const status = await withBusy("reconfigure-disconnect-wechat", () =>
           requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" }),
         );
@@ -1669,7 +1671,7 @@ export function App() {
         stoppedActions.push("已停止所有本地组件");
       }
       if ((setupCompletedRoles.has("worker_node") || workerSetup.node_id.trim()) && workerSetup.install_dir.trim()) {
-        const resetUrl = gatewayEnabled === false ? "/local/node/reset-credentials" : "/api/setup/node/reset-credentials";
+        const resetUrl = launcherStatus?.profile.enable_gateway === false ? "/local/node/reset-credentials" : "/api/setup/node/reset-credentials";
         const result = await withBusy(
           "reconfigure-reset-worker-token",
           () => requestJson<SetupTaskEnvelope>(resetUrl, {
@@ -1685,7 +1687,7 @@ export function App() {
         stoppedActions.push("已清空节点配置");
       }
       // 重置后端内存状态（仅网关角色需要）
-      if (gatewayEnabled !== false) {
+      if (launcherStatus?.profile.enable_gateway !== false) {
         await withBusy("reconfigure-reset-state", () =>
           requestJson<{ removed_nodes: string[]; cleared_memory: boolean }>("/api/setup/reset", { method: "POST" }),
         );
