@@ -608,26 +608,6 @@ export function App() {
           setLauncherAvailable(true);
           const p = launcherSt.profile;
           setGatewayEnabled(p.enable_gateway !== false);
-          const gatewayComp = launcherSt.components.find(c => c.name === "gateway");
-          const gatewayDown = !gatewayComp || gatewayComp.state === "stopped" || gatewayComp.state === "failed";
-          // 网关角色且 gateway 未运行 → 自动拉起
-          if (p.enable_gateway && gatewayDown && p.bootstrap_completed && p.workdir) {
-            try {
-              await requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
-                method: "POST",
-                body: JSON.stringify({
-                  enable_local_node: p.enable_local_node,
-                  enable_gateway: true,
-                  enable_node_cache_redis: p.node_cache_policy !== "disabled",
-                  dispatch_mode_enabled: p.dispatch_mode_enabled,
-                  redis_source: p.redis_source,
-                  node_cache_redis_source: p.node_cache_redis_source,
-                }),
-              });
-              // 等 gateway 启动
-              await new Promise(r => window.setTimeout(r, 1500));
-            } catch { /* 启动失败时继续，让后续请求自然失败 */ }
-          }
           // 节点角色 → 不请求 gateway，用 local setup profile 初始化
           if (!p.enable_gateway) {
             setGatewayEnabled(false);
