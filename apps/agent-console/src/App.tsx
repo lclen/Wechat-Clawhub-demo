@@ -970,6 +970,7 @@ export function App() {
           method: "POST",
           body: JSON.stringify({
             enable_local_node: true,
+            enable_gateway: role !== "worker_node",
             enable_node_cache_redis: launcherStatus.profile.node_cache_policy !== "disabled",
             dispatch_mode_enabled: false,
             redis_source: launcherStatus.profile.redis_source || "mirror",
