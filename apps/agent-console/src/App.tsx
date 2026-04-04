@@ -704,11 +704,33 @@ export function App() {
           const detailPromise = selectedSessionId
             ? fetch(`${remoteGateway}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`).then(r => r.json() as Promise<SessionMessagesResponse>)
             : Promise.resolve(null);
-          const [sessionList, detail] = await Promise.all([
+          const [sessionList, nodeResp, detail] = await Promise.all([
             fetch(`${remoteGateway}/api/sessions`).then(r => r.json() as Promise<SessionsResponse>),
+            fetch(`${remoteGateway}/api/nodes`).then(r => r.json()).catch(() => null),
             detailPromise,
           ]);
           if (cancelled) return;
+          // 更新节点连接状态
+          if (nodeResp) {
+            const allNodes: NodeRecord[] = nodeResp.nodes || nodeResp || [];
+            const matched = allNodes.find((n: NodeRecord) => n.node_id === nodeId);
+            setWorkerGatewayProbeTask({
+              task_id: "auto-poll",
+              kind: "gateway_probe",
+              status: "succeeded",
+              title: "检测节点目标网关",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              summary: matched ? `目标网关可达，节点已连接：${nodeId}` : `目标网关可达，但节点未注册/未在线：${nodeId}`,
+              logs: [],
+              metadata: {
+                gateway_base_url: remoteGateway,
+                node_id: nodeId,
+                node_registered: matched ? "true" : "false",
+                node_connection_state: matched?.status || "",
+              },
+            });
+          }
           // 只显示分配给当前节点的会话
           const nodeSessions = sessionList.sessions.filter(s => s.assigned_node_id === nodeId);
           syncSessions(nodeSessions, setSessions, setSelectedSessionId, setActiveSession);
@@ -2146,7 +2168,7 @@ export function App() {
               <>
                 <StatusChip label="目标网关" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已连接" : workerSetup.gateway_base_url ? "可达" : "未填写"} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
                 <StatusChip label="节点" value={workerSetup.node_id || "未配置"} tone={workerSetup.node_id ? "good" : "warn"} />
-                <StatusChip label="注册状态" value={localNodeRuntimeSummary.label} tone={localNodeRuntimeSummary.tone} />
+                <StatusChip label="注册状态" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已注册" : workerGatewayConnection.state === "idle" ? "未检测" : workerGatewayConnection.label} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
                 <StatusChip label="模型" value={localNodeStatus?.model_settings?.model_provider && (localNodeStatus.model_settings.openai_api_key_configured || localNodeStatus.model_settings.dify_api_key_configured) ? localNodeStatus.model_settings.model_provider : "未配置"} tone={localNodeStatus?.model_settings?.openai_api_key_configured || localNodeStatus?.model_settings?.dify_api_key_configured ? "good" : "warn"} />
               </>
             ) : (
