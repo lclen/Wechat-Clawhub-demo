@@ -142,27 +142,28 @@ def create_app() -> FastAPI:
             redis_state(Path(profile.workdir), "host-redis", profile.redis_source),
             Path(layout.runtime_dir) / "vendor" / "host-redis",
         )
-        try:
-            app.state.manager.start_host_redis(profile, layout, Path(host_state.executable_path))
-        except Exception:
-            pass
-        try:
-            app.state.manager.start_gateway(profile, layout)
-        except RuntimeError as exc:
-            gateway_status = next((item for item in app.state.manager.statuses(profile, layout) if item.name == "gateway"), None)
-            if gateway_status and gateway_status.error_code == "external_port_in_use":
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": gateway_status.error_code,
-                        "message": str(exc),
-                        "component": "gateway",
-                        "port": profile.gateway_port,
-                        "detail": gateway_status.detail,
-                    },
-                ) from exc
-        except Exception:
-            pass
+        if payload.enable_gateway:
+            try:
+                app.state.manager.start_host_redis(profile, layout, Path(host_state.executable_path))
+            except Exception:
+                pass
+            try:
+                app.state.manager.start_gateway(profile, layout)
+            except RuntimeError as exc:
+                gateway_status = next((item for item in app.state.manager.statuses(profile, layout) if item.name == "gateway"), None)
+                if gateway_status and gateway_status.error_code == "external_port_in_use":
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "code": gateway_status.error_code,
+                            "message": str(exc),
+                            "component": "gateway",
+                            "port": profile.gateway_port,
+                            "detail": gateway_status.detail,
+                        },
+                    ) from exc
+            except Exception:
+                pass
 
         if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
             node_state = await ensure_redis_binary(

@@ -1339,6 +1339,7 @@ export function App() {
     try {
       const enableNodeCacheRedis = overrides?.enableNodeCacheRedis ?? (launcherStatus?.profile.node_cache_policy !== "disabled");
       const enableLocalNode = overrides?.enableLocalNode ?? (launcherStatus?.profile.enable_local_node ?? true);
+      const enableGateway = !currentRoleIsWorker;
       await withBusy(
         "launcher-start",
         () => requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
@@ -1346,6 +1347,7 @@ export function App() {
           body: JSON.stringify({
             enable_local_node: enableLocalNode,
             enable_node_cache_redis: enableNodeCacheRedis,
+            enable_gateway: enableGateway,
             dispatch_mode_enabled: gatewaySetup.dispatch_mode_enabled,
             redis_source: launcherStatus?.profile.redis_source || "mirror",
             node_cache_redis_source: launcherStatus?.profile.node_cache_redis_source || "mirror",
@@ -1353,7 +1355,7 @@ export function App() {
         }),
       );
       await refreshLauncherStatus();
-      setNotice("一体化组件启动命令已下发。");
+      setNotice(enableGateway ? "一体化组件启动命令已下发。" : "节点服务启动命令已下发。");
     } catch (error) {
       const failure = error as Error & { code?: string };
       setNotice(failure.code === "external_port_in_use" ? `主网关端口被其它进程占用：${failure.message}` : `启动本地组件失败：${failure.message}`);
@@ -1610,11 +1612,21 @@ export function App() {
         setWorkerSetup((current) => ({ ...current, node_token: "" }));
         stoppedActions.push("已清空本机节点 token");
       }
-      setReconfigureConfirmOpen(false);
+      // 重置后端内存状态（completed_roles、tasks、discovered nodes）
+      await withBusy("reconfigure-reset-state", () =>
+        fetch("/api/setup/reset", { method: "POST" }),
+      );
+      // 清理前端本地缓存
+      window.localStorage.removeItem(SETUP_DRAFT_KEY);
+      persistWorkspace("quick_setup");
+      setSetupProfile(null);
       setSetupRole(null);
       setSetupTask(null);
+      setReconfigureConfirmOpen(false);
       setSetupMode("role");
-      setNotice(`${stoppedActions.length ? `${stoppedActions.join("，")}，` : ""}已进入重新配置流程。`);
+      setWorkspace("quick_setup");
+      stoppedActions.push("已清理本地缓存");
+      setNotice(`${stoppedActions.join("，")}，已进入重新配置流程。`);
     } catch (error) {
       setNotice(`进入重新配置失败：${(error as Error).message}`);
     }
@@ -2065,7 +2077,7 @@ export function App() {
               </section>
 
               <div className="quick-setup-main">
-                {launcherAvailable ? (
+                {launcherAvailable && effectiveRole ? (
                   <section className="surface surface-subsection">
                     <div className="section-head">
                       <div><div className="section-kicker">桌面启动器</div><h3>{currentRoleIsWorker ? "本机节点托管环境" : "单机一体化运行"}</h3></div>
@@ -2077,7 +2089,7 @@ export function App() {
 
                     {/* 组件状态摘要行 — 始终可见 */}
                     <div className="launcher-component-rows">
-                      {(launcherStatus?.components || []).filter(c => c.name !== "local-node").map((component) => (
+                      {(launcherStatus?.components || []).filter(c => c.name !== "local-node" && !(currentRoleIsWorker && (c.name === "host-redis" || c.name === "gateway"))).map((component) => (
                         <div key={component.name} className="launcher-row">
                           <div className="launcher-row-left">
                             <span className={`launcher-dot launcher-dot-${launcherBadgeTone(component.state)}`} />
@@ -2140,7 +2152,7 @@ export function App() {
                       {!currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={() => applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button> : null}
                       <button type="button" className="ghost-button" onClick={() => toggleLauncherNodeCache(launcherStatus?.profile.node_cache_policy === "disabled")} disabled={busy !== null}>{launcherStatus?.profile.node_cache_policy === "disabled" ? "启用节点缓存" : "关闭节点缓存"}</button>
                       {launcherStatus?.profile.node_cache_policy !== "disabled" ? <button type="button" className="ghost-button" onClick={() => installLauncherRedis("node-cache", launcherStatus?.profile.node_cache_redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-node-cache" ? "下载中..." : launcherStatus?.node_cache_redis.installed ? "重装节点缓存 Redis" : "安装节点缓存 Redis"}</button> : null}
-                      <button type="button" onClick={() => void startLauncherStack()} disabled={busy !== null}>{busy === "launcher-start" ? "启动中..." : launcherHostRedis?.state === "failed" || launcherGateway?.state === "failed" ? "重新拉起" : "一键启动"}</button>
+                      {!currentRoleIsWorker ? <button type="button" onClick={() => void startLauncherStack()} disabled={busy !== null}>{busy === "launcher-start" ? "启动中..." : launcherHostRedis?.state === "failed" || launcherGateway?.state === "failed" ? "重新拉起" : "一键启动"}</button> : <button type="button" onClick={() => void startLauncherStack()} disabled={busy !== null}>{busy === "launcher-start" ? "启动中..." : "启动节点服务"}</button>}
                       <button type="button" className="ghost-button" onClick={() => stopLauncherStack()} disabled={busy !== null}>{busy === "launcher-stop" ? "停止中..." : "停止全部"}</button>
                     </div>
                   </section>
@@ -2586,7 +2598,7 @@ export function App() {
                 <section className="surface">
                   <div className="section-head">
                     <div><div className="section-kicker">{currentRoleIsWorker ? "节点安装" : "节点纳管"}</div><h3>{currentRoleIsWorker ? "安装或重装当前机器节点" : "网关配置后继续添加工作节点"}</h3></div>
-                    <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前网关地址</button>
+                    {!currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前网关地址</button> : null}
                   </div>
                   <div className="form-grid">
                     <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
@@ -2621,7 +2633,7 @@ export function App() {
                 </section>
               </div>
               <div className="connection-action-column">
-                {!currentRoleIsWorker ? (
+                {!currentRoleIsWorker && setupProfile ? (
                   <>
                     <section className="surface">
                       <div className="section-head">
@@ -2673,25 +2685,6 @@ export function App() {
                           ))}
                         </div>
                       )}
-                    </section>
-                  </>
-                ) : (
-                  <>
-                    <section className="surface node-role-surface">
-                      <div className="section-head"><div><div className="section-kicker">节点说明</div><h3>节点角色只配置当前机器，不纳管其它节点</h3></div></div>
-                      <div className="inline-tip">
-                        你当前选择的是节点角色，这里只保留当前机器这一个远端工作节点的安装、回连、凭据和发现响应相关功能；网关内置节点属于主网关自身，扫描并纳管其它节点需要切换回网关角色。
-                      </div>
-                      <div className="info-stack">
-                        <InfoRow label="节点身份" value="远端工作节点（当前机器）" multiline />
-                        <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
-                        <InfoRow label="网关连接状态" value={workerGatewayConnection.label} multiline />
-                        <InfoRow label="连接详情" value={workerGatewayConnection.detail} multiline />
-                        <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
-                        <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
-                        {workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点记录" value={summarizeRemoteNode(workerGatewayConnection.remoteNode)} multiline /> : null}
-                      </div>
-                      <SnippetBlock label="节点连接日志" content={workerConnectionLog || "这里会显示当前节点被连接、探测、注册和心跳确认的详细日志。"} />
                     </section>
                     <section className="surface">
                       <div className="section-head">
@@ -2762,6 +2755,25 @@ export function App() {
                         </label>
                       </div>
                       <SnippetBlock label="本机节点事件日志" content={localNodeEventPreview} />
+                    </section>
+                  </>
+                ) : (
+                  <>
+                    <section className="surface node-role-surface">
+                      <div className="section-head"><div><div className="section-kicker">节点说明</div><h3>节点角色只配置当前机器，不纳管其它节点</h3></div></div>
+                      <div className="inline-tip">
+                        你当前选择的是节点角色，这里只保留当前机器这一个远端工作节点的安装、回连、凭据和发现响应相关功能；网关内置节点属于主网关自身，扫描并纳管其它节点需要切换回网关角色。
+                      </div>
+                      <div className="info-stack">
+                        <InfoRow label="节点身份" value="远端工作节点（当前机器）" multiline />
+                        <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
+                        <InfoRow label="网关连接状态" value={workerGatewayConnection.label} multiline />
+                        <InfoRow label="连接详情" value={workerGatewayConnection.detail} multiline />
+                        <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
+                        <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
+                        {workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点记录" value={summarizeRemoteNode(workerGatewayConnection.remoteNode)} multiline /> : null}
+                      </div>
+                      <SnippetBlock label="节点连接日志" content={workerConnectionLog || "这里会显示当前节点被连接、探测、注册和心跳确认的详细日志。"} />
                     </section>
                   </>
                 )}

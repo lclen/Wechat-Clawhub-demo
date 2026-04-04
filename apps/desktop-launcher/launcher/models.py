@@ -99,6 +99,7 @@ class InstallRedisRequest(BaseModel):
 
 class StartRequest(BaseModel):
     enable_local_node: bool = True
+    enable_gateway: bool = True
     enable_node_cache_redis: bool = False
     dispatch_mode_enabled: bool = False
     redis_source: RedisSource = RedisSource.MIRROR

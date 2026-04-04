@@ -285,6 +285,15 @@ class SetupService:
         self._finish_task(task, "succeeded")
         return task.to_result()
 
+    def reset_setup_state(self) -> None:
+        """Reset in-memory setup completion state for reconfigure flow. Does not modify .env files."""
+        self._worker_setup_completed = False
+        self._console_setup_completed = False
+        self._tasks = {}
+        self._last_task_id = None
+        self._discovered_nodes = {}
+        self._pairing_diagnostics = {}
+
     async def reset_worker_node_credentials(self, node_id: str, install_dir: str) -> SetupTaskResult:
         task = self._create_task("node_install", f"重置工作节点凭据 {node_id}")
         task.status = "running"
