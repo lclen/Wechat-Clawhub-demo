@@ -18,6 +18,13 @@ RFC1918_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
     ipaddress.IPv4Network("192.168.0.0/16"),
 )
 
+# 需要在发现扫描中忽略的虚拟/保留地址段
+# 198.18.0.0/15 是 RFC 2544 基准测试保留段，被 Hyper-V/WSL 虚拟网卡使用
+VIRTUAL_NIC_NETWORKS: tuple[ipaddress.IPv4Network, ...] = (
+    ipaddress.IPv4Network("198.18.0.0/15"),   # Hyper-V / WSL NAT
+    ipaddress.IPv4Network("169.254.0.0/16"),  # APIPA 链路本地
+)
+
 
 @dataclass(frozen=True, slots=True)
 class IPv4InterfaceRecord:
@@ -72,6 +79,17 @@ def is_preferred_lan_ip(value: str) -> bool:
     if not isinstance(ip, ipaddress.IPv4Address):
         return False
     return any(ip in network for network in RFC1918_NETWORKS)
+
+
+def is_virtual_nic_ip(value: str) -> bool:
+    """返回 True 表示该 IP 属于虚拟/保留网段，应在节点发现时忽略。"""
+    try:
+        ip = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    if not isinstance(ip, ipaddress.IPv4Address):
+        return False
+    return any(ip in network for network in VIRTUAL_NIC_NETWORKS)
 
 
 def is_usable_ipv4(value: str) -> bool:

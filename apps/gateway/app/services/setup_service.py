@@ -34,6 +34,7 @@ from app.models.setup import (
 from app.services.node_registry import NodeRegistry
 from app.utils.network import (
     directed_broadcast_targets,
+    is_virtual_nic_ip,
     list_ipv4_interfaces,
     preferred_gateway_base_url,
     scoped_ipv4_interfaces,
@@ -1640,6 +1641,10 @@ class SetupService:
                     continue
                 lan_ip = raw.get("lan_ip") or addr[0]
                 pairing_port = int(raw.get("pairing_port") or (self._settings.discovery_port + 1))
+                if is_virtual_nic_ip(lan_ip):
+                    ignored_packets += 1
+                    self._append_log(task, f"忽略虚拟网卡响应：{lan_ip}（属于保留/虚拟地址段）。")
+                    continue
                 discovery_id = f"{lan_ip}:{pairing_port}:{raw.get('node_id') or raw.get('hostname') or 'node'}"
                 discovered = DiscoveredNodeRecord(
                     discovery_id=discovery_id,
