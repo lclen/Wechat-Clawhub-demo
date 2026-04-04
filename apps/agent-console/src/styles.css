@@ -3,6 +3,7 @@
 :root {
   color-scheme: light;
   --drawer-width: 360px;
+  --scroll-panel-height: min(800px, 72vh);
   --easing-emphasized: cubic-bezier(0.2, 0, 0, 1);
   --transition-duration: 400ms;
   --bg: #f5efe7;
@@ -880,7 +881,7 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .node-stack { display: grid; gap: 12px; }
 .node-details { border: 1px solid var(--line); border-radius: 18px; padding: 14px 16px; background: rgba(255, 255, 255, 0.68); }
 .node-message-list {
-  max-height: 360px;
+  max-height: var(--scroll-panel-height);
   overflow: auto;
   display: grid;
   gap: 10px;
@@ -938,7 +939,7 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 }
 .message-stream {
   min-height: 0;
-  max-height: min(800px, 72vh);
+  max-height: var(--scroll-panel-height);
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 4px;
@@ -1013,6 +1014,22 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 }
 .empty-state-tall { min-height: 150px; }
 
+.loading-spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spinner-rotate 0.8s linear infinite;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+@keyframes spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
 @keyframes typing-pulse {
   0%, 80%, 100% { transform: translateY(0); opacity: 0.35; }
   40% { transform: translateY(-2px); opacity: 1; }
@@ -1065,6 +1082,10 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   .session-card-top { flex-wrap: wrap; }
   .session-card-title { white-space: normal; }
   .message-bubble { max-width: 100%; }
+  .message-stream,
+  .node-message-list {
+    max-height: none;
+  }
   .side-drawer {
     top: 8px;
     bottom: 8px;

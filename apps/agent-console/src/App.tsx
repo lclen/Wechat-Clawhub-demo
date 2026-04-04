@@ -30,7 +30,15 @@ type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; connection_
 type NodeDiagnosticsResponse = { node_id: string; diagnostics: NodeDiagnosticsRecord };
 type NodeMessageItem = { session_id: string; user_id: string; channel: string; role: MessageRecord["role"]; content: string; created_at: string; node_id: string | null };
 type SessionsResponse = { sessions: SessionRecord[] };
-type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[] };
+type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean };
+type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
+type SessionMessageCacheEntry = {
+  session: SessionRecord | null;
+  messages: MessageRecord[];
+  cursor: number;
+  loaded: boolean;
+  lastLoadedAt: number;
+};
 type SessionSwitchResponse = { ok: boolean; session: SessionRecord; detail: string };
 type QrStart = { qrcode: string; qrcode_url: string };
 type PollResponse = { status: string; token?: string; base_url?: string; message?: string; bot_id?: string; user_id?: string };
@@ -468,6 +476,7 @@ export function App() {
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [sessionsLoaded, setSessionsLoaded] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
+  const [messageCursor, setMessageCursor] = useState<number>(0);
   const [qr, setQr] = useState<QrStart | null>(null);
   const [qrImageSrc, setQrImageSrc] = useState("");
   const [pollState, setPollState] = useState<PollResponse | null>(null);
@@ -481,6 +490,38 @@ export function App() {
   const [workerModelExpanded, setWorkerModelExpanded] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const workerGatewayAutoProbeKeyRef = useRef("");
+  const shouldAutoFollowMessagesRef = useRef(true);
+  const previousMessageSessionIdRef = useRef<string | null>(null);
+  const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
+  const sessionRemoteGatewayBaseUrl = gatewayEnabled === false ? workerSetup.gateway_base_url.trim() : "";
+  const sessionRemoteNodeId = gatewayEnabled === false ? workerSetup.node_id.trim() : "";
+
+  function scrollMessagesToBottom() {
+    const container = messagesRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }
+
+  function isMessageStreamNearBottom() {
+    const container = messagesRef.current;
+    if (!container) return true;
+    return container.scrollHeight - container.scrollTop - container.clientHeight <= 48;
+  }
+
+  function handleMessageStreamScroll() {
+    shouldAutoFollowMessagesRef.current = isMessageStreamNearBottom();
+  }
+
+  function syncNodeStateView(next: NodeListResponse, options?: { selectNode?: boolean }) {
+    syncNodeState(
+      next,
+      setNodes,
+      setNodeInventory,
+      setNodeInventorySummary,
+      setSelectedNodeId,
+      { selectNode: options?.selectNode ?? workspace === "connection" },
+    );
+  }
 
   useEffect(() => {
     window.localStorage.setItem(
@@ -547,10 +588,17 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    requestAnimationFrame(() => {
-      if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+    const sessionChanged = previousMessageSessionIdRef.current !== selectedSessionId;
+    previousMessageSessionIdRef.current = selectedSessionId;
+    if (!sessionChanged && !shouldAutoFollowMessagesRef.current) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      scrollMessagesToBottom();
+      window.setTimeout(() => scrollMessagesToBottom(), 0);
     });
-  }, [messages.length, activeSession?.active_task_id, activeSession?.queue_status]);
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length, messagesLoaded, selectedSessionId, activeSession?.active_task_id, activeSession?.queue_status]);
 
   useEffect(() => {
     let cancelled = false;
@@ -569,7 +617,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!launcherAvailable) return;
+    // 只在接入中心工作区时轮询本地节点状态
+    if (!launcherAvailable || workspace !== "connection") return;
     let cancelled = false;
     let timer = 0;
     const run = async () => {
@@ -592,7 +641,7 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [launcherAvailable]);
+  }, [launcherAvailable, workspace]);
 
   useEffect(() => {
     let cancelled = false;
@@ -657,7 +706,7 @@ export function App() {
         setModelStatus(model);
         if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
         setWechatStatus(wechat);
-        syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+        syncNodeStateView(nodeList);
         syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
         setSessionsLoaded(true);
         setNotice(
@@ -692,24 +741,103 @@ export function App() {
     setSetupMode((current) => (current === "config" || current === "preview" ? current : "status"));
   }, [workspace, setupProfile?.setup_completed]);
 
+  async function fetchSessionMessages(
+    sessionId: string,
+    options?: { remoteGateway?: string | null; afterCount?: number; limit?: number; fallbackToFull?: boolean },
+  ) {
+    const remoteGateway = options?.remoteGateway?.trim() || "";
+    const afterCount = options?.afterCount ?? 0;
+    const limit = options?.limit;
+    const params = new URLSearchParams();
+    if (afterCount > 0) params.append("after_count", String(afterCount));
+    if (limit !== undefined && limit > 0) params.append("limit", String(limit));
+    const query = params.toString() ? `?${params.toString()}` : "";
+    const url = remoteGateway
+      ? `${remoteGateway}/api/sessions/${encodeURIComponent(sessionId)}/messages${query}`
+      : `/api/sessions/${encodeURIComponent(sessionId)}/messages${query}`;
+    try {
+      return await requestJson<SessionMessagesResponse>(url);
+    } catch (error) {
+      const failure = error as Error & { status?: number };
+      if (options?.fallbackToFull && afterCount > 0 && failure.status === 400) {
+        const fullUrl = remoteGateway
+          ? `${remoteGateway}/api/sessions/${encodeURIComponent(sessionId)}/messages`
+          : `/api/sessions/${encodeURIComponent(sessionId)}/messages`;
+        return await requestJson<SessionMessagesResponse>(fullUrl);
+      }
+      throw error;
+    }
+  }
+
+  function mergeMessages(current: MessageRecord[], incoming: MessageRecord[]) {
+    if (!incoming.length) return current;
+    const merged = new Map(current.map((message) => [message.message_id, message]));
+    for (const message of incoming) {
+      merged.set(message.message_id, message);
+    }
+    return Array.from(merged.values()).sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }
+
+  function getSessionMessageCache(sessionId: string | null) {
+    if (!sessionId) return null;
+    return sessionMessageCacheRef.current.get(sessionId) ?? null;
+  }
+
+  function syncSessionMessageCache(
+    sessionId: string,
+    detail: SessionMessagesResponse,
+    options?: { preserveExisting?: boolean },
+  ) {
+    const current = sessionMessageCacheRef.current.get(sessionId);
+    const nextMessages =
+      options?.preserveExisting && current?.loaded && !detail.replace_messages
+        ? mergeMessages(current.messages, detail.messages)
+        : detail.replace_messages
+          ? detail.messages
+          : mergeMessages(current?.messages ?? [], detail.messages);
+    const entry: SessionMessageCacheEntry = {
+      session: detail.session,
+      messages: nextMessages,
+      cursor: detail.next_cursor,
+      loaded: true,
+      lastLoadedAt: Date.now(),
+    };
+    sessionMessageCacheRef.current.set(sessionId, entry);
+    return entry;
+  }
+
+  function applySessionMessageEntry(sessionId: string, entry: SessionMessageCacheEntry) {
+    if (selectedSessionId !== sessionId) return;
+    setActiveSession(entry.session ?? null);
+    setMessages(entry.messages);
+    setMessageCursor(entry.cursor);
+    setMessagesLoaded(entry.loaded);
+  }
+
+  function buildSessionWebSocketUrl(sessionId: string, remoteGateway?: string | null) {
+    const baseUrl = remoteGateway?.trim() || window.location.origin;
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = `/api/sessions/${encodeURIComponent(sessionId)}/ws`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
       // 节点角色（enable_gateway=false）下直接请求远端网关，只显示本节点相关会话
       if (gatewayEnabled === false) {
-        const remoteGateway = workerSetup.gateway_base_url.trim();
-        const nodeId = workerSetup.node_id.trim();
+        const remoteGateway = sessionRemoteGatewayBaseUrl;
+        const nodeId = sessionRemoteNodeId;
         if (!remoteGateway || !nodeId) return;
         let failed = false;
         try {
-          const detailPromise = selectedSessionId
-            ? fetch(`${remoteGateway}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`).then(r => r.json() as Promise<SessionMessagesResponse>)
-            : Promise.resolve(null);
-          const [sessionList, nodeResp, detail] = await Promise.all([
-            fetch(`${remoteGateway}/api/sessions`).then(r => r.json() as Promise<SessionsResponse>),
-            fetch(`${remoteGateway}/api/nodes`).then(r => r.json()).catch(() => null),
-            detailPromise,
+          const [sessionList, nodeResp] = await Promise.all([
+            requestJson<SessionsResponse>(`${remoteGateway}/api/sessions`),
+            requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null),
           ]);
           if (cancelled) return;
           // 更新节点连接状态
@@ -717,7 +845,7 @@ export function App() {
             const allNodes: NodeRecord[] = nodeResp.nodes || nodeResp || [];
             const matched = allNodes.find((n: NodeRecord) => n.node_id === nodeId);
             // Update nodes state so workerGatewayConnection.remoteNode gets populated
-            syncNodeState({ nodes: allNodes, inventory: [], summary: { paired_total: 0, online_total: allNodes.length, offline_total: 0 } }, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+            syncNodeStateView({ nodes: allNodes, inventory: [], summary: { paired_total: 0, online_total: allNodes.length, offline_total: 0 } });
             setWorkerGatewayProbeTask({
               task_id: "auto-poll",
               kind: "gateway_probe",
@@ -739,43 +867,31 @@ export function App() {
           const nodeSessions = sessionList.sessions.filter(s => s.assigned_node_id === nodeId);
           syncSessions(nodeSessions, setSessions, setSelectedSessionId, setActiveSession);
           setSessionsLoaded(true);
-          if (detail) { setActiveSession(detail.session); setMessages(detail.messages); }
-          else { setMessages([]); }
-          setMessagesLoaded(true);
         } catch { failed = true; }
         finally {
-          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : shouldUseFastPolling(activeSession) ? FAST_POLL_MS : IDLE_POLL_MS);
+          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
         }
         return;
       }
       if (gatewayEnabled === null) { timer = window.setTimeout(() => void run(), 500); return; }
       let failed = false;
       try {
-        const detailPromise = selectedSessionId ? requestJson<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`) : Promise.resolve(null);
-        const [wechat, nodeList, sessionList, detail] = await Promise.all([
+        const [wechat, nodeList, sessionList] = await Promise.all([
           requestJson<WeChatStatus>("/api/wechat/onboard/status"),
           requestJson<NodeListResponse>("/api/nodes"),
           requestJson<SessionsResponse>("/api/sessions"),
-          detailPromise,
         ]);
         if (cancelled) return;
         if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
         setWechatStatus(wechat);
-        syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+        syncNodeStateView(nodeList);
         syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
         setSessionsLoaded(true);
-        if (detail) {
-          setActiveSession(detail.session);
-          setMessages(detail.messages);
-        } else {
-          setMessages([]);
-        }
-        setMessagesLoaded(true);
       } catch {
         failed = true;
         // keep live polling resilient
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : shouldUseFastPolling(activeSession) ? FAST_POLL_MS : IDLE_POLL_MS);
+        if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
       }
     };
     void run();
@@ -786,41 +902,183 @@ export function App() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [selectedSessionId, activeSession?.active_task_id, activeSession?.queue_status, gatewayEnabled]);
+  }, [gatewayEnabled, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId]);
 
   useEffect(() => {
+    shouldAutoFollowMessagesRef.current = true;
     if (!selectedSessionId) {
       setActiveSession(null);
       setMessages([]);
+      setMessageCursor(0);
       setMessagesLoaded(true);
       return;
     }
-    let cancelled = false;
-    setMessagesLoaded(false);
-    // 等待 launcherStatus 加载完成再决定用哪个 gateway
-    if (!launcherStatus) { setMessagesLoaded(true); return; }
-    const remoteGateway = launcherStatus.profile.enable_gateway === false ? workerSetup.gateway_base_url.trim() : null;
-    const fetchUrl = remoteGateway
-      ? `${remoteGateway}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`
-      : `/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`;
-    const fetchFn = remoteGateway
-      ? fetch(fetchUrl).then(r => r.json() as Promise<SessionMessagesResponse>)
-      : requestJson<SessionMessagesResponse>(fetchUrl);
-    fetchFn.then((detail) => {
-      if (cancelled) return;
-      setActiveSession(detail.session);
-      setMessages(detail.messages);
+    const cached = getSessionMessageCache(selectedSessionId);
+    if (cached?.loaded) {
+      setActiveSession(cached.session ?? sessions.find((item) => item.session_id === selectedSessionId) ?? null);
+      setMessages(cached.messages);
+      setMessageCursor(cached.cursor);
       setMessagesLoaded(true);
-    }).catch(() => {
-      if (!cancelled) setMessagesLoaded(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedSessionId, launcherStatus?.profile.enable_gateway, workerSetup.gateway_base_url]);
+      return;
+    }
+    setActiveSession(sessions.find((item) => item.session_id === selectedSessionId) ?? null);
+    setMessages([]);
+    setMessageCursor(0);
+    setMessagesLoaded(false);
+  }, [selectedSessionId, sessions]);
 
   useEffect(() => {
-    if (!selectedNodeId) {
+    if (workspace !== "sessions") return;
+    if (!selectedSessionId) return;
+    const remoteGateway = sessionRemoteGatewayBaseUrl;
+    if (gatewayEnabled === false && !remoteGateway) return;
+
+    let cancelled = false;
+    let httpTimer = 0;
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+    let socketReady = false;
+    const sessionId = selectedSessionId;
+
+    // 立即应用缓存（如果存在），避免 UI 闪烁
+    const cached = getSessionMessageCache(sessionId);
+    if (cached?.loaded) {
+      applySessionMessageEntry(sessionId, cached);
+    }
+
+    const loadMessages = async (preferIncremental: boolean) => {
+      const cached = getSessionMessageCache(sessionId);
+      const hasCache = Boolean(cached?.loaded);
+      const afterCount = preferIncremental && cached?.loaded ? cached.cursor : 0;
+      // 只有在没有缓存且不是增量加载时才显示加载状态
+      if (!hasCache && !preferIncremental) {
+        setMessagesLoaded(false);
+      }
+      try {
+        const detail = await fetchSessionMessages(sessionId, {
+          remoteGateway,
+          afterCount,
+          limit: !hasCache && !preferIncremental ? 50 : undefined,
+          fallbackToFull: true,
+        });
+        if (cancelled || selectedSessionId !== sessionId) return;
+        const entry = syncSessionMessageCache(sessionId, detail, { preserveExisting: preferIncremental });
+        applySessionMessageEntry(sessionId, entry);
+        const nextDelay = shouldUseFastPolling(detail.session) ? FAST_POLL_MS : IDLE_POLL_MS;
+        if (!cancelled) httpTimer = window.setTimeout(() => void loadMessages(true), nextDelay);
+      } catch (error) {
+        if (cancelled || selectedSessionId !== sessionId) return;
+        if (!hasCache) {
+          setMessages([]);
+          setMessageCursor(0);
+          setMessagesLoaded(true);
+        }
+        setNotice(`读取会话消息失败：${(error as Error).message}`);
+        if (!cancelled) httpTimer = window.setTimeout(() => void loadMessages(Boolean(getSessionMessageCache(sessionId)?.loaded)), RETRY_POLL_MS);
+      }
+    };
+
+    const stopHttpPolling = () => {
+      window.clearTimeout(httpTimer);
+      httpTimer = 0;
+    };
+
+    const scheduleHttpPolling = (preferIncremental: boolean) => {
+      stopHttpPolling();
+      void loadMessages(preferIncremental);
+    };
+
+    const connectSessionSocket = () => {
+      if (cancelled) return;
+      const wsUrl = buildSessionWebSocketUrl(sessionId, remoteGateway);
+      let receivedPayload = false;
+      let receivedSnapshot = false;
+      let snapshotTimeout = 0;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+        return;
+      }
+      snapshotTimeout = window.setTimeout(() => {
+        if (cancelled || receivedPayload) return;
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors when falling back to HTTP polling
+        }
+        scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+      }, 2500);
+      socket.onmessage = (event) => {
+        if (cancelled || selectedSessionId !== sessionId) return;
+        let payload: SessionStreamEnvelope;
+        try {
+          payload = JSON.parse(event.data) as SessionStreamEnvelope;
+        } catch {
+          return;
+        }
+        receivedPayload = true;
+        if (payload.type === "snapshot") {
+          receivedSnapshot = true;
+        }
+        window.clearTimeout(snapshotTimeout);
+        stopHttpPolling();
+        socketReady = true;
+        const entry = syncSessionMessageCache(
+          sessionId,
+          {
+            session: payload.session,
+            messages: payload.messages,
+            next_cursor: payload.next_cursor,
+            replace_messages: payload.replace_messages,
+          },
+          { preserveExisting: payload.type === "messages_appended" },
+        );
+        applySessionMessageEntry(sessionId, entry);
+      };
+      socket.onerror = () => {
+        if (cancelled) return;
+        if (!receivedPayload) {
+          scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+        }
+      };
+      socket.onclose = () => {
+        window.clearTimeout(snapshotTimeout);
+        if (cancelled) return;
+        socket = null;
+        socketReady = false;
+        scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded || receivedSnapshot));
+        reconnectTimer = window.setTimeout(() => {
+          connectSessionSocket();
+        }, 3000);
+      };
+    };
+
+    connectSessionSocket();
+
+    const onVisible = () => {
+      if (document.hidden) return;
+      window.clearTimeout(reconnectTimer);
+      if (socketReady) return;
+      scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+      connectSessionSocket();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      stopHttpPolling();
+      window.clearTimeout(reconnectTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore teardown close errors
+      }
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [gatewayEnabled, selectedSessionId, sessionRemoteGatewayBaseUrl, workspace]);
+
+  useEffect(() => {
+    if (workspace !== "connection" || !selectedNodeId) {
       setSelectedNodeDiagnostics(null);
       return;
     }
@@ -843,10 +1101,10 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [selectedNodeId]);
+  }, [launcherStatus?.profile.enable_gateway, selectedNodeId, workspace]);
 
   useEffect(() => {
-    if (!selectedNodeId) {
+    if (workspace !== "connection" || !selectedNodeId) {
       setNodeMessages([]);
       setNodeMessagesLoaded(true);
       return;
@@ -893,7 +1151,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedNodeId, sessions]);
+  }, [selectedNodeId, sessions, workspace]);
 
   useEffect(() => {
     if (!setupTask || (setupTask.status !== "pending" && setupTask.status !== "running")) return;
@@ -1164,7 +1422,7 @@ export function App() {
       setModelStatus(model);
       setWechatStatus(wechat);
       if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-      syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+      syncNodeStateView(nodeList);
       if (launcherAvailable) {
         await refreshLauncherStatus();
       }
@@ -1178,9 +1436,10 @@ export function App() {
     setSystemStatus(system);
   }
   async function refreshSessionDetail(sessionId: string) {
-    const detail = await requestJson<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/messages`);
-    setActiveSession(detail.session);
-    setMessages(detail.messages);
+    const remoteGateway = sessionRemoteGatewayBaseUrl;
+    const detail = await fetchSessionMessages(sessionId, { remoteGateway });
+    const entry = syncSessionMessageCache(sessionId, detail);
+    applySessionMessageEntry(sessionId, entry);
   }
   async function runGatewaySetup() {
     try {
@@ -1335,7 +1594,7 @@ export function App() {
     }
   }
   function updateNodeState(next: NodeListResponse) {
-    syncNodeState(next, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+    syncNodeStateView(next);
   }
   async function refreshLauncherStatus() {
     try {
@@ -1538,7 +1797,7 @@ export function App() {
         }),
         refreshSessionDetail(sessionId),
         requestJson<NodeListResponse>("/api/nodes").then((nodeList) => {
-          syncNodeState(nodeList, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+          syncNodeStateView(nodeList);
         }),
       ]);
       setNotice(result.detail || "已提交会话切换请求。");
@@ -1581,7 +1840,7 @@ export function App() {
               window.setTimeout(() => {
                 closePairingModal();
                 requestJson<NodeListResponse>("/api/nodes")
-                  .then((refreshed) => syncNodeState(refreshed, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId))
+                  .then((refreshed) => syncNodeStateView(refreshed))
                   .catch(() => undefined);
               }, 2000);
             }
@@ -1628,7 +1887,7 @@ export function App() {
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: result.pairing_status }));
       startPairingModal(result.task.task_id);
       const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeState(refreshedNodes, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+      syncNodeStateView(refreshedNodes);
     } catch (error) {
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: "offline" }));
       appendPairingClientError("扫描结果配对", target, error as Error);
@@ -1675,7 +1934,7 @@ export function App() {
         node_id: result.node_id || current.node_id,
       }));
       const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeState(refreshedNodes, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+      syncNodeStateView(refreshedNodes);
     } catch (error) {
       appendPairingClientError("按地址配对", target, error as Error);
       setNotice(`按地址配对失败：${(error as Error).message}`);
@@ -1690,7 +1949,7 @@ export function App() {
         () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}`, { method: "DELETE" }),
       );
       const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeState(refreshedNodes, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
+      syncNodeStateView(refreshedNodes);
       setNotice(result.detail || `已删除节点 ${node.node_id}。`);
       if (workerSetup.node_id.trim() === node.node_id) {
         setWorkerGatewayProbeTask(null);
@@ -2707,7 +2966,7 @@ export function App() {
                               {selectedNodeId === node.node_id ? "收起诊断" : "查看诊断"}
                             </button>
                             {node.node_kind === "remote" && node.paired ? <button type="button" className="ghost-button launcher-row-btn" onClick={() => void deletePairedNode(node)} disabled={busy !== null}>{busy === `delete-node-${node.node_id}` ? "处理中..." : "删除节点"}</button> : null}
-                            {node.node_kind === "remote" && node.online ? <button type="button" className="ghost-button launcher-row-btn" onClick={async () => { if (!window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`)) return; try { const r = await withBusy(`disconnect-node-${node.node_id}`, () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" })); const refreshed = await requestJson<NodeListResponse>("/api/nodes"); syncNodeState(refreshed, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId); setNotice(r.detail || `已断开节点 ${node.node_id}。`); } catch (e) { setNotice(`断开失败：${(e as Error).message}`); } }} disabled={busy !== null}>{busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接"}</button> : null}
+                            {node.node_kind === "remote" && node.online ? <button type="button" className="ghost-button launcher-row-btn" onClick={async () => { if (!window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`)) return; try { const r = await withBusy(`disconnect-node-${node.node_id}`, () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" })); const refreshed = await requestJson<NodeListResponse>("/api/nodes"); syncNodeStateView(refreshed); setNotice(r.detail || `已断开节点 ${node.node_id}。`); } catch (e) { setNotice(`断开失败：${(e as Error).message}`); } }} disabled={busy !== null}>{busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接"}</button> : null}
                           </div>
                         </article>
                       )})}
@@ -3094,8 +3353,8 @@ export function App() {
 
                 <section className="surface transcript-surface">
                   <div className="section-head compact-head"><div><div className="section-kicker">Transcript</div><h3>聊天时间线</h3></div>{typingState ? <div className="typing-status-inline">{typingState}</div> : null}</div>
-                  <div ref={messagesRef} className="message-stream">
-                    {!selectedSession ? <div className="empty-state">选择一个会话后，这里会显示完整聊天内容。</div> : !messagesLoaded ? <div className="empty-state">正在加载聊天内容…</div> : !messages.length ? <div className="empty-state">当前会话还没有消息。</div> : messages.map((message, index) => (
+                  <div ref={messagesRef} className="message-stream" onScroll={handleMessageStreamScroll}>
+                    {!selectedSession ? <div className="empty-state">选择一个会话后，这里会显示完整聊天内容。</div> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载聊天内容…</div> : !messages.length ? <div className="empty-state">当前会话还没有消息。</div> : messages.map((message, index) => (
                       <div key={message.message_id}>
                         {showDateDivider(messages, index) ? <div className="date-divider">{formatDayLabel(message.created_at)}</div> : null}
                         <div className={`message-row message-row-${message.role === "user" ? "user" : "assistant"}`}>
@@ -3223,10 +3482,15 @@ function syncNodeState(
   setNodeInventory: React.Dispatch<React.SetStateAction<NodeInventoryRecord[]>>,
   setNodeInventorySummary: React.Dispatch<React.SetStateAction<NodeInventorySummary>>,
   setSelectedNodeId: React.Dispatch<React.SetStateAction<string | null>>,
+  options?: { selectNode?: boolean },
 ) {
   setNodes(next.nodes);
   setNodeInventory(next.inventory);
   setNodeInventorySummary(next.summary);
+  if (options?.selectNode === false) {
+    setSelectedNodeId(null);
+    return;
+  }
   setSelectedNodeId((current) => current && next.inventory.some((item) => item.node_id === current) ? current : (next.inventory[0]?.node_id ?? next.nodes[0]?.node_id ?? null));
 }
 function matchesFilter(session: SessionRecord, filter: SessionFilter, now: number) { return filter === "processing" ? session.queue_status !== "none" || Boolean(session.active_task_id) : filter === "human" ? session.status === "human_active" || session.status === "handoff_pending" : filter === "recent" ? isRecent(session, now) : true; }

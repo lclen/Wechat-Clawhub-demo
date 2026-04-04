@@ -17,6 +17,7 @@ from app.models.session import (
 )
 from app.services.redis_store import RedisStore
 from app.services.session_keys import build_session_id
+from app.services.session_stream import SessionStreamBroker
 from app.services.transcript_writer import TranscriptWriter
 from app.services.user_data_store import UserDataStore
 
@@ -29,6 +30,10 @@ class SessionNotFoundError(SessionManagerError):
     """Raised when a session is missing."""
 
 
+class SessionCursorError(SessionManagerError):
+    """Raised when an incremental messages cursor is invalid."""
+
+
 class SessionManager:
     ACTIVE_SESSIONS_KEY = "wch:sessions:active"
 
@@ -38,11 +43,13 @@ class SessionManager:
         transcript_writer: TranscriptWriter,
         user_data_store: UserDataStore,
         settings: Settings,
+        session_stream: SessionStreamBroker | None = None,
     ) -> None:
         self._store = store
         self._transcript_writer = transcript_writer
         self._user_data_store = user_data_store
         self._settings = settings
+        self._session_stream = session_stream
 
     def _session_meta_key(self, session_id: str) -> str:
         return f"wch:session:{session_id}:meta"
@@ -135,13 +142,70 @@ class SessionManager:
             raise SessionNotFoundError(f"Session '{session_id}' not found")
         return self._parse_session(raw, summary)
 
-    async def get_messages(self, session_id: str) -> list[MessageRecord]:
-        await self.get_session(session_id)
+    async def get_messages(
+        self,
+        session_id: str,
+        *,
+        session: SessionRecord | None = None,
+        after_count: int | None = None,
+        limit: int | None = None,
+    ) -> tuple[list[MessageRecord], int, bool]:
+        current_session = session or await self.get_session(session_id)
+        if after_count is not None and after_count < 0:
+            raise SessionCursorError("after_count must be greater than or equal to 0")
+        if after_count is not None and after_count > current_session.message_count:
+            raise SessionCursorError("after_count is ahead of the current session message count")
+
+        next_cursor = current_session.message_count
+
+        # 增量加载：只获取新消息
+        if after_count is not None and after_count > 0:
+            delta = current_session.message_count - after_count
+            if delta <= 0:
+                return [], next_cursor, False
+
+            # 如果增量消息数量超过限制，返回全部消息
+            if delta >= self._settings.recent_message_limit:
+                try:
+                    raw_messages = await self._store.lrange(self._session_messages_key(session_id), 0, -1)
+                except RedisError as exc:
+                    raise SessionManagerError("Failed to fetch messages") from exc
+                all_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+                return all_messages, next_cursor, True
+
+            # 只获取增量消息（从 after_count 位置开始）
+            try:
+                raw_messages = await self._store.lrange(
+                    self._session_messages_key(session_id),
+                    after_count,
+                    -1
+                )
+            except RedisError as exc:
+                raise SessionManagerError("Failed to fetch messages") from exc
+            incremental_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+            return incremental_messages, next_cursor, False
+
+        # 初始加载：如果指定了 limit，只获取最近的 N 条消息
+        if limit is not None and limit > 0:
+            start_index = max(0, current_session.message_count - limit)
+            try:
+                raw_messages = await self._store.lrange(
+                    self._session_messages_key(session_id),
+                    start_index,
+                    -1
+                )
+            except RedisError as exc:
+                raise SessionManagerError("Failed to fetch messages") from exc
+            limited_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+            return limited_messages, next_cursor, True
+
+        # 初始加载：获取全部消息
         try:
             raw_messages = await self._store.lrange(self._session_messages_key(session_id), 0, -1)
         except RedisError as exc:
             raise SessionManagerError("Failed to fetch messages") from exc
-        return [MessageRecord.model_validate_json(item) for item in raw_messages]
+        all_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+        return all_messages, next_cursor, True
 
     async def set_dispatch_state(
         self,
@@ -176,6 +240,13 @@ class SessionManager:
             raise SessionManagerError("Failed to update dispatch state") from exc
         parsed = self._parse_session(meta, session.context_summary)
         self._user_data_store.persist_session(parsed)
+        if self._session_stream is not None:
+            await self._session_stream.publish_messages(
+                session.session_id,
+                session=parsed,
+                messages=[message],
+                next_cursor=parsed.message_count,
+            )
         return parsed
 
     async def clear_dispatch_state(self, session_id: str, *, expected_task_id: str | None = None) -> SessionRecord:
@@ -284,6 +355,16 @@ class SessionManager:
             raise SessionManagerError("Failed to append message") from exc
         parsed = self._parse_session(meta, session.context_summary)
         self._user_data_store.persist_session(parsed)
+
+        # Publish new message to WebSocket subscribers
+        if self._session_stream:
+            await self._session_stream.publish_messages(
+                session.session_id,
+                session=parsed,
+                messages=[message],
+                next_cursor=updated_message_count,
+            )
+
         return parsed
 
     def _parse_session(self, raw: dict[str, str], summary: str | None) -> SessionRecord:

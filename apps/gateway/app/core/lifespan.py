@@ -12,6 +12,7 @@ from app.services.node_auth import NodeAuthService
 from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.setup_service import SetupService
 from app.services.session_manager import SessionManager
+from app.services.session_stream import SessionStreamBroker
 from app.services.node_registry import NodeRegistry
 from app.services.redis_store import RedisStore
 from app.services.transcript_writer import TranscriptWriter
@@ -29,7 +30,8 @@ async def lifespan(app: FastAPI):
     node_registry = NodeRegistry(redis_store, settings)
     transcript_writer = TranscriptWriter(settings.transcript_dir)
     user_data_store = UserDataStore(identity_dir=settings.identity_dir, memory_dir=settings.memory_dir)
-    session_manager = SessionManager(redis_store, transcript_writer, user_data_store, settings)
+    session_stream = SessionStreamBroker()
+    session_manager = SessionManager(redis_store, transcript_writer, user_data_store, settings, session_stream=session_stream)
     scheduler = DispatchScheduler(node_registry, settings)
     wechat_bot = WeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
     outgoing_dispatcher = OutgoingDispatcher(wechat_bot=wechat_bot, transcript_writer=transcript_writer)
@@ -50,6 +52,7 @@ async def lifespan(app: FastAPI):
     app.state.node_registry = node_registry
     app.state.transcript_writer = transcript_writer
     app.state.session_manager = session_manager
+    app.state.session_stream = session_stream
     app.state.dispatch_queue = dispatch_queue
     app.state.node_auth = node_auth
     app.state.wechat_bot = wechat_bot

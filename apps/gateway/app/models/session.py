@@ -81,6 +81,8 @@ class SessionDetailResponse(BaseModel):
 class SessionMessagesResponse(BaseModel):
     session: SessionRecord
     messages: list[MessageRecord]
+    next_cursor: int = 0
+    replace_messages: bool = True
 
 
 class InboundMessageRequest(BaseModel):
