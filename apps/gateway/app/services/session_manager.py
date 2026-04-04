@@ -240,13 +240,6 @@ class SessionManager:
             raise SessionManagerError("Failed to update dispatch state") from exc
         parsed = self._parse_session(meta, session.context_summary)
         self._user_data_store.persist_session(parsed)
-        if self._session_stream is not None:
-            await self._session_stream.publish_messages(
-                session.session_id,
-                session=parsed,
-                messages=[message],
-                next_cursor=parsed.message_count,
-            )
         return parsed
 
     async def clear_dispatch_state(self, session_id: str, *, expected_task_id: str | None = None) -> SessionRecord:

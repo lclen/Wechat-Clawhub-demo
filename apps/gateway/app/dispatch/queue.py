@@ -90,7 +90,7 @@ class DispatchQueue:
             )
             return None
         session, _, _ = allocation
-        recent_messages = await self._session_manager.get_messages(session.session_id)
+        recent_messages, _, _ = await self._session_manager.get_messages(session.session_id)
         task = await self._enqueue_task(
             session=session,
             message=message,
