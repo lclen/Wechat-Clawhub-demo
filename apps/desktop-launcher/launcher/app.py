@@ -359,6 +359,35 @@ def create_app() -> FastAPI:
         status = await local_node_status()
         return LocalNodeActionResponse(detail="本机节点服务已执行重装/重启。", status=status)
 
+    @app.post("/local/node/reset-credentials")
+    async def reset_node_credentials_local(request: Request) -> JSONResponse:
+        """Clear node credentials from local .env files directly, for worker-role machines."""
+        body = await request.json()
+        install_dir = str(body.get("install_dir", "")).strip()
+        if not install_dir:
+            raise HTTPException(status_code=422, detail="install_dir is required")
+        keys_to_clear = {"CLAW_NODE_TOKEN", "CLAW_NODE_ID", "CLAW_GATEWAY_BASE_URL", "CLAW_PAIRING_KEY", "CLAW_PAIRING_TRACE_ID"}
+        candidates = [
+            Path(install_dir) / "bundle" / "claw-node" / ".env",
+            Path(install_dir) / "config" / "node.env",
+            Path(install_dir) / ".env",
+        ]
+        cleared: list[str] = []
+        for env_path in candidates:
+            if not env_path.exists():
+                continue
+            lines = env_path.read_text(encoding="utf-8").splitlines()
+            kept = []
+            for line in lines:
+                key = line.split("=", 1)[0].strip() if "=" in line else ""
+                if key in keys_to_clear:
+                    kept.append(f"{key}=")
+                else:
+                    kept.append(line)
+            env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
+            cleared.append(str(env_path))
+        return JSONResponse({"task": {"status": "succeeded" if cleared else "failed", "summary": f"已清空节点配置：{', '.join(cleared)}" if cleared else f"未找到节点 .env 文件：{install_dir}", "logs": cleared, "kind": "node_install", "title": "重置工作节点凭据"}})
+
     @app.post("/local/node/model-config", response_model=LocalNodeActionResponse)
     async def update_local_node_model_config(payload: LocalNodeModelConfigRequest) -> LocalNodeActionResponse:
         profile = app.state.profile
