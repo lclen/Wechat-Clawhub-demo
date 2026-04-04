@@ -2701,6 +2701,7 @@ export function App() {
                               {selectedNodeId === node.node_id ? "收起诊断" : "查看诊断"}
                             </button>
                             {node.node_kind === "remote" && node.paired ? <button type="button" className="ghost-button launcher-row-btn" onClick={() => void deletePairedNode(node)} disabled={busy !== null}>{busy === `delete-node-${node.node_id}` ? "处理中..." : "删除节点"}</button> : null}
+                            {node.node_kind === "remote" && node.online ? <button type="button" className="ghost-button launcher-row-btn" onClick={async () => { if (!window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`)) return; try { const r = await withBusy(`disconnect-node-${node.node_id}`, () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" })); const refreshed = await requestJson<NodeListResponse>("/api/nodes"); syncNodeState(refreshed, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId); setNotice(r.detail || `已断开节点 ${node.node_id}。`); } catch (e) { setNotice(`断开失败：${(e as Error).message}`); } }} disabled={busy !== null}>{busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接"}</button> : null}
                           </div>
                         </article>
                       )})}

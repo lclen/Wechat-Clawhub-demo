@@ -227,6 +227,29 @@ async def delete_node(
     )
 
 
+@router.post("/{node_id}/disconnect", response_model=NodeDeleteResponse)
+async def disconnect_node(
+    node_id: str,
+    store: RedisStore = Depends(get_redis_store),
+    registry: NodeRegistry = Depends(get_node_registry),
+) -> NodeDeleteResponse:
+    """Remove node from Redis active set only, keeping pairing token intact.
+    The node can reconnect automatically on next heartbeat/register."""
+    await ensure_redis_available(store)
+    try:
+        removed_runtime = await registry.remove(node_id)
+    except NodeRegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    if not removed_runtime:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Node '{node_id}' not found in active registry")
+    return NodeDeleteResponse(
+        node_id=node_id,
+        removed_pairing=False,
+        removed_runtime=True,
+        detail="已断开节点连接；配对凭据保留，节点重启后可自动重连。",
+    )
+
+
 @router.get("/{node_id}/diagnostics", response_model=NodeDiagnosticsResponse)
 async def get_node_diagnostics(
     node_id: str,
