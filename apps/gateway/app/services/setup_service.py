@@ -301,8 +301,8 @@ class SetupService:
         for node_id in removed_node_ids:
             self._settings.node_tokens.pop(node_id, None)
             await registry.remove(node_id)
-        if removed_node_ids:
-            self._persist_node_tokens()
+        # Always persist to .env even if empty, to ensure stale tokens are removed on restart
+        self._persist_node_tokens()
         return {
             "removed_nodes": removed_node_ids,
             "cleared_memory": True,
