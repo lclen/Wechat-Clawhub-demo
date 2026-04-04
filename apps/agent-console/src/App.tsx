@@ -927,6 +927,30 @@ export function App() {
   }
   async function applyLauncherPolicyForRole(role: SetupRole) {
     if (!launcherAvailable) return;
+    // 网关角色：确保 gateway 和 host-redis 启动
+    if (isGatewayRole(role)) {
+      try {
+        await withBusy("launcher-start", () =>
+          requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
+            method: "POST",
+            body: JSON.stringify({
+              enable_local_node: launcherStatus?.profile.enable_local_node ?? true,
+              enable_gateway: true,
+              enable_node_cache_redis: launcherStatus?.profile.node_cache_policy !== "disabled",
+              dispatch_mode_enabled: gatewaySetup.dispatch_mode_enabled,
+              redis_source: launcherStatus?.profile.redis_source || "mirror",
+              node_cache_redis_source: launcherStatus?.profile.node_cache_redis_source || "mirror",
+            }),
+          }),
+        );
+        await refreshLauncherStatus();
+        setNotice(`已为${roleName(role)}启动网关组件。`);
+      } catch (error) {
+        setNotice(`启动网关组件失败：${(error as Error).message}`);
+      }
+      return;
+    }
+    // 节点/控制台角色：停掉不需要的组件
     const stopTargets = roleComponentsToStop(role);
     if (!stopTargets.length) {
       await refreshLauncherStatus();
