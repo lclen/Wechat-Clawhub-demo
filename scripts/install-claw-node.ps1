@@ -2,6 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$NodeId,
     [Parameter(Mandatory = $true)][string]$GatewayBaseUrl,
     [string]$NodeToken = "",
+    [string]$LocalDirectAuth = "false",
+    [string]$NodeKind = "remote",
     [string]$PairingKey = "",
     [string]$DifyBaseUrl = "",
     [string]$DifyApiKey = "",
@@ -16,7 +18,8 @@ param(
     [int]$DiscoveryPort = 9531,
     [string]$LocalCacheEnabled = "false",
     [string]$LocalCacheRedisUrl = "",
-    [int]$LocalCacheTtlSeconds = 900
+    [int]$LocalCacheTtlSeconds = 900,
+    [string]$ServiceMode = "windows-service"
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +32,24 @@ function Get-FileSha256([string]$Path) {
     if (-not (Test-Path $Path)) {
         return ""
     }
-    return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+    if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) {
+        return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
+    }
+    $stream = $null
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $stream = [System.IO.File]::OpenRead($Path)
+        $hashBytes = $sha256.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($hashBytes)).Replace("-", "").ToLowerInvariant()
+    }
+    finally {
+        if ($stream) {
+            $stream.Dispose()
+        }
+        if ($sha256) {
+            $sha256.Dispose()
+        }
+    }
 }
 
 function Read-InstallState([string]$Path) {
@@ -45,7 +65,11 @@ function Read-InstallState([string]$Path) {
 }
 
 function Write-InstallState([string]$Path, [hashtable]$State) {
-    ($State | ConvertTo-Json -Depth 6) | Set-Content -Path $Path -Encoding UTF8
+    Write-Utf8NoBomFile -Path $Path -Content ($State | ConvertTo-Json -Depth 6)
+}
+function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
 }
 
 function Test-ServiceInstalled([string]$Name) {
@@ -56,7 +80,7 @@ function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
     if (-not (Test-ServiceInstalled $Name)) {
         return
     }
-    Write-Step "检测到服务已存在，先停止现有服务以释放文件句柄"
+    Write-Step "Existing service detected; stopping it before replacing files"
     if (Test-Path $ExecutablePath) {
         & $ExecutablePath stop 2>$null
     }
@@ -64,6 +88,32 @@ function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
         $null = & sc.exe stop $Name 2>$null
     }
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        try {
+            $service = Get-Service -Name $Name -ErrorAction Stop
+            if ($service.Status -eq "Stopped") {
+                return
+            }
+        }
+        catch {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    Write-Step "Service '$Name' did not stop in time; attempting forced termination"
+    try {
+        $queryOutput = & sc.exe queryex $Name 2>$null
+        $pidLine = $queryOutput | Select-String -Pattern "PID\s*:\s*(\d+)"
+        if ($pidLine) {
+            $pid = [int]$pidLine.Matches[0].Groups[1].Value
+            if ($pid -gt 0) {
+                Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 1000
+            }
+        }
+    }
+    catch {
+    }
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
         try {
             $service = Get-Service -Name $Name -ErrorAction Stop
             if ($service.Status -eq "Stopped") {
@@ -91,7 +141,7 @@ function Remove-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
         return
     }
     Stop-ServiceIfInstalled -Name $Name -ExecutablePath $ExecutablePath
-    Write-Step "清理历史节点服务：$Name"
+    Write-Step "Removing stale node service: $Name"
     if (Test-Path -LiteralPath $ExecutablePath) {
         & $ExecutablePath uninstall 2>$null
     }
@@ -276,7 +326,7 @@ $ReuseBundle = (
     (Test-Path $StagingDir)
 )
 if (-not $ReuseBundle) {
-    Write-Step "bundle 发生变化，重新解压节点运行包"
+    Write-Step "Bundle changed; extracting node runtime again"
     if (Test-Path $StagingDir) {
         Remove-Item -Recurse -Force $StagingDir
     }
@@ -284,7 +334,7 @@ if (-not $ReuseBundle) {
     Expand-Archive -Path $BundlePath -DestinationPath $StagingDir -Force
 }
 else {
-    Write-Step "检测到相同 bundle，复用已有解压目录"
+    Write-Step "Bundle unchanged; reusing extracted runtime directory"
 }
 
 $NodeRoot = Join-Path $StagingDir "claw-node"
@@ -296,6 +346,7 @@ if (-not (Test-Path $ProjectRoot)) {
 $VenvDir = Join-Path $InstallDir ".venv"
 $PythonExe = Join-Path $VenvDir "Scripts\python.exe"
 $PipExe = Join-Path $VenvDir "Scripts\pip.exe"
+$PipArgs = @("-m", "pip")
 $ReuseVenv = (
     ($PreviousState["bundle_sha256"] -eq $BundleHash) -and
     ($PreviousState["python_version"] -eq $PythonVersion) -and
@@ -303,11 +354,11 @@ $ReuseVenv = (
     (Test-Path $PipExe)
 )
 if (-not $ReuseVenv) {
-    Write-Step "准备 Python 虚拟环境"
+    Write-Step "Preparing Python virtual environment"
     & python -m venv $VenvDir
 }
 else {
-    Write-Step "检测到可复用的 Python 虚拟环境，跳过重建"
+    Write-Step "Reusable Python virtual environment found; skipping rebuild"
 }
 
 $RequiresDependencyInstall = -not (
@@ -317,17 +368,22 @@ $RequiresDependencyInstall = -not (
     (Test-Path $PipExe)
 )
 if ($RequiresDependencyInstall) {
-    Write-Step "安装或更新节点 Python 依赖"
-    & $PipExe install --upgrade pip
-    & $PipExe install -e $ProjectRoot
+    Write-Step "Installing or updating node Python dependencies"
+    & $PythonExe @PipArgs install --upgrade pip
+    & $PythonExe @PipArgs install -e $ProjectRoot
 }
 else {
-    Write-Step "检测到依赖未变化，跳过 pip 安装"
+    Write-Step "Dependencies unchanged; skipping pip install"
 }
 
 $DiscoveryEnabledBool = Convert-ToBoolean $DiscoveryEnabled $true
 $LocalCacheEnabledBool = Convert-ToBoolean $LocalCacheEnabled $false
 $OpenAIEnableThinkingBool = Convert-ToBoolean $OpenAIEnableThinking $false
+$LocalDirectAuthBool = Convert-ToBoolean $LocalDirectAuth $false
+if ($NodeKind.Trim().ToLowerInvariant() -eq "local") {
+    $DiscoveryEnabledBool = $false
+    Write-Step "Local node mode detected; disabling UDP discovery listener"
+}
 $ModelProvider = "auto"
 if (-not [string]::IsNullOrWhiteSpace($OpenAIBaseUrl) -and -not [string]::IsNullOrWhiteSpace($OpenAIApiKey) -and -not [string]::IsNullOrWhiteSpace($OpenAIModel)) {
     $ModelProvider = "openai"
@@ -336,56 +392,75 @@ elseif (-not [string]::IsNullOrWhiteSpace($DifyBaseUrl) -and -not [string]::IsNu
     $ModelProvider = "dify"
 }
 
-$EnvContent = @"
-CLAW_NODE_ID=$NodeId
-CLAW_GATEWAY_BASE_URL=$GatewayBaseUrl
-CLAW_NODE_TOKEN=$NodeToken
-CLAW_PAIRING_KEY=$PairingKey
-CLAW_DISCOVERY_ENABLED=$DiscoveryEnabledBool
-CLAW_DISCOVERY_PORT=$DiscoveryPort
-CLAW_PAIRING_LABEL=$NodeId
-CLAW_LOCAL_CACHE_ENABLED=$LocalCacheEnabledBool
-CLAW_LOCAL_CACHE_REDIS_URL=$LocalCacheRedisUrl
-CLAW_LOCAL_CACHE_TTL_SECONDS=$LocalCacheTtlSeconds
-CLAW_MODEL_PROVIDER=$ModelProvider
-CLAW_DIFY_BASE_URL=$DifyBaseUrl
-CLAW_DIFY_API_KEY=$DifyApiKey
-CLAW_OPENAI_BASE_URL=$OpenAIBaseUrl
-CLAW_OPENAI_API_KEY=$OpenAIApiKey
-CLAW_OPENAI_MODEL=$OpenAIModel
-CLAW_OPENAI_ENABLE_THINKING=$OpenAIEnableThinkingBool
-CLAW_MAX_CONCURRENCY=$MaxConcurrency
-CLAW_PULL_INTERVAL_MS=1500
-CLAW_HEARTBEAT_INTERVAL_SECONDS=5
-CLAW_NODE_VERSION=0.1.0
-CLAW_NODE_ADVERTISED_HOST=
-CLAW_NODE_ADVERTISED_PORT=0
-CLAW_NODE_HOSTNAME=
-"@
-Write-Step "写入节点 .env 配置"
-Set-Content -Path (Join-Path $ProjectRoot ".env") -Value $EnvContent -Encoding UTF8
+$ConfigDir = Join-Path $InstallDir "config"
+$DiagnosticsDir = Join-Path $InstallDir "diagnostics"
+$EnvPath = Join-Path $ConfigDir "node.env"
+$LogDir = Join-Path $InstallDir "logs"
+
+Ensure-Directory $ConfigDir
+Ensure-Directory $DiagnosticsDir
+Ensure-Directory $LogDir
+
+$EnvContent = @(
+    "CLAW_NODE_ID=$NodeId"
+    "CLAW_NODE_KIND=$NodeKind"
+    "CLAW_GATEWAY_BASE_URL=$GatewayBaseUrl"
+    "CLAW_NODE_TOKEN=$NodeToken"
+    "CLAW_LOCAL_DIRECT_AUTH=$LocalDirectAuthBool"
+    "CLAW_PAIRING_KEY=$PairingKey"
+    "CLAW_PAIRING_TRACE_ID="
+    "CLAW_DISCOVERY_ENABLED=$DiscoveryEnabledBool"
+    "CLAW_DISCOVERY_PORT=$DiscoveryPort"
+    "CLAW_PAIRING_LABEL=$NodeId"
+    "CLAW_LOCAL_CACHE_ENABLED=$LocalCacheEnabledBool"
+    "CLAW_LOCAL_CACHE_REDIS_URL=$LocalCacheRedisUrl"
+    "CLAW_LOCAL_CACHE_TTL_SECONDS=$LocalCacheTtlSeconds"
+    "CLAW_MODEL_PROVIDER=$ModelProvider"
+    "CLAW_DIFY_BASE_URL=$DifyBaseUrl"
+    "CLAW_DIFY_API_KEY=$DifyApiKey"
+    "CLAW_OPENAI_BASE_URL=$OpenAIBaseUrl"
+    "CLAW_OPENAI_API_KEY=$OpenAIApiKey"
+    "CLAW_OPENAI_MODEL=$OpenAIModel"
+    "CLAW_OPENAI_ENABLE_THINKING=$OpenAIEnableThinkingBool"
+    "CLAW_MAX_CONCURRENCY=$MaxConcurrency"
+    "CLAW_PULL_INTERVAL_MS=1500"
+    "CLAW_HEARTBEAT_INTERVAL_SECONDS=5"
+    "CLAW_NODE_VERSION=0.1.0"
+    "CLAW_NODE_ADVERTISED_HOST="
+    "CLAW_NODE_ADVERTISED_PORT=0"
+    "CLAW_NODE_HOSTNAME="
+    "CLAW_ENV_FILE=$EnvPath"
+    "CLAW_DIAGNOSTICS_DIR=$DiagnosticsDir"
+    "CLAW_SERVICE_MODE=$ServiceMode"
+    "CLAW_SERVICE_NAME=$ServiceName"
+) -join [Environment]::NewLine
+
+Write-Step "Writing fixed node config file: $EnvPath"
+Write-Utf8NoBomFile -Path $EnvPath -Content ($EnvContent + [Environment]::NewLine)
+
 if ([string]::IsNullOrWhiteSpace($NodeToken)) {
-    Write-Step "当前未写入节点 token；节点将保持待配对状态，等待网关下发凭据"
+    Write-Step "Node token is empty; node will stay in waiting_pair until the gateway issues credentials"
 }
 else {
-    Write-Step "已写入节点 token；节点将直接尝试向目标网关注册"
+    Write-Step "Node token present; node will try to register with the target gateway immediately"
 }
-
-$LogDir = Join-Path $InstallDir "logs"
-Ensure-Directory $LogDir
 
 $TemplatePath = Join-Path $StagingDir "winsw\service.xml.template"
 if (-not (Test-Path $TemplatePath)) {
     throw "WinSW XML template not found: $TemplatePath"
 }
-$Template = Get-Content $TemplatePath -Raw
-$Rendered = $Template `
-    -replace "__SERVICE_ID__", $ServiceName `
-    -replace "__SERVICE_NAME__", $ServiceName `
-    -replace "__SERVICE_DESCRIPTION__", "wechat-claw-hub worker node $NodeId" `
-    -replace "__PYTHON_EXE__", ($PythonExe -replace "\\", "\\") `
-    -replace "__PROJECT_ROOT__", ($ProjectRoot -replace "\\", "\\") `
-    -replace "__LOG_DIR__", ($LogDir -replace "\\", "\\")
+
+$Template = Get-Content -LiteralPath $TemplatePath -Raw
+$Rendered = $Template
+$Rendered = $Rendered.Replace("__SERVICE_ID__", $ServiceName)
+$Rendered = $Rendered.Replace("__SERVICE_NAME__", $ServiceName)
+$Rendered = $Rendered.Replace("__SERVICE_DESCRIPTION__", "wechat-claw-hub worker node $NodeId")
+$Rendered = $Rendered.Replace("__PYTHON_EXE__", $PythonExe)
+$Rendered = $Rendered.Replace("__PROJECT_ROOT__", $ProjectRoot)
+$Rendered = $Rendered.Replace("__LOG_DIR__", $LogDir)
+$Rendered = $Rendered.Replace("__ENV_FILE__", $EnvPath)
+$Rendered = $Rendered.Replace("__DIAGNOSTICS_DIR__", $DiagnosticsDir)
+$Rendered = $Rendered.Replace("__SERVICE_MODE__", $ServiceMode)
 
 $ServiceExeSource = Join-Path $StagingDir "winsw\WinSW-x64.exe"
 if (-not (Test-Path $ServiceExeSource)) {
@@ -395,19 +470,19 @@ if (-not (Test-Path $ServiceExeSource)) {
     throw "WinSW executable not found in bundle. Put WinSW-x64.exe or WinSW.exe under infra/windows/winsw before building the bundle."
 }
 
-Copy-Item -Force $ServiceExeSource $ServiceExeTarget
-Set-Content -Path $ServiceXmlTarget -Value $Rendered -Encoding UTF8
+Copy-Item -LiteralPath $ServiceExeSource -Destination $ServiceExeTarget -Force
+Write-Utf8NoBomFile -Path $ServiceXmlTarget -Content $Rendered
 
 Push-Location $InstallDir
 try {
     if (Test-ServiceInstalled $ServiceName) {
-        Write-Step "检测到服务已存在，复用现有服务定义"
+        Write-Step "Existing service detected; reusing current service definition"
     }
     else {
-        Write-Step "注册 Windows 服务"
+        Write-Step "Installing Windows service"
         & $ServiceExeTarget install
     }
-    Write-Step "启动节点服务"
+    Write-Step "Starting node service"
     & $ServiceExeTarget start
 }
 finally {
@@ -419,6 +494,8 @@ Write-InstallState $StatePath @{
     python_version = $PythonVersion
     project_root = $ProjectRoot
     service_name = $ServiceName
+    config_path = $EnvPath
+    diagnostics_dir = $DiagnosticsDir
     updated_at = (Get-Date).ToString("s")
 }
 
@@ -426,4 +503,5 @@ Write-Host "claw-node installation complete."
 Write-Host "Service name: $ServiceName"
 Write-Host "Install dir : $InstallDir"
 Write-Host "Project root: $ProjectRoot"
+Write-Host "Config path : $EnvPath"
 Write-Host "Logs dir    : $LogDir"

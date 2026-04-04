@@ -5,6 +5,10 @@
   <executable>__PYTHON_EXE__</executable>
   <arguments>-m claw_node.main</arguments>
   <workingdirectory>__PROJECT_ROOT__</workingdirectory>
+  <env name="CLAW_ENV_FILE" value="__ENV_FILE__" />
+  <env name="CLAW_DIAGNOSTICS_DIR" value="__DIAGNOSTICS_DIR__" />
+  <env name="CLAW_SERVICE_MODE" value="__SERVICE_MODE__" />
+  <env name="CLAW_SERVICE_NAME" value="__SERVICE_ID__" />
   <log mode="roll-by-size">
     <sizeThreshold>10240</sizeThreshold>
     <keepFiles>5</keepFiles>

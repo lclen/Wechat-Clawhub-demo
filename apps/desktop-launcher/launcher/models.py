@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from uuid import uuid4
-
 from pydantic import BaseModel, Field
 
 
@@ -31,6 +29,7 @@ class LauncherComponentStatus(BaseModel):
     state: ComponentState
     pid: int | None = None
     detail: str = ""
+    error_code: str = ""
     started_at: datetime | None = None
     log_path: str | None = None
 
@@ -81,7 +80,7 @@ class LauncherProfile(BaseModel):
     node_cache_redis_source: RedisSource = RedisSource.MIRROR
     bootstrap_completed: bool = False
     local_node_id: str = "local-node"
-    local_node_token: str = Field(default_factory=lambda: f"node-{uuid4().hex}")
+    auto_start: bool = True
 
 
 class LauncherStatusResponse(BaseModel):
@@ -91,16 +90,6 @@ class LauncherStatusResponse(BaseModel):
     node_cache_redis: LauncherRedisInstallState
     environment: LauncherEnvironmentStatus
     components: list[LauncherComponentStatus] = Field(default_factory=list)
-
-
-class SelectWorkdirRequest(BaseModel):
-    path: str | None = None
-    open_dialog: bool = True
-
-
-class SelectWorkdirResponse(BaseModel):
-    profile: LauncherProfile
-    layout: LauncherWorkdirLayout
 
 
 class InstallRedisRequest(BaseModel):
@@ -132,3 +121,63 @@ class LogResponse(BaseModel):
     component: str
     log_path: str | None = None
     content: str = ""
+
+
+class LocalNodeStatusResponse(BaseModel):
+    service_name: str
+    state: str
+    pid: int | None = None
+    config_path: str = ""
+    diagnostics_path: str = ""
+    install_dir: str = ""
+    detail: str = ""
+    service_state: str = ""
+    runtime_state: str = ""
+    last_register_result: str = ""
+    last_register_error: str = ""
+    last_register_at: datetime | None = None
+    diagnostics: dict[str, object] = Field(default_factory=dict)
+    model_settings: "LocalNodeModelConfig" = Field(default_factory=lambda: LocalNodeModelConfig())
+
+
+class LocalNodeLogsResponse(BaseModel):
+    service_name: str
+    event_log_path: str | None = None
+    service_log_path: str | None = None
+    wrapper_log_path: str | None = None
+    event_log: str = ""
+    service_log: str = ""
+    wrapper_log: str = ""
+
+
+class LocalNodeActionResponse(BaseModel):
+    ok: bool = True
+    detail: str = ""
+    status: LocalNodeStatusResponse
+
+
+class LocalNodeExportResponse(BaseModel):
+    ok: bool = True
+    export_path: str
+    detail: str = ""
+
+
+class LocalNodeModelConfig(BaseModel):
+    model_provider: str = "auto"
+    openai_base_url: str = ""
+    openai_model: str = ""
+    openai_enable_thinking: bool = False
+    openai_api_key_configured: bool = False
+    dify_base_url: str = ""
+    dify_api_key_configured: bool = False
+
+
+class LocalNodeModelConfigRequest(BaseModel):
+    model_provider: str = "auto"
+    openai_base_url: str = ""
+    openai_api_key: str = ""
+    openai_model: str = ""
+    openai_enable_thinking: bool = False
+    dify_base_url: str = ""
+    dify_api_key: str = ""
+    restart_service: bool = True

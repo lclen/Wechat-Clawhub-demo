@@ -55,7 +55,7 @@ wechat-claw-hub/
 
 - `apps/gateway`：主网关 FastAPI 骨架、会话、节点、分发接口
 - `apps/agent-console`：React 控制台，可检测模型连通性、生成微信二维码并做连接测试
-- `apps/desktop-launcher`：Windows 一体化桌面启动器，可托管控制台、下载 Redis、选择单一工作目录并一键拉起核心组件
+- `apps/desktop-launcher`：Windows 一体化桌面启动器，负责本地控制面 API、下载 Redis、选择单一工作目录并一键拉起核心组件
 - `services/claw-node`：Windows 工作节点 Python 服务骨架
 - `scripts/build-claw-node-bundle.ps1`：子节点打包脚本
 - `scripts/install-claw-node.ps1`：Windows 子节点安装脚本
@@ -129,6 +129,7 @@ npm run dev
 
 - 网关默认绑定：`http://0.0.0.0:8300`（推荐在同网段使用 `http://<主机局域网IP>:8300` 访问）
 - 控制台默认开发地址：`http://0.0.0.0:5174`
+- 启动器本地控制面 API：`http://127.0.0.1:8765/local/*`（仅供前端代理和本地调试，不再作为用户前端入口）
 - 控制台目前支持：
   - 模型检测、微信二维码生成、扫码轮询、手动 token 连接、断开连接
   - 接入中心查看节点列表、节点状态、上报地址
@@ -136,12 +137,12 @@ npm run dev
   - 展示当前会话绑定的节点、槽位、路由模式和通道释放状态
   - 手动触发“切换节点”
   - “当前会话”区域右侧打开会话记忆侧边抽屉
-  - 快速配置：角色选择（含“网关主机+控制台”组合角色）、当前机器节点安装、局域网发现与 pairing key 配对、分发模式切换；节点安装阶段只准备当前机器的节点环境，不生成 token，token 会在网关配对成功时自动下发；若当前机器本身就是网关，推荐由桌面启动器直接托管本机 `local-node`
+  - 快速配置：角色选择（含“网关主机+控制台”组合角色）、当前机器节点安装、局域网发现与 pairing key 配对、分发模式切换；节点安装阶段只准备当前机器的节点环境，不生成 token，token 会在网关配对成功时自动下发；控制台现在会同时展示网关侧节点诊断与本机节点 Windows 服务诊断
 
 ## 当前调度与模型说明
 
 - 网关当前支持两种处理形态：
-  - **主机可处理**：本机 `local-node` 也参与接单；推荐由桌面启动器直接托管，不再额外安装独立 Windows 节点服务
+  - **主机可处理**：本机 `local-node` 也参与接单；现在统一通过桌面启动器安装/重启 Windows 服务，不再长期直接托管临时节点进程
   - **主机只分发**：网关仅负责微信接入、会话状态、节点调度与消息出站
 - 节点调度基于：
   - 节点健康状态
@@ -161,8 +162,9 @@ npm run dev
 - 选择单一“存储库目录”作为工作目录
 - 一键启动 `主机 Redis + Gateway + Console`
 - 可选启动 `Local Claw Node`
-  - 该本机节点由启动器统一托管 `node_id / token`
-  - 启动时会优先停用冲突的本机 `wechat-claw-node-*` Windows 服务，避免与网关托管节点抢占同一身份
+  - 该本机节点现在固定由 Windows 服务长期运行，启动器只负责安装、状态查看、重启和诊断导出
+  - 节点固定配置文件路径为 `runtime/local-node-service/config/node.env`
+  - 节点诊断文件固定输出到 `runtime/local-node-service/diagnostics`
 - 可选下载并启动 `节点缓存 Redis`
 
 开发运行：
@@ -174,6 +176,12 @@ python -m venv .venv
 pip install -e .[build]
 python -m launcher.main
 ```
+
+开发态端口约定：
+
+- 用户前端入口只保留 `5174`
+- 网关 API 继续使用 `8300`
+- 启动器只提供 `8765` 本地控制面 API，供前端通过 `/local/*` 代理访问
 
 打包 EXE：
 

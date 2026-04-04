@@ -10,6 +10,7 @@ data/
 logs/
 runtime/
 config/
+diagnostics/
 build/
 *.log
 *.spec

@@ -10,6 +10,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -110,8 +111,8 @@ class WeChatBotService:
             raw = await self._store.hgetall(WECHAT_CONFIG_KEY)
         except Exception as exc:
             self._last_error = f"Redis unavailable during WeChat init: {exc}"
-            logger.warning("wechat-bot: skip init because Redis is unavailable: %s", exc)
-            return
+            logger.warning("wechat-bot: Redis unavailable during init, falling back to .env token: %s", exc)
+            raw = None
 
         if raw:
             self._config = WeChatRuntimeConfig(
@@ -141,6 +142,9 @@ class WeChatBotService:
 
     async def connect(self, token: str, base_url: str, *, enable_polling: bool = True) -> WeChatStatusResponse:
         self._config = WeChatRuntimeConfig(token=token, base_url=base_url.rstrip("/"))
+        self._settings.wechat_token = self._config.token
+        self._settings.wechat_base_url = self._config.base_url
+        self._persist_runtime_config()
         await self._store.hset_many(
             WECHAT_CONFIG_KEY,
             {"token": self._config.token, "base_url": self._config.base_url},
@@ -152,6 +156,9 @@ class WeChatBotService:
     async def disconnect(self) -> WeChatStatusResponse:
         await self.stop_polling()
         self._config = WeChatRuntimeConfig(token="", base_url=self._config.base_url)
+        self._settings.wechat_token = ""
+        self._settings.wechat_base_url = self._config.base_url
+        self._persist_runtime_config()
         await self._store.hset_many(WECHAT_CONFIG_KEY, {"token": "", "base_url": self._config.base_url})
         return await self.get_status()
 
@@ -258,6 +265,39 @@ class WeChatBotService:
             logger.debug("wechat-bot: clear typing failed for %s", user_id, exc_info=True)
         finally:
             self._typing_start_time.pop(user_id, None)
+
+    def _persist_runtime_config(self) -> None:
+        env_path = Path(".env")
+        existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+        updates = {
+            "WCH_WECHAT_TOKEN": self._config.token,
+            "WCH_WECHAT_BASE_URL": self._config.base_url or DEFAULT_WECHAT_BASE_URL,
+        }
+        kept_lines: list[str] = []
+        pending = dict(updates)
+        for raw_line in existing_lines:
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith("#") or "=" not in raw_line:
+                kept_lines.append(raw_line.rstrip("\r"))
+                continue
+            key, _, _ = raw_line.partition("=")
+            normalized = key.strip()
+            if normalized in pending:
+                kept_lines.append(f"{normalized}={self._escape_env_value(pending.pop(normalized))}")
+            else:
+                kept_lines.append(raw_line.rstrip("\r"))
+        for key, value in pending.items():
+            kept_lines.append(f"{key}={self._escape_env_value(value)}")
+        env_path.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
+
+    def _escape_env_value(self, value: str) -> str:
+        normalized = value.replace("\r", "\\r").replace("\n", "\\n")
+        if any(ch in normalized for ch in ('"', "'", " ", "#")):
+            escaped = normalized.replace("\\", "\\\\").replace('"', '\\"')
+            return f'"{escaped}"'
+        return normalized
 
     async def start_typing_loop(self, *, user_id: str, context_token: str | None = None) -> None:
         if context_token:

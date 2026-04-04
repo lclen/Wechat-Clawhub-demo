@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from socket import gethostname
 from pathlib import Path
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, DotEnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 
 
 DEFAULT_NODE_ENV_PATH = (Path(__file__).resolve().parent.parent / ".env").resolve()
@@ -16,7 +17,9 @@ class NodeSettings(BaseSettings):
     gateway_base_url: str = Field(alias="CLAW_GATEWAY_BASE_URL", default="")
     node_token: str = Field(alias="CLAW_NODE_TOKEN", default="")
     local_direct_auth: bool = Field(alias="CLAW_LOCAL_DIRECT_AUTH", default=False)
+    node_kind: str = Field(alias="CLAW_NODE_KIND", default="remote")
     pairing_key: str = Field(alias="CLAW_PAIRING_KEY", default="")
+    pairing_trace_id: str = Field(alias="CLAW_PAIRING_TRACE_ID", default="")
     discovery_enabled: bool = Field(alias="CLAW_DISCOVERY_ENABLED", default=True)
     discovery_port: int = Field(alias="CLAW_DISCOVERY_PORT", default=9531, ge=1024, le=65535)
     pairing_label: str = Field(alias="CLAW_PAIRING_LABEL", default="")
@@ -44,16 +47,47 @@ class NodeSettings(BaseSettings):
     advertised_port: int = Field(alias="CLAW_NODE_ADVERTISED_PORT", default=0, ge=0, le=65535)
     hostname: str = Field(alias="CLAW_NODE_HOSTNAME", default_factory=gethostname)
     env_file_path: str = Field(alias="CLAW_ENV_FILE", default=str(DEFAULT_NODE_ENV_PATH))
+    diagnostics_dir: str = Field(
+        alias="CLAW_DIAGNOSTICS_DIR",
+        default=str((DEFAULT_NODE_ENV_PATH.parent / "diagnostics").resolve()),
+    )
+    service_mode: str = Field(alias="CLAW_SERVICE_MODE", default="standalone")
+    service_name: str = Field(alias="CLAW_SERVICE_NAME", default="")
 
     model_config = SettingsConfigDict(
-        env_file=str(DEFAULT_NODE_ENV_PATH),
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
     )
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        env_file = os.environ.get("CLAW_ENV_FILE", str(DEFAULT_NODE_ENV_PATH))
+        return (
+            init_settings,
+            DotEnvSettingsSource(
+                settings_cls,
+                env_file=env_file,
+                env_file_encoding="utf-8",
+            ),
+            env_settings,
+            file_secret_settings,
+        )
+
     @property
     def resolved_env_file_path(self) -> Path:
         return Path(self.env_file_path).expanduser().resolve()
+
+    @property
+    def resolved_diagnostics_dir(self) -> Path:
+        return Path(self.diagnostics_dir).expanduser().resolve()
 
 
 @lru_cache

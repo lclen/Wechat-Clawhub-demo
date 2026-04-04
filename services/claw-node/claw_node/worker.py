@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from claw_node.config import NodeSettings
+from claw_node.diagnostics import NodeDiagnostics
 from claw_node.discovery_service import DiscoveryService
 from claw_node.dify_client import DifyClient
 from claw_node.gateway_client import GatewayClient
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 class Worker:
     def __init__(self, settings: NodeSettings) -> None:
         self._settings = settings
+        self._diagnostics = NodeDiagnostics(settings)
         self._gateway = GatewayClient(settings)
         self._inference_error: str | None = None
         self._inference = self._build_inference_client(settings)
@@ -30,10 +32,16 @@ class Worker:
         self._active_tasks: set[asyncio.Task] = set()
         self._shutdown = asyncio.Event()
         self._last_error: str | None = None
+        self._auth_failed = False
         self._heartbeat_task: asyncio.Task | None = None
         self._polling_task: asyncio.Task | None = None
 
     async def run(self) -> None:
+        self._diagnostics.refresh_settings()
+        self._diagnostics.set_state(
+            "service_running" if self._settings.service_mode == "windows-service" else "installed",
+            f"节点进程已启动，配置文件：{self._settings.resolved_env_file_path}",
+        )
         logger.info(
             "[worker] starting node_id=%s gateway=%s provider=%s model=%s thinking=%s concurrency=%s pull_interval_ms=%s heartbeat_s=%s hostname=%s lan_ip=%s advertised=%s",
             self._settings.node_id,
@@ -56,6 +64,8 @@ class Worker:
                 await asyncio.sleep(3600)
         finally:
             self._shutdown.set()
+            if self._auth_failed:
+                logger.warning("[worker] shutting down gateway loops because auth_failed node_id=%s", self._settings.node_id)
             await self._stop_gateway_loops()
             for task in list(self._active_tasks):
                 task.cancel()
@@ -74,7 +84,32 @@ class Worker:
                 current_load = len(self._active_tasks)
                 await self._gateway.heartbeat(current_load=current_load, last_error=self._last_error)
                 self._last_error = None
+                self._diagnostics.update_heartbeat(
+                    result="succeeded",
+                    message="heartbeat succeeded",
+                    trace_id=self._settings.pairing_trace_id.strip(),
+                    metadata={"current_load": str(current_load)},
+                )
             except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401:
+                    detail = str(exc)
+                    logger.warning("Heartbeat unauthorized for node '%s'; stopping loops.", self._settings.node_id)
+                    self._last_error = detail
+                    self._auth_failed = True
+                    self._diagnostics.set_state(
+                        "auth_failed",
+                        detail,
+                        trace_id=self._settings.pairing_trace_id.strip(),
+                        level="error",
+                    )
+                    self._diagnostics.update_heartbeat(
+                        result="failed",
+                        message=detail,
+                        trace_id=self._settings.pairing_trace_id.strip(),
+                        level="error",
+                        emit_event=True,
+                    )
+                    return
                 if exc.response.status_code == 404:
                     logger.warning(
                         "Heartbeat failed because node '%s' is missing on gateway; re-registering.",
@@ -83,15 +118,41 @@ class Worker:
                     try:
                         await self._register_with_gateway()
                         self._last_error = None
+                        self._diagnostics.record_register(
+                            result="recovered_after_heartbeat_404",
+                            message="heartbeat 404 后已重新注册",
+                            trace_id=self._settings.pairing_trace_id.strip(),
+                        )
                     except Exception as register_exc:
                         logger.exception("Re-register after heartbeat 404 failed: %s", register_exc)
                         self._last_error = str(register_exc)
+                        self._diagnostics.update_heartbeat(
+                            result="failed",
+                            message=str(register_exc),
+                            trace_id=self._settings.pairing_trace_id.strip(),
+                            level="error",
+                            emit_event=True,
+                        )
                 else:
                     logger.exception("Heartbeat failed: %s", exc)
                     self._last_error = str(exc)
+                    self._diagnostics.update_heartbeat(
+                        result="failed",
+                        message=str(exc),
+                        trace_id=self._settings.pairing_trace_id.strip(),
+                        level="error",
+                        emit_event=True,
+                    )
             except Exception as exc:
                 logger.exception("Heartbeat failed: %s", exc)
                 self._last_error = str(exc)
+                self._diagnostics.update_heartbeat(
+                    result="failed",
+                    message=str(exc),
+                    trace_id=self._settings.pairing_trace_id.strip(),
+                    level="error",
+                    emit_event=True,
+                )
             await asyncio.sleep(self._settings.heartbeat_interval_seconds)
 
     async def _poll_loop(self) -> None:
@@ -102,6 +163,23 @@ class Worker:
 
             try:
                 task = await self._gateway.pull_task()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401:
+                    detail = str(exc)
+                    logger.warning("Pull task unauthorized for node '%s'; stopping loops.", self._settings.node_id)
+                    self._last_error = detail
+                    self._auth_failed = True
+                    self._diagnostics.set_state(
+                        "auth_failed",
+                        detail,
+                        trace_id=self._settings.pairing_trace_id.strip(),
+                        level="error",
+                    )
+                    return
+                logger.exception("Pull task failed: %s", exc)
+                self._last_error = str(exc)
+                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+                continue
             except Exception as exc:
                 logger.exception("Pull task failed: %s", exc)
                 self._last_error = str(exc)
@@ -138,11 +216,22 @@ class Worker:
             or not self._settings.node_id.strip()
         ):
             logger.info("[worker] node is discoverable but not paired yet; waiting for pairing.")
+            self._diagnostics.set_state(
+                "waiting_pair",
+                "当前节点已安装并可被发现，但尚未获得网关下发的正式 token。",
+                trace_id=self._settings.pairing_trace_id.strip(),
+            )
             return
         if self._inference is None:
             logger.warning(
                 "[worker] inference backend is unavailable; node stays discoverable but will not register/poll until configured. reason=%s",
                 self._inference_error or "unknown",
+            )
+            self._diagnostics.set_state(
+                "needs_repair",
+                self._inference_error or "推理后端未配置",
+                trace_id=self._settings.pairing_trace_id.strip(),
+                level="error",
             )
             return
         try:
@@ -153,14 +242,57 @@ class Worker:
                 "[worker] gateway registration is not ready yet; node stays discoverable for pairing. reason=%s",
                 exc,
             )
+            self._diagnostics.set_state(
+                "register_failed",
+                str(exc),
+                trace_id=self._settings.pairing_trace_id.strip(),
+                level="error",
+            )
             return
         self._last_error = None
+        self._diagnostics.set_state(
+            "connected",
+            "节点已完成 register，并开始 heartbeat / pull loop。",
+            trace_id=self._settings.pairing_trace_id.strip(),
+        )
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
         self._polling_task = asyncio.create_task(self._poll_loop(), name="poll-loop")
 
     async def _register_with_gateway(self) -> None:
+        trace_id = self._settings.pairing_trace_id.strip()
+        self._diagnostics.record_register(
+            result="started",
+            message=f"开始向网关注册：{self._settings.gateway_base_url}",
+            trace_id=trace_id,
+            metadata={
+                "node_id": self._settings.node_id,
+                "gateway_base_url": self._settings.gateway_base_url,
+                "token_masked": self._mask_token(self._settings.node_token),
+                "config_path": str(self._settings.resolved_env_file_path),
+                "service_mode": self._settings.service_mode,
+            },
+        )
         await self._gateway.reconfigure()
-        await self._gateway.register()
+        try:
+            await self._gateway.register()
+        except Exception as exc:
+            self._diagnostics.record_register(
+                result="failed",
+                message=str(exc),
+                trace_id=trace_id,
+                metadata={
+                    "node_id": self._settings.node_id,
+                    "gateway_base_url": self._settings.gateway_base_url,
+                },
+                level="error",
+            )
+            raise
+        self._diagnostics.record_register(
+            result="succeeded",
+            message="register succeeded",
+            trace_id=trace_id,
+            metadata={"node_id": self._settings.node_id},
+        )
         logger.info("[worker] node registered successfully: %s", self._settings.node_id)
 
     async def _stop_gateway_loops(self) -> None:
@@ -174,11 +306,33 @@ class Worker:
         self._polling_task = None
 
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:
+        trace_id = payload.get("pairing_trace_id", "").strip()
         pairing_key = payload.get("pairing_key", "").strip()
         expected = self._settings.pairing_key.strip()
+        self._diagnostics.record_pairing(
+            result="received",
+            message="节点收到来自网关的配对请求。",
+            trace_id=trace_id,
+            metadata={
+                "gateway_base_url": payload.get("gateway_base_url", "").strip(),
+                "node_id": payload.get("node_id", "").strip() or self._settings.node_id,
+            },
+        )
         if not expected:
+            self._diagnostics.record_pairing(
+                result="auth_failed",
+                message="节点未配置配对密钥，拒绝本次配对。",
+                trace_id=trace_id,
+                level="error",
+            )
             return 401, {"pairing_status": "auth_failed", "detail": "Pairing key is not configured on this node."}
         if pairing_key != expected:
+            self._diagnostics.record_pairing(
+                result="auth_failed",
+                message="节点配对密钥校验失败。",
+                trace_id=trace_id,
+                level="error",
+            )
             return 401, {"pairing_status": "auth_failed", "detail": "Invalid pairing key."}
         current_gateway_base_url = self._settings.gateway_base_url.strip()
         current_node_token = self._settings.node_token.strip()
@@ -191,35 +345,92 @@ class Worker:
             and node_token == current_node_token
             and (not node_id or node_id == current_node_id)
         ):
+            self._diagnostics.record_pairing(
+                result="already_paired",
+                message="节点已存在相同网关与 token，本次无需覆盖。",
+                trace_id=trace_id,
+            )
             return 200, {"pairing_status": "already_paired", "node_id": current_node_id}
         if not gateway_base_url or not node_token:
             if current_node_token:
+                self._diagnostics.record_pairing(
+                    result="already_paired",
+                    message="节点已存在旧 token，且本次请求未携带新 token。",
+                    trace_id=trace_id,
+                )
                 return 200, {"pairing_status": "already_paired", "node_id": current_node_id}
+            self._diagnostics.record_pairing(
+                result="register_failed",
+                message="节点配对请求缺少 gateway_base_url 或 node_token。",
+                trace_id=trace_id,
+                level="error",
+            )
             return 400, {"pairing_status": "auth_failed", "detail": "gateway_base_url and node_token are required."}
 
         await self._stop_gateway_loops()
         self._settings.gateway_base_url = gateway_base_url
         self._settings.node_token = node_token
         self._settings.node_id = node_id or self._settings.hostname
+        self._settings.pairing_trace_id = trace_id
         self._last_error = None
-        self._persist_runtime_pairing()
+        try:
+            self._persist_runtime_pairing()
+        except Exception as exc:
+            detail = f"节点配置写入失败：{exc}"
+            logger.exception("[worker] failed to persist pairing config: %s", exc)
+            self._diagnostics.record_pairing(
+                result="register_failed",
+                message=detail,
+                trace_id=trace_id,
+                level="error",
+            )
+            self._diagnostics.set_state(
+                "register_failed",
+                detail,
+                trace_id=trace_id,
+                level="error",
+            )
+            return 500, {"pairing_status": "register_failed", "node_id": self._settings.node_id, "detail": detail}
+        self._diagnostics.refresh_settings()
+        self._diagnostics.set_state(
+            "pairing_pending",
+            "节点已写入网关地址与 token，开始尝试 register。",
+            trace_id=trace_id,
+        )
         await self._ensure_gateway_loops_started()
         if self._heartbeat_task is None or self._polling_task is None:
             detail = self._last_error or self._inference_error or "Node accepted the pairing parameters but failed to register on the gateway."
+            self._diagnostics.record_pairing(
+                result="register_failed",
+                message=detail,
+                trace_id=trace_id,
+                level="error",
+            )
             return 200, {"pairing_status": "register_failed", "node_id": self._settings.node_id, "detail": detail}
+        self._diagnostics.record_pairing(
+            result="paired",
+            message="节点已写入新 token，并成功进入 register/heartbeat 运行态。",
+            trace_id=trace_id,
+        )
         return 200, {"pairing_status": "paired", "node_id": self._settings.node_id}
 
     def _persist_runtime_pairing(self) -> None:
         env_path = self._settings.resolved_env_file_path
         updates = {
             "CLAW_NODE_ID": self._settings.node_id,
+            "CLAW_NODE_KIND": self._settings.node_kind,
             "CLAW_GATEWAY_BASE_URL": self._settings.gateway_base_url,
             "CLAW_NODE_TOKEN": self._settings.node_token,
             "CLAW_LOCAL_DIRECT_AUTH": "true" if self._settings.local_direct_auth else "false",
             "CLAW_PAIRING_KEY": self._settings.pairing_key,
+            "CLAW_PAIRING_TRACE_ID": self._settings.pairing_trace_id,
             "CLAW_DISCOVERY_ENABLED": "true" if self._settings.discovery_enabled else "false",
             "CLAW_DISCOVERY_PORT": str(self._settings.discovery_port),
             "CLAW_PAIRING_LABEL": self._settings.pairing_label,
+            "CLAW_ENV_FILE": str(self._settings.resolved_env_file_path),
+            "CLAW_DIAGNOSTICS_DIR": str(self._settings.resolved_diagnostics_dir),
+            "CLAW_SERVICE_MODE": self._settings.service_mode,
+            "CLAW_SERVICE_NAME": self._settings.service_name,
         }
         env_path.parent.mkdir(parents=True, exist_ok=True)
         existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
@@ -239,6 +450,7 @@ class Worker:
             kept.append(f"{key}={value}")
         env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
         logger.info("[worker] paired config persisted to %s", env_path)
+        self._diagnostics.refresh_settings()
 
     async def _handle_task(self, task: dict[str, Any]) -> None:
         started_at = time.perf_counter()
@@ -297,6 +509,13 @@ class Worker:
         except Exception as exc:
             logger.exception("Task execution failed: %s", exc)
             self._last_error = str(exc)
+            self._diagnostics.record_event(
+                category="task",
+                result="failed",
+                message=str(exc),
+                trace_id=self._settings.pairing_trace_id.strip(),
+                level="error",
+            )
             with suppress(Exception):
                 await self._gateway.submit_failure(
                     task_id=task["task_id"],
@@ -359,6 +578,14 @@ class Worker:
             self._inference_error = str(exc)
             logger.warning("[worker] inference backend unavailable: %s", exc)
             return None
+
+    def _mask_token(self, token: str | None) -> str:
+        normalized = (token or "").strip()
+        if not normalized:
+            return "<empty>"
+        if len(normalized) <= 12:
+            return f"{normalized[:4]}...({len(normalized)})"
+        return f"{normalized[:8]}...{normalized[-4:]}({len(normalized)})"
 
     def _ensure_openai_config(self, settings: NodeSettings) -> None:
         if settings.openai_base_url and settings.openai_api_key and settings.openai_model:

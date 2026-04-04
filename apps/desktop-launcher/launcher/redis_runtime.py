@@ -20,13 +20,38 @@ async def ensure_redis_binary(state: LauncherRedisInstallState, install_root: Pa
     archive = install_root / "redis.zip"
     if executable.exists():
         return state.model_copy(update={"installed": True, "archive_path": str(archive), "executable_path": str(executable), "detail": "已安装"})
-    url = REDIS_URLS[state.source]
-    async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-        async with client.stream("GET", url) as response:
-            response.raise_for_status()
-            with archive.open("wb") as fh:
-                async for chunk in response.aiter_bytes():
-                    fh.write(chunk)
+
+    # 按 state.source 优先，失败后自动切换到另一个源
+    sources = [state.source]
+    other = RedisSource.GITHUB if state.source == RedisSource.MIRROR else RedisSource.MIRROR
+    sources.append(other)
+
+    last_error: Exception | None = None
+    used_source: RedisSource = state.source
+    for source in sources:
+        url = REDIS_URLS[source]
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0), follow_redirects=True) as client:
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    with archive.open("wb") as fh:
+                        async for chunk in response.aiter_bytes():
+                            fh.write(chunk)
+            # 验证 zip 完整性
+            if not zipfile.is_zipfile(archive):
+                raise RuntimeError(f"下载的文件不是有效的 zip（来源：{source.value}）")
+            used_source = source
+            last_error = None
+            break
+        except Exception as exc:
+            last_error = exc
+            if archive.exists():
+                archive.unlink(missing_ok=True)
+            continue
+
+    if last_error is not None:
+        raise RuntimeError(f"两个源均下载失败：{last_error}") from last_error
+
     with zipfile.ZipFile(archive, "r") as zf:
         zf.extractall(install_root)
     if not executable.exists():
@@ -34,7 +59,7 @@ async def ensure_redis_binary(state: LauncherRedisInstallState, install_root: Pa
         if nested is None:
             raise RuntimeError("Downloaded archive does not contain redis-server.exe")
         nested.replace(executable)
-    return state.model_copy(update={"installed": True, "archive_path": str(archive), "executable_path": str(executable), "detail": f"已从 {state.source.value} 安装"})
+    return state.model_copy(update={"installed": True, "archive_path": str(archive), "executable_path": str(executable), "detail": f"已从 {used_source.value} 安装"})
 
 
 def write_redis_config(

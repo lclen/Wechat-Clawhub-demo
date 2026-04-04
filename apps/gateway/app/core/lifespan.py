@@ -42,8 +42,8 @@ async def lifespan(app: FastAPI):
         settings,
     )
     wechat_bot.attach_dispatch_queue(dispatch_queue)
-    node_auth = NodeAuthService(settings)
     setup_service = SetupService(settings=settings, wechat_bot=wechat_bot)
+    node_auth = NodeAuthService(settings, setup_service=setup_service)
 
     app.state.settings = settings
     app.state.redis_store = redis_store

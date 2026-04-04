@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import uvicorn
@@ -29,6 +30,7 @@ def main() -> None:
 def run_gateway(port: int) -> None:
     repo_root = resource_root()
     gateway_root = repo_root / "apps" / "gateway"
+    os.chdir(gateway_root)
     sys.path.insert(0, str(gateway_root))
     uvicorn.run("app.main:app", host="0.0.0.0", port=port, log_level="info")
 
@@ -47,7 +49,7 @@ def run_launcher() -> None:
     from launcher.profile_store import load_profile
 
     profile = load_profile()
-    app = create_app(open_browser=True)
+    app = create_app()
     uvicorn.run(app, host="0.0.0.0", port=profile.launcher_port or 8765, log_level="info")
 
 

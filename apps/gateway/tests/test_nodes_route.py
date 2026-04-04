@@ -37,6 +37,7 @@ class NodeInventoryTests(unittest.TestCase):
         inventory = build_node_inventory(
             [build_node("node-online", lan_ip="192.168.0.4", hostname="NODE-ONLINE")],
             {"node-online": "token-1", "node-offline": "token-2"},
+            "",
         )
 
         self.assertEqual([item.node_id for item in inventory], ["node-online", "node-offline"])
@@ -49,6 +50,7 @@ class NodeInventoryTests(unittest.TestCase):
         inventory = build_node_inventory(
             [build_node("node-transient", lan_ip="192.168.0.7")],
             {},
+            "",
         )
 
         self.assertEqual(len(inventory), 1)
@@ -60,6 +62,7 @@ class NodeInventoryTests(unittest.TestCase):
         inventory = build_node_inventory(
             [build_node("node-a", lan_ip="192.168.0.8")],
             {"node-a": "token-a"},
+            "",
         )
 
         self.assertEqual(len(inventory), 1)
@@ -71,6 +74,7 @@ class NodeInventoryTests(unittest.TestCase):
         inventory = build_node_inventory(
             [],
             {"node-a": "token-a"},
+            "",
             {"node-a": {"connection_state": "pairing_pending", "last_error": "等待注册确认"}},
         )
 
@@ -82,6 +86,7 @@ class NodeInventoryTests(unittest.TestCase):
         inventory = build_node_inventory(
             [],
             {"node-a": "token-a"},
+            "",
             {"node-a": {"connection_state": "register_failed", "last_error": "register returned 500"}},
         )
 
@@ -93,6 +98,7 @@ class NodeInventoryTests(unittest.TestCase):
         inventory = build_node_inventory(
             [],
             {"node-a": "token-a"},
+            "",
             {"node-a": {"connection_state": "auth_failed", "last_error": "401 Unauthorized"}},
         )
 

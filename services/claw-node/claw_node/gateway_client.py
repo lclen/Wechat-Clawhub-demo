@@ -151,6 +151,8 @@ class GatewayClient:
         }
         if self._settings.node_token.strip():
             headers["X-Node-Token"] = self._settings.node_token
+        if self._settings.pairing_trace_id.strip():
+            headers["X-Pairing-Trace-Id"] = self._settings.pairing_trace_id.strip()
         self._client = httpx.AsyncClient(
             base_url=self._settings.gateway_base_url.rstrip("/"),
             timeout=httpx.Timeout(30.0),

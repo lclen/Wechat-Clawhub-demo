@@ -82,10 +82,12 @@ NodeInventoryConnectionState = Literal[
     "paired_offline",
     "online_unpaired",
 ]
+NodeKind = Literal["local", "remote"]
 
 
 class NodeInventoryRecord(BaseModel):
     node_id: str
+    node_kind: NodeKind = "remote"
     paired: bool
     online: bool
     connection_state: NodeInventoryConnectionState
@@ -103,12 +105,52 @@ class NodeInventoryRecord(BaseModel):
     current_load: int | None = None
     channel_capacity: int | None = None
     channel_in_use: int | None = None
+    last_pairing_trace_id: str | None = None
+    last_register_result: str | None = None
+    last_register_at: datetime | None = None
+    last_auth_failure_at: datetime | None = None
 
 
 class NodeInventorySummary(BaseModel):
     paired_total: int = 0
     online_total: int = 0
     offline_total: int = 0
+
+
+class NodeDiagnosticsEvent(BaseModel):
+    timestamp: datetime
+    level: str
+    category: str
+    result: str
+    message: str
+    trace_id: str = ""
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class NodeDiagnosticsRecord(BaseModel):
+    node_id: str
+    node_kind: NodeKind = "remote"
+    connection_state: NodeInventoryConnectionState = "paired_offline"
+    last_error: str = ""
+    last_pairing_trace_id: str = ""
+    last_pairing_status: str = ""
+    last_pairing_at: datetime | None = None
+    last_register_result: str = ""
+    last_register_at: datetime | None = None
+    last_heartbeat_result: str = ""
+    last_heartbeat_at: datetime | None = None
+    last_auth_failure_at: datetime | None = None
+    last_auth_decision: str = ""
+    last_auth_client_host: str = ""
+    last_auth_path: str = ""
+    expected_token_masked: str = ""
+    provided_token_masked: str = ""
+    timeline: list[NodeDiagnosticsEvent] = Field(default_factory=list)
+
+
+class NodeDiagnosticsResponse(BaseModel):
+    node_id: str
+    diagnostics: NodeDiagnosticsRecord
 
 
 class NodeListResponse(BaseModel):

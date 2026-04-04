@@ -30,6 +30,7 @@ class Worker:
         self._active_tasks: set[asyncio.Task] = set()
         self._shutdown = asyncio.Event()
         self._last_error: str | None = None
+        self._auth_failed: bool = False
         self._heartbeat_task: asyncio.Task | None = None
         self._polling_task: asyncio.Task | None = None
 
@@ -72,6 +73,11 @@ class Worker:
             await self._local_cache.close()
             await self._gateway.close()
             await self._inference.close()
+            logger.info(
+                "[worker] shutdown complete node_id=%s auth_failed=%s",
+                self._settings.node_id,
+                self._auth_failed,
+            )
 
     async def _heartbeat_loop(self) -> None:
         while not self._shutdown.is_set():
@@ -80,7 +86,14 @@ class Worker:
                 await self._gateway.heartbeat(current_load=current_load, last_error=self._last_error)
                 self._last_error = None
             except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 404:
+                if exc.response.status_code == 401:
+                    logger.error(
+                        "[worker] Heartbeat received 401 Unauthorized for node '%s'. Stopping heartbeat loop (auth_failed).",
+                        self._settings.node_id,
+                    )
+                    self._auth_failed = True
+                    return
+                elif exc.response.status_code == 404:
                     logger.warning(
                         "Heartbeat failed because node '%s' is missing on gateway; re-registering.",
                         self._settings.node_id,
@@ -107,6 +120,18 @@ class Worker:
 
             try:
                 task = await self._gateway.pull_task()
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 401:
+                    logger.error(
+                        "[worker] Pull task received 401 Unauthorized for node '%s'. Stopping poll loop (auth_failed).",
+                        self._settings.node_id,
+                    )
+                    self._auth_failed = True
+                    return
+                logger.exception("Pull task failed: %s", exc)
+                self._last_error = str(exc)
+                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+                continue
             except Exception as exc:
                 logger.exception("Pull task failed: %s", exc)
                 self._last_error = str(exc)
@@ -138,7 +163,7 @@ class Worker:
         if self._heartbeat_task is not None and self._polling_task is not None:
             return
         if not self._settings.node_token.strip() or not self._settings.gateway_base_url.strip() or not self._settings.node_id.strip():
-            logger.info("[worker] node is discoverable but not paired yet; waiting for pairing.")
+            logger.info("[worker] 节点未配对，等待配对。node is discoverable but not paired yet; waiting for pairing.")
             return
         await self._register_with_gateway()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
@@ -166,7 +191,11 @@ class Worker:
         self._settings.gateway_base_url = gateway_base_url
         self._settings.node_token = node_token
         self._settings.node_id = node_id or self._settings.hostname
-        self._persist_runtime_pairing()
+        try:
+            self._persist_runtime_pairing()
+        except Exception as exc:
+            logger.exception("[worker] Failed to persist pairing config to .env: %s", exc)
+            return 500, {"pairing_status": "register_failed", "detail": str(exc)}
         await self._ensure_gateway_loops_started()
         return 200, {"pairing_status": "paired", "node_id": self._settings.node_id}
 

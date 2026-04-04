@@ -16,14 +16,22 @@ def default_state_path() -> Path:
 
 
 def load_profile(path: Path | None = None) -> LauncherProfile:
+    from launcher.runtime import resource_root
     state_path = path or default_state_path()
     if not state_path.exists():
-        return LauncherProfile()
+        profile = LauncherProfile()
+        profile.workdir = str(resource_root())
+        return profile
     try:
         payload = json.loads(state_path.read_text(encoding="utf-8"))
-        return LauncherProfile.model_validate(payload.get("profile", {}))
+        profile = LauncherProfile.model_validate(payload.get("profile", {}))
+        if not profile.workdir:
+            profile.workdir = str(resource_root())
+        return profile
     except Exception:
-        return LauncherProfile()
+        profile = LauncherProfile()
+        profile.workdir = str(resource_root())
+        return profile
 
 
 def save_profile(profile: LauncherProfile, path: Path | None = None) -> None:

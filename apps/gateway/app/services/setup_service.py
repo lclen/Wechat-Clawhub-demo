@@ -8,6 +8,7 @@ import socket
 from asyncio.subprocess import PIPE
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -69,7 +70,22 @@ class SetupTaskState:
 class PairingDiagnosticState:
     node_id: str
     connection_state: str
+    node_kind: str = "remote"
     last_error: str = ""
+    last_pairing_trace_id: str = ""
+    last_pairing_status: str = ""
+    last_pairing_at: datetime | None = None
+    last_register_result: str = ""
+    last_register_at: datetime | None = None
+    last_heartbeat_result: str = ""
+    last_heartbeat_at: datetime | None = None
+    last_auth_failure_at: datetime | None = None
+    last_auth_decision: str = ""
+    last_auth_client_host: str = ""
+    last_auth_path: str = ""
+    expected_token_masked: str = ""
+    provided_token_masked: str = ""
+    timeline: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=24))
     updated_at: object = field(default_factory=utcnow)
 
 
@@ -537,12 +553,14 @@ class SetupService:
             root = Path(normalized_install_dir)
             candidates.extend(
                 [
+                    root / "config" / "node.env",
                     root / "bundle" / "claw-node" / ".env",
                     root / "bundle" / "claw-node" / "services" / "claw-node" / ".env",
                 ]
             )
         default_root = Path("C:/wechat-claw-node")
         for path in (
+            default_root / "config" / "node.env",
             default_root / "bundle" / "claw-node" / ".env",
             default_root / "bundle" / "claw-node" / "services" / "claw-node" / ".env",
         ):
@@ -631,7 +649,12 @@ class SetupService:
         return {
             node_id: {
                 "connection_state": item.connection_state,
+                "node_kind": item.node_kind,
                 "last_error": item.last_error,
+                "last_pairing_trace_id": item.last_pairing_trace_id,
+                "last_register_result": item.last_register_result,
+                "last_register_at": item.last_register_at.isoformat() if item.last_register_at else "",
+                "last_auth_failure_at": item.last_auth_failure_at.isoformat() if item.last_auth_failure_at else "",
                 "updated_at": str(item.updated_at),
             }
             for node_id, item in self._pairing_diagnostics.items()
@@ -641,14 +664,216 @@ class SetupService:
         normalized_node_id = node_id.strip()
         if not normalized_node_id:
             return
-        self._pairing_diagnostics[normalized_node_id] = PairingDiagnosticState(
-            node_id=normalized_node_id,
-            connection_state=connection_state,
-            last_error=last_error.strip(),
-        )
+        current = self._pairing_diagnostics.get(normalized_node_id)
+        if current is None:
+            current = PairingDiagnosticState(node_id=normalized_node_id, connection_state=connection_state)
+            self._pairing_diagnostics[normalized_node_id] = current
+        current.connection_state = connection_state
+        current.last_error = last_error.strip()
+        current.updated_at = utcnow()
 
     def _clear_pairing_diagnostic(self, node_id: str) -> None:
         self._pairing_diagnostics.pop(node_id.strip(), None)
+
+    def record_pairing_event(
+        self,
+        node_id: str,
+        *,
+        trace_id: str = "",
+        connection_state: str,
+        status: str,
+        message: str,
+        node_kind: str = "remote",
+        metadata: dict[str, str] | None = None,
+        level: str = "info",
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind)
+        state.connection_state = connection_state
+        state.last_error = message if level == "error" else state.last_error
+        state.last_pairing_trace_id = trace_id or state.last_pairing_trace_id
+        state.last_pairing_status = status
+        state.last_pairing_at = utcnow()
+        state.updated_at = utcnow()
+        self._append_diagnostic_timeline(
+            state,
+            category="pairing",
+            result=status,
+            message=message,
+            trace_id=trace_id,
+            metadata=metadata,
+            level=level,
+        )
+
+    def record_register_event(
+        self,
+        node_id: str,
+        *,
+        trace_id: str = "",
+        result: str,
+        message: str,
+        node_kind: str | None = None,
+        connection_state: str | None = None,
+        metadata: dict[str, str] | None = None,
+        level: str = "info",
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        if connection_state:
+            state.connection_state = connection_state
+        state.last_register_result = result
+        state.last_register_at = utcnow()
+        if level == "error":
+            state.last_error = message
+        elif result in {"accepted", "succeeded", "recovered_after_heartbeat_404"}:
+            state.last_error = ""
+        state.updated_at = utcnow()
+        self._append_diagnostic_timeline(
+            state,
+            category="register",
+            result=result,
+            message=message,
+            trace_id=trace_id,
+            metadata=metadata,
+            level=level,
+        )
+
+    def record_heartbeat_event(
+        self,
+        node_id: str,
+        *,
+        trace_id: str = "",
+        result: str,
+        message: str,
+        node_kind: str | None = None,
+        connection_state: str | None = None,
+        metadata: dict[str, str] | None = None,
+        level: str = "info",
+        emit_timeline: bool = False,
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        if connection_state:
+            state.connection_state = connection_state
+        state.last_heartbeat_result = result
+        state.last_heartbeat_at = utcnow()
+        if level == "error":
+            state.last_error = message
+        elif result == "accepted":
+            state.last_error = ""
+        state.updated_at = utcnow()
+        if emit_timeline:
+            self._append_diagnostic_timeline(
+                state,
+                category="heartbeat",
+                result=result,
+                message=message,
+                trace_id=trace_id,
+                metadata=metadata,
+                level=level,
+            )
+
+    def record_auth_event(
+        self,
+        node_id: str,
+        *,
+        trace_id: str = "",
+        decision: str,
+        client_host: str,
+        path: str,
+        expected_token_masked: str,
+        provided_token_masked: str,
+        detail: str = "",
+        node_kind: str | None = None,
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        state.last_auth_decision = decision
+        state.last_auth_client_host = client_host
+        state.last_auth_path = path
+        state.expected_token_masked = expected_token_masked
+        state.provided_token_masked = provided_token_masked
+        if decision not in {"accepted", "accepted_local_bypass"}:
+            state.last_auth_failure_at = utcnow()
+            state.last_error = detail or state.last_error
+            if decision == "rejected_mismatch":
+                state.connection_state = "auth_failed"
+        elif state.node_kind == "local":
+            state.last_auth_failure_at = None
+        state.updated_at = utcnow()
+        self._append_diagnostic_timeline(
+            state,
+            category="auth",
+            result=decision,
+            message=detail or f"auth {decision}",
+            trace_id=trace_id,
+            metadata={
+                "client_host": client_host,
+                "path": path,
+                "expected_token_masked": expected_token_masked,
+                "provided_token_masked": provided_token_masked,
+            },
+            level="error" if decision != "accepted" else "info",
+        )
+
+    def get_node_diagnostics(self, node_id: str) -> dict[str, object]:
+        state = self._ensure_pairing_state(node_id, node_kind=self._resolve_node_kind(node_id))
+        return {
+            "node_id": state.node_id,
+            "node_kind": state.node_kind,
+            "connection_state": state.connection_state,
+            "last_error": state.last_error,
+            "last_pairing_trace_id": state.last_pairing_trace_id,
+            "last_pairing_status": state.last_pairing_status,
+            "last_pairing_at": state.last_pairing_at,
+            "last_register_result": state.last_register_result,
+            "last_register_at": state.last_register_at,
+            "last_heartbeat_result": state.last_heartbeat_result,
+            "last_heartbeat_at": state.last_heartbeat_at,
+            "last_auth_failure_at": state.last_auth_failure_at,
+            "last_auth_decision": state.last_auth_decision,
+            "last_auth_client_host": state.last_auth_client_host,
+            "last_auth_path": state.last_auth_path,
+            "expected_token_masked": state.expected_token_masked,
+            "provided_token_masked": state.provided_token_masked,
+            "timeline": list(state.timeline),
+        }
+
+    def _ensure_pairing_state(self, node_id: str, *, node_kind: str = "remote") -> PairingDiagnosticState:
+        normalized_node_id = node_id.strip()
+        state = self._pairing_diagnostics.get(normalized_node_id)
+        if state is None:
+            state = PairingDiagnosticState(
+                node_id=normalized_node_id,
+                connection_state="paired_offline",
+                node_kind=node_kind,
+            )
+            self._pairing_diagnostics[normalized_node_id] = state
+        else:
+            state.node_kind = node_kind
+        return state
+
+    def _resolve_node_kind(self, node_id: str) -> str:
+        return "local" if node_id.strip() == self._settings.local_node_id.strip() else "remote"
+
+    def _append_diagnostic_timeline(
+        self,
+        state: PairingDiagnosticState,
+        *,
+        category: str,
+        result: str,
+        message: str,
+        trace_id: str = "",
+        metadata: dict[str, str] | None = None,
+        level: str = "info",
+    ) -> None:
+        state.timeline.append(
+            {
+                "timestamp": utcnow(),
+                "level": level,
+                "category": category,
+                "result": result,
+                "message": message,
+                "trace_id": trace_id,
+                "metadata": metadata or {},
+            }
+        )
 
     async def _apply_gateway_config(
         self,
@@ -856,6 +1081,10 @@ class SetupService:
             config.gateway_base_url,
             "-NodeToken",
             config.node_token,
+            "-LocalDirectAuth",
+            "false",
+            "-NodeKind",
+            "remote",
             "-PairingKey",
             config.pairing_key,
             "-DifyBaseUrl",
@@ -878,6 +1107,8 @@ class SetupService:
             "true" if config.discovery_enabled else "false",
             "-DiscoveryPort",
             str(config.discovery_port),
+            "-ServiceMode",
+            "windows-service",
         ]
         if config.bundle_path:
             command.extend(["-BundlePath", config.bundle_path])
@@ -900,6 +1131,9 @@ class SetupService:
                 "install_dir": config.install_dir,
                 "gateway_base_url": config.gateway_base_url,
                 "node_token_delivery": "deferred_to_pairing",
+                "config_path": str(Path(config.install_dir) / "config" / "node.env"),
+                "service_name": f"wechat-claw-node-{config.node_id}",
+                "service_state": "running" if process.returncode == 0 else "failed",
             }
         )
         if process.returncode == 0:
@@ -1074,6 +1308,7 @@ class SetupService:
         suggested_label: str | None = None,
         registry: NodeRegistry | None = None,
     ) -> DiscoveryPairResponse:
+        pairing_trace_id = uuid4().hex
         resolved_node_id = (
             (node_id or "").strip()
             or (discovered.node_id if discovered else None)
@@ -1087,6 +1322,25 @@ class SetupService:
         else:
             self._append_log(task, f"节点 {resolved_node_id} 尚未签发 token，本次配对将首次生成并下发。")
         self._append_log(task, f"开始请求 {pair_url}。")
+        task.metadata = {
+            "node_id": resolved_node_id,
+            "lan_ip": host,
+            "pairing_port": str(pairing_port),
+            "pairing_trace_id": pairing_trace_id,
+            "token_delivery": "issued_by_gateway_pairing",
+        }
+        self.record_pairing_event(
+            resolved_node_id,
+            trace_id=pairing_trace_id,
+            connection_state="pairing_pending",
+            status="started",
+            message=f"网关开始向 {pair_url} 下发 token。",
+            metadata={"gateway_base_url": gateway_base_url.rstrip("/"), "host": host},
+        )
+        # 先写入 token（网关侧），再向节点发配对请求
+        self._settings.node_tokens[resolved_node_id] = node_token
+        self._persist_node_tokens()
+        self._append_log(task, f"已将 token 写入网关 WCH_NODE_TOKENS（node_id={resolved_node_id}）。")
         try:
             async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
                 response = await client.post(
@@ -1096,25 +1350,62 @@ class SetupService:
                         "gateway_base_url": gateway_base_url.rstrip("/"),
                         "node_id": resolved_node_id,
                         "node_token": node_token,
+                        "pairing_trace_id": pairing_trace_id,
                     },
                 )
         except httpx.RequestError as exc:
             task.summary = f"连接目标节点失败：{exc}"
             self._append_log(task, task.summary)
+            # 回滚：删除已写入的 token
+            self._settings.node_tokens.pop(resolved_node_id, None)
+            self._persist_node_tokens()
+            self._append_log(task, "已回滚网关侧 token（节点连接失败）。")
             self._set_pairing_diagnostic(resolved_node_id, "register_failed", task.summary)
+            self.record_pairing_event(
+                resolved_node_id,
+                trace_id=pairing_trace_id,
+                connection_state="register_failed",
+                status="request_failed",
+                message=task.summary,
+                level="error",
+            )
             self._finish_task(task, "failed")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
 
         if response.status_code == 401:
             task.summary = "配对密钥错误，目标节点拒绝连接。"
             self._append_log(task, task.summary)
+            # 回滚：删除已写入的 token
+            self._settings.node_tokens.pop(resolved_node_id, None)
+            self._persist_node_tokens()
+            self._append_log(task, "已回滚网关侧 token（配对密钥错误）。")
             self._set_pairing_diagnostic(resolved_node_id, "auth_failed", task.summary)
+            self.record_pairing_event(
+                resolved_node_id,
+                trace_id=pairing_trace_id,
+                connection_state="auth_failed",
+                status="auth_failed",
+                message=task.summary,
+                level="error",
+            )
             self._finish_task(task, "failed")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="auth_failed", node_id=resolved_node_id)
         if response.status_code >= 400:
             task.summary = f"目标节点返回异常状态：HTTP {response.status_code}"
             self._append_log(task, task.summary)
+            # 回滚：删除已写入的 token
+            self._settings.node_tokens.pop(resolved_node_id, None)
+            self._persist_node_tokens()
+            self._append_log(task, "已回滚网关侧 token（节点返回异常状态）。")
             self._set_pairing_diagnostic(resolved_node_id, "register_failed", task.summary)
+            self.record_pairing_event(
+                resolved_node_id,
+                trace_id=pairing_trace_id,
+                connection_state="register_failed",
+                status="request_rejected",
+                message=task.summary,
+                level="error",
+            )
             self._finish_task(task, "failed")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=resolved_node_id)
         data = response.json()
@@ -1123,41 +1414,72 @@ class SetupService:
         detail = str(data.get("detail") or "")
         if pairing_status in {"paired", "already_paired", "register_failed"}:
             if returned_node_id != resolved_node_id:
+                # 节点返回了不同的 node_id，迁移 token
                 self._settings.node_tokens.pop(resolved_node_id, None)
-            self._settings.node_tokens[returned_node_id] = node_token
-            self._persist_node_tokens()
+                self._settings.node_tokens[returned_node_id] = node_token
+                self._persist_node_tokens()
             if discovered is not None:
                 updated = discovered.model_copy(update={"node_id": returned_node_id, "already_paired": True, "last_seen_at": utcnow()})
                 self._discovered_nodes[updated.discovery_id] = updated
-            task.metadata = {
-                "node_id": returned_node_id,
-                "lan_ip": host,
-                "pairing_port": str(pairing_port),
-                "token_delivery": "issued_by_gateway_pairing",
-            }
+            task.metadata.update({"node_id": returned_node_id})
             self._append_log(task, f"节点已接受网关下发的新 token，返回状态：{pairing_status}。")
             if detail:
                 self._append_log(task, f"节点返回详情：{detail}")
             if pairing_status == "register_failed":
+                # 回滚：节点写入失败，删除网关侧 token
+                self._settings.node_tokens.pop(returned_node_id, None)
+                if returned_node_id != resolved_node_id:
+                    self._settings.node_tokens.pop(resolved_node_id, None)
+                self._persist_node_tokens()
+                self._append_log(task, "已回滚网关侧 token（节点注册失败）。")
                 diagnostic_state = self._normalize_register_failure_state(detail)
                 self._set_pairing_diagnostic(returned_node_id, diagnostic_state, detail or "节点注册失败")
+                self.record_pairing_event(
+                    returned_node_id,
+                    trace_id=pairing_trace_id,
+                    connection_state=diagnostic_state,
+                    status="register_failed",
+                    message=detail or "节点注册失败",
+                    level="error",
+                )
                 task.summary = f"节点 {suggested_label or returned_node_id} 已接收网关下发的 token，但注册失败：{detail or '请重新输入配对密钥后重试'}"
                 self._finish_task(task, "failed")
                 return DiscoveryPairResponse(task=task.to_result(), pairing_status="register_failed", node_id=returned_node_id)
             if registry is None:
                 self._set_pairing_diagnostic(returned_node_id, "pairing_pending", "等待网关确认节点注册")
+                self.record_pairing_event(
+                    returned_node_id,
+                    trace_id=pairing_trace_id,
+                    connection_state="pairing_pending",
+                    status="paired_pending_confirm",
+                    message="节点已接收配置，等待网关确认注册。",
+                )
                 task.summary = f"节点 {suggested_label or returned_node_id} 已接收网关下发的 token，等待注册确认。"
                 self._finish_task(task, "failed")
                 return DiscoveryPairResponse(task=task.to_result(), pairing_status="paired_pending_confirm", node_id=returned_node_id)
             self._set_pairing_diagnostic(returned_node_id, "pairing_pending", "等待网关确认节点注册")
+            self.record_pairing_event(
+                returned_node_id,
+                trace_id=pairing_trace_id,
+                connection_state="pairing_pending",
+                status="paired_pending_confirm",
+                message="节点已接受 token，开始等待 register/heartbeat。",
+            )
             self._append_log(task, "开始等待节点完成 register/heartbeat。")
             confirmed_node = await self._confirm_paired_node_registration(task, registry, returned_node_id)
             if confirmed_node is None:
                 task.summary = f"节点 {suggested_label or returned_node_id} 已接收配置，但未在确认窗口内完成注册。"
                 self._append_log(task, task.summary)
+                self.record_pairing_event(
+                    returned_node_id,
+                    trace_id=pairing_trace_id,
+                    connection_state="pairing_pending",
+                    status="confirm_timeout",
+                    message=task.summary,
+                    level="error",
+                )
                 self._finish_task(task, "failed")
                 return DiscoveryPairResponse(task=task.to_result(), pairing_status="paired_pending_confirm", node_id=returned_node_id)
-            self._clear_pairing_diagnostic(returned_node_id)
             task.metadata.update(
                 {
                     "matched_lan_ip": confirmed_node.lan_ip or "",
@@ -1167,10 +1489,29 @@ class SetupService:
             )
             task.summary = f"节点 {suggested_label or returned_node_id} 配对成功，已确认注册并开始心跳。"
             self._append_log(task, task.summary)
+            self.record_pairing_event(
+                returned_node_id,
+                trace_id=pairing_trace_id,
+                connection_state="connected",
+                status="paired",
+                message=task.summary,
+                metadata={
+                    "matched_lan_ip": confirmed_node.lan_ip or "",
+                    "matched_hostname": confirmed_node.hostname or "",
+                },
+            )
             self._finish_task(task, "succeeded")
             return DiscoveryPairResponse(task=task.to_result(), pairing_status="paired", node_id=returned_node_id)
         task.summary = f"节点返回未识别的配对状态：{pairing_status}"
         self._append_log(task, task.summary)
+        self.record_pairing_event(
+            returned_node_id,
+            trace_id=pairing_trace_id,
+            connection_state="register_failed",
+            status="unexpected_status",
+            message=task.summary,
+            level="error",
+        )
         self._finish_task(task, "failed")
         return DiscoveryPairResponse(task=task.to_result(), pairing_status="offline", node_id=returned_node_id)
 
@@ -1191,9 +1532,25 @@ class SetupService:
             for node in nodes:
                 if node.node_id == node_id:
                     self._append_log(task, f"已确认节点注册成功：{node_id}（最近心跳 {node.last_heartbeat_at.isoformat()}）")
+                    self.record_register_event(
+                        node_id,
+                        trace_id=task.metadata.get("pairing_trace_id", ""),
+                        result="confirmed",
+                        message="网关已确认节点完成 register/heartbeat。",
+                        connection_state="connected",
+                        metadata={"last_heartbeat_at": node.last_heartbeat_at.isoformat()},
+                    )
                     return node
             await asyncio.sleep(self._PAIR_CONFIRM_INTERVAL_SECONDS)
         self._set_pairing_diagnostic(node_id, "pairing_pending", "节点已接收配置，但未在确认窗口内完成注册")
+        self.record_register_event(
+            node_id,
+            trace_id=task.metadata.get("pairing_trace_id", ""),
+            result="confirm_timeout",
+            message="节点已接收配置，但未在确认窗口内完成注册。",
+            connection_state="pairing_pending",
+            level="error",
+        )
         return None
 
     def _normalize_register_failure_state(self, detail: str) -> str:
