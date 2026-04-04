@@ -127,6 +127,7 @@ class LocalNodeStatusResponse(BaseModel):
     service_name: str
     state: str
     pid: int | None = None
+    node_kind: str = "local"
     config_path: str = ""
     diagnostics_path: str = ""
     install_dir: str = ""

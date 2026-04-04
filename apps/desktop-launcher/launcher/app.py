@@ -217,6 +217,7 @@ def create_app() -> FastAPI:
             with contextlib.suppress(Exception):
                 diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
         model_settings = _read_local_node_model_config(config_path)
+        node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
         status = app.state.manager.local_node_service_status(profile, layout)
         runtime_state = str(diagnostics.get("current_state", "") or "").strip()
         last_register_result = str(diagnostics.get("last_register_result", "") or "").strip()
@@ -241,6 +242,7 @@ def create_app() -> FastAPI:
             service_name=service_name,
             state=status.state,
             pid=status.pid,
+            node_kind=node_kind or "local",
             config_path=str(config_path),
             diagnostics_path=str(diagnostics_path),
             install_dir=str(install_dir),
@@ -403,6 +405,9 @@ def _sync_local_node_model_from_gateway(node_env_path: Path, gateway_port: int) 
       WCH_DIFY_BASE_URL           -> CLAW_DIFY_BASE_URL
       WCH_DIFY_API_KEY            -> CLAW_DIFY_API_KEY    (only if non-empty)
     """
+    if _read_local_node_kind(node_env_path) != "local":
+        return
+
     # Locate gateway .env relative to the launcher repo root
     from launcher.runtime import resource_root
     gateway_env = resource_root() / "apps" / "gateway" / ".env"
@@ -453,6 +458,11 @@ def _read_local_node_model_config(path: Path) -> LocalNodeModelConfig:
         dify_base_url=values.get("CLAW_DIFY_BASE_URL", ""),
         dify_api_key_configured=bool(values.get("CLAW_DIFY_API_KEY", "").strip()),
     )
+
+
+def _read_local_node_kind(path: Path) -> str:
+    values = _read_env_file(path)
+    return (values.get("CLAW_NODE_KIND", "") or "local").strip() or "local"
 
 
 def _update_local_node_model_config(path: Path, payload: LocalNodeModelConfigRequest) -> None:

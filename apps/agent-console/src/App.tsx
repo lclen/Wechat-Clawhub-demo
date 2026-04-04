@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
+import {
+  resolveInitialWorkspace,
+  resolveWorkspaceOnTaskComplete,
+  requiresRoleSwitchConfirmation,
+  persistWorkspace,
+  resolveRoleBadge,
+  validateWorkerGatewayUrl,
+  resolveTokenDisplayState,
+} from "./roleWorkspace";
 
 type ModelStatus = { configured: boolean; base_url: string; model: string };
 type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; gateway_bind_host: string; preferred_lan_ip: string | null; preferred_gateway_base_url: string; timestamp: string };
@@ -57,7 +66,7 @@ type LauncherStatusResponse = { profile: LauncherProfile; layout: LauncherWorkdi
 type LauncherLogResponse = { component: string; log_path: string | null; content: string };
 type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_model: string; openai_enable_thinking: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key_configured: boolean };
 type LocalNodeModelConfigRequest = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; dify_base_url: string; dify_api_key: string; restart_service: boolean };
-type LocalNodeStatusResponse = { service_name: string; state: string; pid: number | null; config_path: string; diagnostics_path: string; install_dir: string; detail: string; service_state: string; runtime_state: string; last_register_result: string; last_register_error: string; last_register_at: string | null; diagnostics: Record<string, unknown>; model_settings: LocalNodeModelConfig };
+type LocalNodeStatusResponse = { service_name: string; state: string; pid: number | null; node_kind: NodeKind; config_path: string; diagnostics_path: string; install_dir: string; detail: string; service_state: string; runtime_state: string; last_register_result: string; last_register_error: string; last_register_at: string | null; diagnostics: Record<string, unknown>; model_settings: LocalNodeModelConfig };
 type LocalNodeLogsResponse = { service_name: string; event_log_path: string | null; service_log_path: string | null; wrapper_log_path: string | null; event_log: string; service_log: string; wrapper_log: string };
 type LocalNodeActionResponse = { ok: boolean; detail: string; status: LocalNodeStatusResponse };
 type LocalNodeExportResponse = { ok: boolean; export_path: string; detail: string };
@@ -468,6 +477,7 @@ export function App() {
   const [now, setNow] = useState(Date.now());
   const [workerGatewayProbeTask, setWorkerGatewayProbeTask] = useState<SetupTaskResult | null>(null);
   const [workerPairingKeyVisible, setWorkerPairingKeyVisible] = useState(false);
+  const [workerModelExpanded, setWorkerModelExpanded] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const workerGatewayAutoProbeKeyRef = useRef("");
 
@@ -597,7 +607,9 @@ export function App() {
         if (cancelled) return;
         const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
         setSetupProfile(profile);
-        setWorkspace(profile.recommended_workspace);
+        const initialWorkspace = resolveInitialWorkspace(profile);
+        setWorkspace(initialWorkspace);
+        persistWorkspace(initialWorkspace);
         setSetupTask(profile.last_task);
         setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
         setSetupMode(profile.setup_completed ? "status" : "role");
@@ -795,7 +807,16 @@ export function App() {
           }
           setNotice(result.task.summary || "快速配置执行完成。");
           const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
-          if (!cancelled) setSetupProfile(profile);
+          if (!cancelled) {
+            setSetupProfile(profile);
+            if (setupRole) {
+              setWorkspace((current) => {
+                const next = resolveWorkspaceOnTaskComplete("succeeded", setupRole, current);
+                persistWorkspace(next);
+                return next;
+              });
+            }
+          }
         } else if (result.task.status === "failed") {
           setNotice(result.task.summary || "快速配置执行失败，请检查日志。");
         }
@@ -930,6 +951,11 @@ export function App() {
     }
   }
   function selectSetupRole(role: SetupRole) {
+    const completedRoles = setupProfile?.completed_roles ?? [];
+    if (requiresRoleSwitchConfirmation(completedRoles, role)) {
+      setReconfigureConfirmOpen(true);
+      return;
+    }
     setSetupRole(role);
     setSetupMode("config");
     setSetupTask(null);
@@ -1538,7 +1564,12 @@ export function App() {
   }
   function submitSetupRole() {
     if (!setupRole) return setNotice("请先选择一个部署角色。");
-    if (setupMode === "config") return setSetupMode("preview");
+    if (setupMode === "config") {
+      if (setupRole === "worker_node" && !validateWorkerGatewayUrl(workerSetup.gateway_base_url)) {
+        return setNotice("请填写目标网关地址后再继续。");
+      }
+      return setSetupMode("preview");
+    }
     if (setupRole === "gateway_host") return void runGatewaySetup();
     if (setupRole === "gateway_host_console") return void runGatewayConsoleSetup();
     if (setupRole === "worker_node") return void runWorkerSetup();
@@ -1870,7 +1901,13 @@ export function App() {
   }, [localNodeLogs?.event_log]);
   const selectedNodeTimelineText = useMemo(() => {
     if (!selectedNodeDiagnostics?.timeline?.length) return "当前节点最近还没有可用的网关诊断时间线。";
-    return selectedNodeDiagnostics.timeline
+    // Filter out repetitive local-bypass heartbeat/pull-task events to reduce noise
+    const filtered = selectedNodeDiagnostics.timeline.filter((item) => {
+      if (item.result === "accepted_local_bypass" && (item.category === "heartbeat" || item.category === "pull_task")) return false;
+      return true;
+    });
+    if (!filtered.length) return "当前节点仅有心跳记录（本机直连鉴权），暂无其他诊断事件。";
+    return filtered
       .map((item) => `[${formatTimeLabel(item.timestamp, true)}] ${item.category}/${item.result} ${item.trace_id ? `trace=${item.trace_id} ` : ""}${item.message}`)
       .join("\n");
   }, [selectedNodeDiagnostics]);
@@ -1991,8 +2028,12 @@ export function App() {
 
         <div className="workspace-tabs" role="tablist" aria-label="Primary workspaces">
           <button type="button" className={`workspace-tab ${workspace === "quick_setup" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("quick_setup")}>快速配置</button>
-          <button type="button" className={`workspace-tab ${workspace === "sessions" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("sessions")}>会话观察台</button>
-          <button type="button" className={`workspace-tab ${workspace === "connection" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("connection")}>接入中心</button>
+          <button type="button" className={`workspace-tab ${workspace === "sessions" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("sessions")}>
+            {(() => { const badge = resolveRoleBadge(effectiveRole); return badge?.tab === "sessions" ? <span className="workspace-tab-badge">会话观察台<span className={`role-badge role-badge-${badge.variant}`}>{badge.label}</span></span> : "会话观察台"; })()}
+          </button>
+          <button type="button" className={`workspace-tab ${workspace === "connection" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("connection")}>
+            {(() => { const badge = resolveRoleBadge(effectiveRole); return badge?.tab === "connection" ? <span className="workspace-tab-badge">接入中心<span className={`role-badge role-badge-${badge.variant}`}>{badge.label}</span></span> : "接入中心"; })()}
+          </button>
         </div>
 
         {workspace === "quick_setup" ? (
@@ -2195,7 +2236,7 @@ export function App() {
                       <div className="section-head">
                         <div><div className="section-kicker">当前角色</div><h3>{roleName(setupRole)}</h3></div>
                         <div className="inline-actions">
-                          <button type="button" className="ghost-button" onClick={() => setSetupMode("role")}>重新选角色</button>
+                          <button type="button" className="ghost-button" onClick={() => { persistWorkspace("quick_setup"); window.localStorage.removeItem(SETUP_DRAFT_KEY); setSetupMode("role"); }}>重新选角色</button>
                           {setupProfile?.setup_completed ? <button type="button" className="ghost-button" onClick={returnToSetupStatus}>返回状态总览</button> : null}
                           <button type="button" className="ghost-button" onClick={resetCurrentSetupDraft}>重置当前填写内容</button>
                         </div>
@@ -2248,59 +2289,84 @@ export function App() {
                             </section>
                           </>
                         ) : setupRole === "worker_node" ? (
-                          <>
-                            <div className="inline-tip">
-                              当前节点 IP：{currentNodeLanIp || "未检测到"}。局域网内其他机器连接或排查当前节点时，可以优先使用这个地址。
+                          <div className="worker-wizard">
+                            {/* 1 Identity: IP + port */}
+                            <div className="worker-wizard-identity" style={{ marginBottom: 16 }}>
+                              <div className="worker-wizard-identity-ip">{currentNodeLanIp || "检测中…"}</div>
+                              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
+                                端口：{workerSetup.discovery_port} &nbsp;&middot;&nbsp; 这是本机节点的地址，网关管理员需要用这个地址来发现和配对你的节点
+                              </div>
                             </div>
+
                             <div className="form-grid">
                               <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
+
+                              {/* 2 Gateway URL + probe */}
                               <label>
-                                <span>目标网关地址（局域网网关）</span>
+                                <span>目标网关地址 <span style={{ color: "var(--red, #c0392b)" }}>*</span></span>
                                 <div className="field-with-action">
-                                  <input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="填写局域网内实际要连接的网关地址，例如 http://192.168.0.18:8300" />
-                                  <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前机器的网关地址</button>
+                                  <input
+                                    value={workerSetup.gateway_base_url}
+                                    onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)}
+                                    placeholder="例如 http://192.168.0.18:8300"
+                                    style={!validateWorkerGatewayUrl(workerSetup.gateway_base_url) && workerSetup.gateway_base_url !== "" ? { borderColor: "var(--red, #c0392b)" } : undefined}
+                                  />
+                                  <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入本机地址</button>
+                                  <button type="button" className="ghost-button" onClick={() => void probeWorkerGateway({ reason: "manual" })} disabled={busy !== null}>
+                                    {busy === "setup-gateway-probe" ? "检测中..." : "检测连接"}
+                                  </button>
                                 </div>
+                                {workerGatewayProbeTask ? (
+                                  <div style={{ fontSize: 12, marginTop: 4, color: workerGatewayConnection.state === "gateway_reachable_node_connected" || workerGatewayConnection.state === "gateway_reachable_node_pending_confirm" ? "var(--green)" : "var(--amber)" }}>
+                                    {workerGatewayConnection.label}
+                                  </div>
+                                ) : null}
                               </label>
+
+                              {/* 3 Pairing key */}
                               <label>
-                                <span>配对密钥</span>
+                                <span>配对密鑰</span>
                                 <div className="field-with-action">
-                                  <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="给局域网自动连接使用，节点与网关需要保持一致。" autoComplete="new-password" />
-                                  <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>{workerPairingKeyVisible ? "隐藏密钥" : "显示密钥"}</button>
+                                  <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="节点与网关需保持一致" autoComplete="new-password" />
+                                  <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>{workerPairingKeyVisible ? "隐藏" : "显示"}</button>
                                 </div>
+                                <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>配对密鑰由你自己设定，网关管理员在配对时需要输入相同的密鑰</div>
                               </label>
-                              <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
-                              <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
-                              <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
+
                               <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
                               <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
                               <label><span>启用局域网发现</span><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /></label>
-                              <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找常见 bundle 位置，并在缺失时尝试现打包" /></label>
+                              <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
                             </div>
-                            <section className="surface surface-subsection">
-                              <div className="section-head">
-                                <div><div className="section-kicker">连接状态</div><h3>当前节点与目标网关</h3></div>
-                                <button type="button" className="ghost-button" onClick={() => void probeWorkerGateway({ reason: "manual" })} disabled={busy !== null}>{busy === "setup-gateway-probe" ? "检测中..." : "立即检测"}</button>
+
+                            {/* 4 Token readonly */}
+                            <div className="worker-token-readonly" style={{ marginTop: 16 }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>节点 Token（只读）</div>
+                              <div>{resolveTokenDisplayState(workerSetup.node_token).status === "waiting" ? "空（等待网关配对后自动下发）" : "已配对"}</div>
+                              <div style={{ fontSize: 12, marginTop: 4 }}>Token 无需手动填写，完成配对后网关会自动将 Token 写入本机配置</div>
+                            </div>
+
+                            {/* 5 Model config collapsible */}
+                            <div className="worker-model-collapse" style={{ marginTop: 16 }}>
+                              <div className="worker-model-collapse-header" onClick={() => setWorkerModelExpanded((v) => !v)}>
+                                <span style={{ fontSize: 13, fontWeight: 600 }}>模型配置（可选）</span>
+                                <span style={{ fontSize: 12, color: "var(--muted)" }}>{workerModelExpanded ? "收起" : "展开"}</span>
                               </div>
-                              <div className="info-stack">
-                                <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
-                                <InfoRow label="当前连接状态" value={workerGatewayConnection.label} multiline />
-                                <InfoRow label="状态说明" value={workerGatewayConnection.detail} multiline />
-                                {workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点回报" value={summarizeRemoteNode(workerGatewayConnection.remoteNode)} multiline /> : null}
-                              </div>
-                            </section>
-                            <section className="surface surface-subsection">
-                              <div className="section-head">
-                                <div><div className="section-kicker">凭据与查看位置</div><h3>安装前确认节点凭据保存位置</h3></div>
-                              </div>
-                              <div className="inline-tip">
-                                如果网关部署在局域网内另一台机器，请把这里填写成那台网关机器的实际访问地址；只有当当前机器本身就是网关时，才使用“填入当前机器的网关地址”。
-                              </div>
-                              <div className="info-stack">
-                                {workerCredentialRows.map((item) => <InfoRow key={item.label} label={item.label} value={item.value} multiline />)}
-                              </div>
-                              <SnippetBlock label="当前 token 发放方式" content="当前不会生成节点 token。安装完成后，请回到网关端输入配对密钥，由网关自动下发 token 并确认注册。" />
-                            </section>
-                          </>
+                              {!workerModelExpanded ? (
+                                <div style={{ padding: "8px 14px", fontSize: 12, color: "var(--muted)" }}>
+                                  模型配置可选，不填写时使用网关内置模型（{gatewaySetup.builtin_model_name || DEFAULT_BUILTIN_MODEL_LABEL}）
+                                </div>
+                              ) : (
+                                <div className="worker-model-collapse-body">
+                                  <div className="form-grid">
+                                    <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
+                                    <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
+                                    <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
                         ) : (
                           <div className="form-grid">
                             <label><span>目标网关地址</span><input value={consoleSetup.gateway_base_url} onChange={(event) => updateConsoleSetup("gateway_base_url", event.target.value)} /></label>
@@ -2367,14 +2433,29 @@ export function App() {
                   </div>
                 </section>
                 ) : (
-                <section className="surface surface-tight">
-                  <div className="section-head"><div><div className="section-kicker">节点工作台</div><h3>当前节点状态</h3></div></div>
-                  <div className="prep-strip-list">
-                    <PrepStrip label="节点配置" detail={setupCompletedRoles.has("worker_node") ? "当前机器节点已完成配置" : "尚未完成节点配置"} tone={setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
-                    <PrepStrip label="目标网关地址" detail={workerSetup.gateway_base_url || "未填写局域网网关地址"} tone={workerSetup.gateway_base_url ? "good" : "warn"} />
-                    <PrepStrip label="发现响应" detail={workerSetup.discovery_enabled ? `已启用 UDP ${workerSetup.discovery_port}` : "当前已关闭"} tone={workerSetup.discovery_enabled ? "good" : "warn"} />
+                <>
+                  {/* IP/port identity block - req 3.6 */}
+                  <div className="worker-wizard-identity" style={{ marginBottom: 12 }}>
+                    <div className="worker-wizard-identity-ip">{localNodeStatus?.diagnostics?.lan_ip as string || currentNodeLanIp || "检测中…"}</div>
+                    <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
+                      端口：{workerSetup.discovery_port} &nbsp;&middot;&nbsp; 本机节点地址，网关管理员可用此地址配对
+                    </div>
                   </div>
-                </section>
+                  <section className="surface surface-tight">
+                    <div className="section-head"><div><div className="section-kicker">节点工作台</div><h3>当前节点状态</h3></div></div>
+                    <div className="prep-strip-list">
+                      <PrepStrip label="节点配置" detail={setupCompletedRoles.has("worker_node") ? "当前机器节点已完成配置" : "尚未完成节点配置"} tone={setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
+                      <PrepStrip label="目标网关地址" detail={workerSetup.gateway_base_url || "未填写局域网网关地址"} tone={workerSetup.gateway_base_url ? "good" : "warn"} />
+                      <PrepStrip label="发现响应" detail={workerSetup.discovery_enabled ? `已启用 UDP ${workerSetup.discovery_port}` : "当前已关闭"} tone={workerSetup.discovery_enabled ? "good" : "warn"} />
+                      {/* Token status - req 3.7 */}
+                      <PrepStrip
+                        label="Token 状态"
+                        detail={resolveTokenDisplayState(workerSetup.node_token).status === "waiting" ? "等待网关下发 token" : "已配对"}
+                        tone={resolveTokenDisplayState(workerSetup.node_token).status === "paired" ? "good" : "warn"}
+                      />
+                    </div>
+                  </section>
+                </>
                 )}
                 {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head"><div><div className="section-kicker">运行摘要</div><h3>系统状态</h3></div><button type="button" className="ghost-button" onClick={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button></div>
@@ -2414,11 +2495,11 @@ export function App() {
 
                 {!currentRoleIsWorker ? <section className="surface">
                   <div className="section-head">
-                    <div><div className="section-kicker">节点清单</div><h3>已接入节点</h3></div>
+                    <div><div className="section-kicker">节点清单</div><h3>已接入节点总览</h3></div>
                     <span className="small-note">{nodeInventoryHeadline}</span>
                   </div>
                   {!nodeInventory.length ? (
-                    <div className="empty-state">当前还没有已接入节点。</div>
+                    <div className="empty-state">当前还没有已接入节点。本机内置节点和远端工作节点会在这里统一显示，但会明确区分角色来源。</div>
                   ) : (
                     <div className="connection-node-grid">
                       {nodeInventory.map((node) => {
@@ -2429,7 +2510,7 @@ export function App() {
                             <div className="connection-node-card-head">
                               <div className="connection-node-card-title-row">
                                 <div className="node-card-title">{node.hostname || node.node_id}</div>
-                                <span className={`node-kind-tag node-kind-tag-${node.node_kind}`}>{node.node_kind === "local" ? "本机" : "远端"}</span>
+                                <span className={`node-kind-tag node-kind-tag-${node.node_kind}`}>{node.node_kind === "local" ? "网关内置" : "远端工作节点"}</span>
                                 {node.connection_state === "auth_failed" ? <span className="auth-failed-badge" title="节点 token 不匹配，请重新配对或重置凭据">鉴权失败</span> : null}
                               </div>
                               <div className="node-card-subtitle">{node.node_id}</div>
@@ -2473,7 +2554,7 @@ export function App() {
                       <div className="section-kicker">节点诊断</div>
                       <h3 style={{display:"flex",alignItems:"center",gap:8}}>
                         {selectedNodeId}
-                        {selectedNodeDiagnostics?.node_kind ? <span className={`node-kind-tag node-kind-tag-${selectedNodeDiagnostics.node_kind}`}>{selectedNodeDiagnostics.node_kind === "local" ? "本机" : "远端"}</span> : null}
+                        {selectedNodeDiagnostics?.node_kind ? <span className={`node-kind-tag node-kind-tag-${selectedNodeDiagnostics.node_kind}`}>{selectedNodeDiagnostics.node_kind === "local" ? "网关内置" : "远端工作节点"}</span> : null}
                       </h3>
                     </div>
                     <div className="inline-actions">
@@ -2599,9 +2680,10 @@ export function App() {
                     <section className="surface node-role-surface">
                       <div className="section-head"><div><div className="section-kicker">节点说明</div><h3>节点角色只配置当前机器，不纳管其它节点</h3></div></div>
                       <div className="inline-tip">
-                        你当前选择的是节点角色，这里只保留当前机器的节点安装、回连、凭据和发现响应相关功能；扫描并纳管其它节点需要切换回网关角色。
+                        你当前选择的是节点角色，这里只保留当前机器这一个远端工作节点的安装、回连、凭据和发现响应相关功能；网关内置节点属于主网关自身，扫描并纳管其它节点需要切换回网关角色。
                       </div>
                       <div className="info-stack">
+                        <InfoRow label="节点身份" value="远端工作节点（当前机器）" multiline />
                         <InfoRow label="目标网关地址" value={workerSetup.gateway_base_url || "未填写"} multiline />
                         <InfoRow label="网关连接状态" value={workerGatewayConnection.label} multiline />
                         <InfoRow label="连接详情" value={workerGatewayConnection.detail} multiline />
@@ -2613,7 +2695,7 @@ export function App() {
                     </section>
                     <section className="surface">
                       <div className="section-head">
-                        <div><div className="section-kicker">本机诊断</div><h3>Windows 服务、配置路径与本地事件</h3></div>
+                        <div><div className="section-kicker">本机诊断</div><h3>网关内置节点的 Windows 服务、配置路径与本地事件</h3></div>
                         <div className="inline-actions">
                           <button type="button" className="ghost-button" onClick={() => void refreshLocalNodeDiagnostics()} disabled={!launcherAvailable || busy !== null}>刷新</button>
                           <button type="button" className="ghost-button" onClick={() => void restartLocalNodeService()} disabled={!launcherAvailable || busy !== null}>{busy === "local-node-restart" ? "重启中..." : "重启服务"}</button>
@@ -2621,7 +2703,11 @@ export function App() {
                           <button type="button" className="ghost-button" onClick={() => void exportLocalNodeDiagnostics()} disabled={!launcherAvailable || busy !== null}>{busy === "local-node-export" ? "导出中..." : "导出诊断包"}</button>
                         </div>
                       </div>
+                      <div className="inline-tip">
+                        这里展示的是网关当前机器自带的内置节点，不是局域网中其它远端工作节点。它会直接跟随 launcher 托管的主网关运行。
+                      </div>
                       <div className="info-stack">
+                        <InfoRow label="节点身份" value={localNodeStatus?.node_kind === "local" ? "网关内置节点" : nodeRoleLabel("local-node", localNodeStatus?.node_kind)} multiline />
                         <InfoRow label="服务状态" value={localNodeStatus?.state || "未读取"} />
                         <InfoRow label="网关注册状态" value={localNodeRuntimeSummary.label} multiline />
                         <InfoRow label="服务名" value={localNodeStatus?.service_name || "未读取"} multiline />
@@ -2725,6 +2811,21 @@ export function App() {
           </section>
         ) : (
           <section className="workspace-frame session-workspace">
+            {/* console_only gateway status banner - req 4.2, 4.5 */}
+            {effectiveRole === "console_only" ? (
+              systemStatus !== null ? (
+                <div className="console-gateway-banner">
+                  <span>网关：{currentGatewayBaseUrl}</span>
+                  <span>Redis：{systemStatus.redis_ok ? "在线" : "不可用"}</span>
+                  <span>在线节点：{systemStatus.active_nodes}</span>
+                </div>
+              ) : sessionsLoaded ? (
+                <div className="console-gateway-banner-error">
+                  <span>目标网关不可达</span>
+                  <button type="button" className="ghost-button" onClick={() => setWorkspace("quick_setup")}>前往快速配置</button>
+                </div>
+              ) : null
+            ) : null}
             <aside className="session-rail surface">
               <div className="rail-channel-card">
                 <div className="rail-channel-top"><div><div className="section-kicker">微信通道</div><h3>默认 Agent 接入</h3></div><span className="count-badge">{sessions.length}</span></div>
@@ -3017,9 +3118,9 @@ function pairingStatusTone(status: PairingStatus) {
     : "idle";
 }
 function nodeRoleLabel(nodeId: string, nodeKind?: NodeKind) {
-  if (nodeKind === "local") return "网关本机节点";
+  if (nodeKind === "local") return "网关内置节点";
   if (nodeKind === "remote") return "远端工作节点";
-  return nodeId === "local-node" || nodeId.startsWith("claw-node-local") ? "网关本机节点" : "远端工作节点";
+  return nodeId === "local-node" || nodeId.startsWith("claw-node-local") ? "网关内置节点" : "远端工作节点";
 }
 function nodeInventoryBadgeLabel(connectionState: NodeInventoryConnectionState, paired: boolean) {
   if (connectionState === "connected") return "在线";

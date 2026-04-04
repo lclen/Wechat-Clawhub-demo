@@ -38,8 +38,9 @@ class NodeDiagnostics:
         self._dir = settings.resolved_diagnostics_dir
         self._status_path = self._dir / "node-status.json"
         self._events_path = self._dir / "node-events.jsonl"
-        self._events: deque[NodeDiagnosticEvent] = deque(maxlen=200)
         self._dir.mkdir(parents=True, exist_ok=True)
+        previous_snapshot = self._load_existing_snapshot()
+        self._events: deque[NodeDiagnosticEvent] = deque(self._load_recent_events(previous_snapshot), maxlen=200)
         self._snapshot: dict[str, Any] = {
             "node_id": settings.node_id,
             "node_kind": settings.node_kind,
@@ -63,6 +64,21 @@ class NodeDiagnostics:
             "updated_at": self._utcnow().isoformat(),
             "events": [],
         }
+        for key in (
+            "current_state",
+            "detail",
+            "last_error",
+            "last_pairing_trace_id",
+            "last_pair_result",
+            "last_pair_at",
+            "last_register_result",
+            "last_register_at",
+            "last_heartbeat_result",
+            "last_heartbeat_at",
+        ):
+            previous_value = previous_snapshot.get(key)
+            if previous_value not in (None, ""):
+                self._snapshot[key] = previous_value
         self.flush()
 
     @property
@@ -212,6 +228,76 @@ class NodeDiagnostics:
 
     def export_summary(self) -> dict[str, object]:
         return dict(self._snapshot)
+
+    def _load_existing_snapshot(self) -> dict[str, Any]:
+        if not self._status_path.exists():
+            return {}
+        try:
+            payload = json.loads(self._status_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _load_recent_events(self, previous_snapshot: dict[str, Any]) -> list[NodeDiagnosticEvent]:
+        if self._events_path.exists():
+            loaded = self._load_recent_events_from_jsonl()
+            if loaded:
+                return loaded
+        return self._load_recent_events_from_snapshot(previous_snapshot)
+
+    def _load_recent_events_from_jsonl(self) -> list[NodeDiagnosticEvent]:
+        loaded: deque[NodeDiagnosticEvent] = deque(maxlen=200)
+        try:
+            with self._events_path.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except Exception:
+                        continue
+                    event = self._coerce_event(payload)
+                    if event is not None:
+                        loaded.append(event)
+        except Exception:
+            return []
+        return list(loaded)
+
+    def _load_recent_events_from_snapshot(self, previous_snapshot: dict[str, Any]) -> list[NodeDiagnosticEvent]:
+        events = previous_snapshot.get("events")
+        if not isinstance(events, list):
+            return []
+        loaded: list[NodeDiagnosticEvent] = []
+        for payload in events[-200:]:
+            event = self._coerce_event(payload)
+            if event is not None:
+                loaded.append(event)
+        return loaded
+
+    def _coerce_event(self, payload: object) -> NodeDiagnosticEvent | None:
+        if not isinstance(payload, dict):
+            return None
+        raw_timestamp = payload.get("timestamp")
+        if not isinstance(raw_timestamp, str) or not raw_timestamp.strip():
+            return None
+        try:
+            timestamp = datetime.fromisoformat(raw_timestamp)
+        except ValueError:
+            return None
+        metadata = payload.get("metadata")
+        normalized_metadata: dict[str, str] = {}
+        if isinstance(metadata, dict):
+            normalized_metadata = {str(key): str(value) for key, value in metadata.items()}
+        return NodeDiagnosticEvent(
+            timestamp=timestamp,
+            level=str(payload.get("level", "info")),
+            category=str(payload.get("category", "unknown")),
+            result=str(payload.get("result", "")),
+            message=str(payload.get("message", "")),
+            trace_id=str(payload.get("trace_id", "")),
+            metadata=normalized_metadata,
+        )
 
     def _append_event_file(self, event: NodeDiagnosticEvent) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)

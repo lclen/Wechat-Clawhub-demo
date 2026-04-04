@@ -72,12 +72,12 @@ class NodeSettings(BaseSettings):
         env_file = os.environ.get("CLAW_ENV_FILE", str(DEFAULT_NODE_ENV_PATH))
         return (
             init_settings,
+            env_settings,
             DotEnvSettingsSource(
                 settings_cls,
                 env_file=env_file,
                 env_file_encoding="utf-8",
             ),
-            env_settings,
             file_secret_settings,
         )
 

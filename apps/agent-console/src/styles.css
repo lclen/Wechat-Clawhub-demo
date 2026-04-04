@@ -915,6 +915,10 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.75;
+  max-height: 280px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(96, 112, 143, 0.2) transparent;
 }
 .snippet-label { margin-bottom: 8px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
 .snippet-stack { margin-top: 6px; }
@@ -1246,4 +1250,194 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   background: #fee2e2;
   color: #b91c1c;
   white-space: nowrap;
+}
+
+/* ── 角色感知工作区：标签页徽标 ── */
+.workspace-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.role-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  line-height: 1.2;
+}
+
+.role-badge-gateway {
+  background: var(--blue-soft);
+  color: var(--blue);
+}
+
+.role-badge-worker {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.role-badge-console {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+/* ── 节点配置向导（worker_node 绿色主题） ── */
+.worker-wizard {
+  background: linear-gradient(
+    160deg,
+    rgba(239, 249, 244, 0.96) 0%,
+    rgba(250, 255, 252, 0.92) 100%
+  );
+  border-radius: 24px;
+  padding: 20px;
+  border: 1px solid rgba(31, 138, 100, 0.18);
+}
+
+.worker-wizard-identity {
+  background: rgba(31, 138, 100, 0.06);
+  border-radius: 16px;
+  padding: 16px;
+}
+
+.worker-wizard-identity-ip {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--green);
+  font-family: "IBM Plex Mono", monospace;
+}
+
+.worker-token-readonly {
+  background: rgba(37, 30, 24, 0.05);
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: var(--muted);
+}
+
+.worker-model-collapse {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+}
+
+.worker-model-collapse-header {
+  padding: 12px 14px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+}
+
+.worker-model-collapse-body {
+  padding: 14px;
+  border-top: 1px solid var(--line);
+}
+
+/* ── console_only 角色：sessions 工作区网关状态 banner ── */
+.console-gateway-banner {
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--green-soft);
+  color: var(--green);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.console-gateway-banner-error {
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: rgba(183, 106, 26, 0.1);
+  color: var(--amber);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Role-based workspace: tab badges */
+.workspace-tab-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.role-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.role-badge-gateway { background: var(--blue-soft); color: var(--blue); }
+.role-badge-worker  { background: var(--green-soft); color: var(--green); }
+.role-badge-console { background: var(--amber-soft); color: var(--amber); }
+
+/* Worker wizard: node identity & config */
+.worker-wizard {
+  background: linear-gradient(180deg, rgba(239,249,244,0.96) 0%, rgba(250,255,252,0.92) 100%);
+  border: 1px solid rgba(31,138,100,0.18);
+  border-radius: 24px;
+  padding: 20px;
+}
+.worker-wizard-identity {
+  background: rgba(31,138,100,0.06);
+  border-radius: 16px;
+  padding: 16px;
+  margin-bottom: 18px;
+}
+.worker-wizard-identity-ip {
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--green);
+  font-family: "IBM Plex Mono", monospace;
+}
+.worker-token-readonly {
+  background: rgba(37,30,24,0.05);
+  border-radius: 12px;
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.worker-model-collapse {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  overflow: hidden;
+}
+.worker-model-collapse-header {
+  padding: 12px 14px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  user-select: none;
+}
+.worker-model-collapse-header:hover { background: rgba(255,255,255,0.6); }
+.worker-model-collapse-body {
+  padding: 14px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 14px;
+}
+
+/* Console-only: gateway status banner in sessions workspace */
+.console-gateway-banner {
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--green-soft);
+  color: var(--green);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  font-weight: 700;
+}
+.console-gateway-banner-error {
+  background: var(--amber-soft);
+  color: var(--amber);
 }
