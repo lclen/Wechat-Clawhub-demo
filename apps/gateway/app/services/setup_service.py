@@ -320,13 +320,20 @@ class SetupService:
         }
         self._append_log(task, f"开始重置工作节点本地凭据：{normalized_node_id}")
         env_paths = self._candidate_worker_env_paths(normalized_install_dir)
+        keys_to_clear = {
+            "CLAW_NODE_TOKEN",
+            "CLAW_NODE_ID",
+            "CLAW_GATEWAY_BASE_URL",
+            "CLAW_PAIRING_KEY",
+            "CLAW_PAIRING_TRACE_ID",
+        }
         updated_paths: list[str] = []
         for env_path in env_paths:
             if not env_path.exists():
                 continue
-            self._clear_env_keys(env_path, {"CLAW_NODE_TOKEN"})
+            self._clear_env_keys(env_path, keys_to_clear)
             updated_paths.append(str(env_path))
-            self._append_log(task, f"已清空节点 token：{env_path}")
+            self._append_log(task, f"已清空节点配置：{env_path}")
         if not updated_paths:
             task.summary = f"未找到可写入的节点 .env 文件：{normalized_install_dir}"
             self._append_log(task, task.summary)
@@ -334,7 +341,7 @@ class SetupService:
             return task.to_result()
         self._clear_pairing_diagnostic(normalized_node_id)
         task.metadata["env_paths"] = " | ".join(updated_paths)
-        task.summary = "已清空本机节点 token；节点重新启动后将回到待配对状态。"
+        task.summary = "已清空本机节点 ID、token、网关地址和配对密钥；节点重新启动后将回到初始状态。"
         self._append_log(task, task.summary)
         self._finish_task(task, "succeeded")
         return task.to_result()

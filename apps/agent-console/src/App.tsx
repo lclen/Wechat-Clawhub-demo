@@ -1587,15 +1587,16 @@ export function App() {
         setWechatStatus(status);
         stoppedActions.push("已断开微信连接");
       }
-      if (launcherAvailable && launcherStatus?.components?.some((item) => item.name === "local-node" && item.state === "running")) {
-        await withBusy("reconfigure-stop-local-node", () =>
+      // 停掉所有 launcher 托管的组件（local-node、node-cache-redis、gateway、host-redis）
+      if (launcherAvailable) {
+        await withBusy("reconfigure-stop-all", () =>
           requestJson<LauncherStatusResponse>("/local/bootstrap/stop", {
             method: "POST",
-            body: JSON.stringify({ component: "local-node" }),
+            body: JSON.stringify({ component: null }),
           }),
         );
         await refreshLauncherStatus();
-        stoppedActions.push("已停止本机节点");
+        stoppedActions.push("已停止所有本地组件");
       }
       if ((setupCompletedRoles.has("worker_node") || workerSetup.node_id.trim()) && workerSetup.install_dir.trim()) {
         const result = await withBusy(
@@ -1610,7 +1611,7 @@ export function App() {
         );
         setSetupTask(result.task);
         setWorkerSetup((current) => ({ ...current, node_token: "" }));
-        stoppedActions.push("已清空本机节点 token");
+        stoppedActions.push("已清空节点配置");
       }
       // 重置后端内存状态（completed_roles、tasks、node_tokens、节点注册表）
       await withBusy("reconfigure-reset-state", () =>
