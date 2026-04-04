@@ -954,9 +954,10 @@ export function App() {
   async function disconnectWeChat() { try { const status = await withBusy("wechat-disconnect", () => requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" })); setWechatStatus(status); setNotice("微信轮询已停止。"); } catch (error) { setNotice(`断开失败：${(error as Error).message}`); } }
   async function ensureLauncherRuntimeForQuickSetup(role: SetupRole) {
     if (!launcherAvailable || !launcherStatus?.profile.workdir) return;
+    if (role === "worker_node") return; // 节点角色不预启动任何组件
     const running = runningLauncherComponents(launcherStatus);
-    const needsHost = role !== "worker_node";
-    const needsGateway = role !== "worker_node";
+    const needsHost = true;
+    const needsGateway = true;
     const needsLocalNode = true;
     const shouldStart =
       (needsHost && !running.has("host-redis")) ||
@@ -969,8 +970,8 @@ export function App() {
         () => requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
           method: "POST",
           body: JSON.stringify({
-            enable_local_node: true,
-            enable_gateway: role !== "worker_node",
+            enable_local_node: (role as string) !== "worker_node",
+            enable_gateway: (role as string) !== "worker_node",
             enable_node_cache_redis: launcherStatus.profile.node_cache_policy !== "disabled",
             dispatch_mode_enabled: false,
             redis_source: launcherStatus.profile.redis_source || "mirror",
