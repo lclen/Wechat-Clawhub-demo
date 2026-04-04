@@ -2593,7 +2593,7 @@ export function App() {
                 <>
                   {/* IP/port identity block - req 3.6 */}
                   <div className="worker-wizard-identity" style={{ marginBottom: 12 }}>
-                    <div className="worker-wizard-identity-ip">{localNodeStatus?.diagnostics?.lan_ip as string || currentNodeLanIp || "检测中…"}</div>
+                    <div className="worker-wizard-identity-ip">{workerGatewayConnection.remoteNode?.lan_ip || localNodeStatus?.diagnostics?.lan_ip as string || currentNodeLanIp || "检测中…"}</div>
                     <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
                       端口：{workerSetup.discovery_port} &nbsp;&middot;&nbsp; 本机节点地址，网关管理员可用此地址配对
                     </div>
@@ -2607,8 +2607,8 @@ export function App() {
                       {/* Token status - req 3.7 */}
                       <PrepStrip
                         label="Token 状态"
-                        detail={resolveTokenDisplayState(workerSetup.node_token).status === "waiting" ? "等待网关下发 token" : "已配对"}
-                        tone={resolveTokenDisplayState(workerSetup.node_token).status === "paired" ? "good" : "warn"}
+                        detail={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已配对" : resolveTokenDisplayState(workerSetup.node_token).status === "waiting" ? "等待网关下发 token" : "已配对"}
+                        tone={workerGatewayConnection.state === "gateway_reachable_node_connected" || resolveTokenDisplayState(workerSetup.node_token).status === "paired" ? "good" : "warn"}
                       />
                     </div>
                   </section>
