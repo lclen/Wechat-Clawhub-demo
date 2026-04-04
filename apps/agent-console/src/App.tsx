@@ -442,6 +442,7 @@ export function App() {
   const [reconfigureConfirmOpen, setReconfigureConfirmOpen] = useState(false);
   const [launcherStatus, setLauncherStatus] = useState<LauncherStatusResponse | null>(null);
   const [launcherAvailable, setLauncherAvailable] = useState(false);
+  const [gatewayEnabled, setGatewayEnabled] = useState<boolean | null>(null); // null = 未知，等待 launcher 状态
   const [launcherLogs, setLauncherLogs] = useState<Record<string, string>>({});
   const [launcherExpanded, setLauncherExpanded] = useState(false);
   const [envExpanded, setEnvExpanded] = useState(false);
@@ -606,6 +607,7 @@ export function App() {
           setLauncherStatus(launcherSt);
           setLauncherAvailable(true);
           const p = launcherSt.profile;
+          setGatewayEnabled(p.enable_gateway !== false);
           const gatewayComp = launcherSt.components.find(c => c.name === "gateway");
           const gatewayDown = !gatewayComp || gatewayComp.state === "stopped" || gatewayComp.state === "failed";
           // 网关角色且 gateway 未运行 → 自动拉起
@@ -628,6 +630,7 @@ export function App() {
           }
           // 节点角色 → 不请求 gateway，直接完成初始化
           if (!p.enable_gateway) {
+            setGatewayEnabled(false);
             const draft = loadSetupDraft();
             setSetupMode(draft.role ? "status" : "role");
             setNotice("当前为节点角色，网关运行在远端机器上。");
@@ -703,8 +706,9 @@ export function App() {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
-      // 节点角色（enable_gateway=false）下不轮询 gateway API
-      if (launcherStatus?.profile.enable_gateway === false) return;
+      // 节点角色（enable_gateway=false）下不轮询 gateway API；null 表示还未确定，等待
+      if (gatewayEnabled === false) return;
+      if (gatewayEnabled === null) { timer = window.setTimeout(() => void run(), 500); return; }
       let failed = false;
       try {
         const detailPromise = selectedSessionId ? requestJson<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`) : Promise.resolve(null);
@@ -742,7 +746,7 @@ export function App() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [selectedSessionId, activeSession?.active_task_id, activeSession?.queue_status]);
+  }, [selectedSessionId, activeSession?.active_task_id, activeSession?.queue_status, gatewayEnabled]);
 
   useEffect(() => {
     if (!selectedSessionId) {
