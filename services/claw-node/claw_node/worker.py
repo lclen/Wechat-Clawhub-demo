@@ -224,7 +224,7 @@ class Worker:
             return
         if self._inference is None:
             logger.warning(
-                "[worker] inference backend is unavailable; node stays discoverable but will not register/poll until configured. reason=%s",
+                "[worker] inference backend is unavailable; node will register but skip task polling. reason=%s",
                 self._inference_error or "unknown",
             )
             self._diagnostics.set_state(
@@ -233,7 +233,7 @@ class Worker:
                 trace_id=self._settings.pairing_trace_id.strip(),
                 level="error",
             )
-            return
+            # Still register so the gateway knows this node exists, but don't poll for tasks
         try:
             await self._register_with_gateway()
         except Exception as exc:
@@ -250,6 +250,16 @@ class Worker:
             )
             return
         self._last_error = None
+        if self._inference is None:
+            # Registered but no inference backend: heartbeat only, no task polling
+            self._diagnostics.set_state(
+                "needs_repair",
+                self._inference_error or "推理后端未配置，节点已注册但不接单",
+                trace_id=self._settings.pairing_trace_id.strip(),
+                level="error",
+            )
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
+            return
         self._diagnostics.set_state(
             "connected",
             "节点已完成 register，并开始 heartbeat / pull loop。",
@@ -398,7 +408,7 @@ class Worker:
             trace_id=trace_id,
         )
         await self._ensure_gateway_loops_started()
-        if self._heartbeat_task is None or self._polling_task is None:
+        if self._heartbeat_task is None or (self._polling_task is None and self._inference is not None):
             detail = self._last_error or self._inference_error or "Node accepted the pairing parameters but failed to register on the gateway."
             self._diagnostics.record_pairing(
                 result="register_failed",
