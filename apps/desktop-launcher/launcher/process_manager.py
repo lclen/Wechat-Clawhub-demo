@@ -452,6 +452,19 @@ class ProcessManager:
         managed = self._processes.get(component)
         if managed is not None and managed.poll() is None and managed.pid == owner.get("pid"):
             return None
+        # If the occupying process is a stale launcher sub-process (e.g. after launcher restart),
+        # kill it so we can start a fresh one.
+        cmd = (owner.get("command_line") or "").lower()
+        if f"run-{component}" in cmd and "launcher.main" in cmd:
+            pid = owner.get("pid")
+            if pid:
+                try:
+                    subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False)  # noqa: S603
+                    import time
+                    time.sleep(1)
+                except Exception:
+                    pass
+            return None
         return owner
 
     def _find_listening_port_owner(self, port: int) -> dict[str, Any] | None:
