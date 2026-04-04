@@ -637,8 +637,10 @@ export function App() {
         );
       } catch (error) {
         if (!cancelled) {
-          setNotice(`正在等待主网关启动…`);
-          retryTimer = window.setTimeout(() => void init(), RETRY_POLL_MS);
+          const draft = loadSetupDraft();
+          const isWorkerOnly = draft.role === "worker_node";
+          setNotice(isWorkerOnly ? "当前为节点角色，网关运行在远端机器上。" : `正在等待主网关启动…`);
+          if (!isWorkerOnly) retryTimer = window.setTimeout(() => void init(), RETRY_POLL_MS);
         }
       }
     };
@@ -658,6 +660,8 @@ export function App() {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
+      // 节点角色下不轮询 gateway API
+      if (loadSetupDraft().role === "worker_node") return;
       let failed = false;
       try {
         const detailPromise = selectedSessionId ? requestJson<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`) : Promise.resolve(null);
