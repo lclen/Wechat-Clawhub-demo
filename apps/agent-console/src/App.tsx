@@ -813,13 +813,15 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId]);
+  }, [selectedSessionId, launcherStatus?.profile.enable_gateway, workerSetup.gateway_base_url]);
 
   useEffect(() => {
     if (!selectedNodeId) {
       setSelectedNodeDiagnostics(null);
       return;
     }
+    // 节点角色下没有本机 gateway，跳过诊断轮询
+    if (launcherStatus?.profile.enable_gateway === false) return;
     let cancelled = false;
     let timer = 0;
     const run = async () => {
