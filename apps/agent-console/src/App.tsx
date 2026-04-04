@@ -2142,10 +2142,21 @@ export function App() {
             <div className="topbar-copy">把快速配置、接入联调和会话观察拆成三个一级工作区，首次启动先走向导，后续也能随时重配。</div>
           </div>
           <div className="topbar-status-row">
-            <StatusChip label="网关" value={gatewayRuntimeSummary.value} tone={gatewayRuntimeSummary.tone} />
-            <StatusChip label="微信" value={wechatRuntimeSummary.value} tone={wechatRuntimeSummary.tone} />
-            <StatusChip label="节点" value={`${nodeInventorySummary.online_total} 在线`} tone={nodeInventorySummary.online_total > 0 ? "good" : "warn"} />
-            <StatusChip label="模型" value={modelStatus?.model || "未配置"} tone={modelStatus?.configured ? "good" : "warn"} />
+            {currentRoleIsWorker ? (
+              <>
+                <StatusChip label="目标网关" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已连接" : workerSetup.gateway_base_url ? "可达" : "未填写"} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
+                <StatusChip label="节点" value={workerSetup.node_id || "未配置"} tone={workerSetup.node_id ? "good" : "warn"} />
+                <StatusChip label="注册状态" value={localNodeRuntimeSummary.label} tone={localNodeRuntimeSummary.tone} />
+                <StatusChip label="模型" value={localNodeStatus?.model_settings?.model_provider && (localNodeStatus.model_settings.openai_api_key_configured || localNodeStatus.model_settings.dify_api_key_configured) ? localNodeStatus.model_settings.model_provider : "未配置"} tone={localNodeStatus?.model_settings?.openai_api_key_configured || localNodeStatus?.model_settings?.dify_api_key_configured ? "good" : "warn"} />
+              </>
+            ) : (
+              <>
+                <StatusChip label="网关" value={gatewayRuntimeSummary.value} tone={gatewayRuntimeSummary.tone} />
+                <StatusChip label="微信" value={wechatRuntimeSummary.value} tone={wechatRuntimeSummary.tone} />
+                <StatusChip label="节点" value={`${nodeInventorySummary.online_total} 在线`} tone={nodeInventorySummary.online_total > 0 ? "good" : "warn"} />
+                <StatusChip label="模型" value={modelStatus?.model || "未配置"} tone={modelStatus?.configured ? "good" : "warn"} />
+              </>
+            )}
           </div>
           <div className="topbar-notice">{notice}</div>
         </header>
