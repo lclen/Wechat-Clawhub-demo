@@ -714,6 +714,8 @@ export function App() {
           if (nodeResp) {
             const allNodes: NodeRecord[] = nodeResp.nodes || nodeResp || [];
             const matched = allNodes.find((n: NodeRecord) => n.node_id === nodeId);
+            // Update nodes state so workerGatewayConnection.remoteNode gets populated
+            syncNodeState({ nodes: allNodes, inventory: [], summary: { paired_total: 0, online_total: allNodes.length, offline_total: 0 } }, setNodes, setNodeInventory, setNodeInventorySummary, setSelectedNodeId);
             setWorkerGatewayProbeTask({
               task_id: "auto-poll",
               kind: "gateway_probe",
