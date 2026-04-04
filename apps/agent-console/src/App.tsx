@@ -501,6 +501,8 @@ export function App() {
 
   useEffect(() => {
     if (!isWorkerRole(resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []))) return;
+    // 节点角色下 live poll 已自动更新探测状态，不需要单独触发
+    if (launcherStatus?.profile.enable_gateway === false) return;
     const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
     const nodeId = workerSetup.node_id.trim();
     if (!gatewayBaseUrl || !nodeId || busy === "setup-gateway-probe") return;
@@ -510,7 +512,7 @@ export function App() {
       void probeWorkerGateway({ silent: true, reason: "auto" });
     }, 400);
     return () => window.clearTimeout(timer);
-  }, [busy, setupProfile?.completed_roles, setupRole, workerSetup.gateway_base_url, workerSetup.node_id]);
+  }, [busy, launcherStatus?.profile.enable_gateway, setupProfile?.completed_roles, setupRole, workerSetup.gateway_base_url, workerSetup.node_id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -795,7 +797,9 @@ export function App() {
     }
     let cancelled = false;
     setMessagesLoaded(false);
-    const remoteGateway = launcherStatus?.profile.enable_gateway === false ? workerSetup.gateway_base_url.trim() : null;
+    // 等待 launcherStatus 加载完成再决定用哪个 gateway
+    if (!launcherStatus) { setMessagesLoaded(true); return; }
+    const remoteGateway = launcherStatus.profile.enable_gateway === false ? workerSetup.gateway_base_url.trim() : null;
     const fetchUrl = remoteGateway
       ? `${remoteGateway}/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`
       : `/api/sessions/${encodeURIComponent(selectedSessionId)}/messages`;
