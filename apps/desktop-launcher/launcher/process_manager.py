@@ -50,7 +50,13 @@ class ProcessManager:
                 detail_prefix="127.0.0.1",
                 log_path=Path(layout.log_dir) / "node-cache-redis.log",
             )
-            self._refresh_gateway_port_status(profile, layout)
+            if profile.enable_gateway:
+                self._refresh_gateway_port_status(profile, layout)
+            else:
+                # Worker role: gateway should not run, reset to stopped
+                self._statuses["gateway"] = self._statuses["gateway"].model_copy(
+                    update={"state": ComponentState.STOPPED, "pid": None, "detail": "节点角色，不启动网关", "error_code": ""}
+                )
             self._statuses["local-node"] = self.local_node_service_status(profile, layout)
         return list(self._statuses.values())
 
