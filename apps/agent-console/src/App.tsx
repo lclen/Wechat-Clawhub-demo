@@ -628,11 +628,19 @@ export function App() {
               await new Promise(r => window.setTimeout(r, 1500));
             } catch { /* 启动失败时继续，让后续请求自然失败 */ }
           }
-          // 节点角色 → 不请求 gateway，直接完成初始化
+          // 节点角色 → 不请求 gateway，用 local setup profile 初始化
           if (!p.enable_gateway) {
             setGatewayEnabled(false);
-            const draft = loadSetupDraft();
-            setSetupMode(draft.role ? "status" : "role");
+            try {
+              const localProfile = await requestJson<SetupProfileResponse>("/local/setup/profile");
+              if (!cancelled) {
+                setSetupProfile(localProfile);
+                const initialWorkspace = resolveInitialWorkspace(localProfile);
+                setWorkspace(initialWorkspace);
+                persistWorkspace(initialWorkspace);
+                setSetupMode(localProfile.setup_completed ? "status" : "role");
+              }
+            } catch { /* 忽略 */ }
             setNotice("当前为节点角色，网关运行在远端机器上。");
             return;
           }
@@ -1260,9 +1268,10 @@ export function App() {
         updated_at: new Date().toISOString(),
       });
       const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, node_id: nodeId || undefined, timeout_ms: 3000 };
+      const probeUrl = gatewayEnabled === false ? "/local/gateway/probe" : "/api/setup/gateway/probe";
       const result = await withBusy(
         "setup-gateway-probe",
-        () => requestJson<SetupTaskEnvelope>("/api/setup/gateway/probe", { method: "POST", body: JSON.stringify(payload) }),
+        () => requestJson<SetupTaskEnvelope>(probeUrl, { method: "POST", body: JSON.stringify(payload) }),
       );
       setSetupTask(result.task);
       setWorkerGatewayProbeTask(result.task);

@@ -65,6 +65,23 @@ def create_app() -> FastAPI:
             components=app.state.manager.statuses(profile, layout),
         )
 
+    @app.get("/local/setup/profile")
+    async def local_setup_profile() -> JSONResponse:
+        """Minimal setup profile for worker-role machines without a local gateway."""
+        p = app.state.profile
+        role = "worker_node" if not p.enable_gateway else None
+        completed_roles = [role] if role else []
+        return JSONResponse({
+            "recommended_workspace": "connection" if completed_roles else "quick_setup",
+            "setup_completed": bool(completed_roles),
+            "completed_roles": completed_roles,
+            "available_roles": ["gateway_host", "gateway_host_console", "worker_node", "console_only"],
+            "preferred_gateway_base_url": "",
+            "gateway": {"redis_url": "", "default_agent_id": "default-agent", "dify_base_url": "", "dify_api_key": "", "builtin_model_base_url": "", "builtin_model_api_key": "", "builtin_model_name": "", "wechat_base_url": "", "wechat_token": "", "dispatch_mode_enabled": False},
+            "console": {"gateway_base_url": ""},
+            "last_task": None,
+        })
+
     @app.post("/local/bootstrap/install-redis", response_model=LauncherStatusResponse)
     async def install_redis(payload: InstallRedisRequest) -> LauncherStatusResponse:
         profile = app.state.profile
@@ -189,6 +206,77 @@ def create_app() -> FastAPI:
         if log_path and log_path.exists():
             content = log_path.read_text(encoding="utf-8", errors="ignore")[-12000:]
         return LogResponse(component=component, log_path=str(log_path) if log_path else None, content=content)
+
+    @app.post("/local/gateway/probe")
+    async def probe_gateway_direct(request: Request) -> JSONResponse:
+        """Direct gateway probe for worker-role machines that have no local gateway."""
+        body = await request.json()
+        gateway_base_url = str(body.get("gateway_base_url", "")).strip().rstrip("/")
+        node_id = str(body.get("node_id", "")).strip()
+        timeout_ms = int(body.get("timeout_ms") or 3000)
+        if not gateway_base_url:
+            raise HTTPException(status_code=422, detail="gateway_base_url is required")
+        logs: list[str] = []
+        metadata: dict[str, str] = {"gateway_base_url": gateway_base_url, "timeout_ms": str(timeout_ms)}
+        if node_id:
+            metadata["node_id"] = node_id
+        logs.append(f"开始检测目标网关：{gateway_base_url}")
+        logs.append(f"请求地址：{gateway_base_url}/api/system/status")
+        logs.append(f"超时时间：{timeout_ms} ms")
+        try:
+            async with httpx.AsyncClient(timeout=timeout_ms / 1000, trust_env=False) as client:
+                response = await client.get(f"{gateway_base_url}/api/system/status")
+        except httpx.RequestError as exc:
+            summary = f"无法连接目标网关：{exc}"
+            logs.append(summary)
+            return JSONResponse({"task": {"status": "failed", "summary": summary, "logs": logs, "metadata": metadata, "kind": "gateway_probe", "title": "检测节点目标网关"}})
+        metadata["http_status"] = str(response.status_code)
+        logs.append(f"目标网关返回 HTTP {response.status_code}")
+        if response.status_code >= 400:
+            summary = f"目标网关返回异常状态：HTTP {response.status_code}"
+            return JSONResponse({"task": {"status": "failed", "summary": summary, "logs": logs, "metadata": metadata, "kind": "gateway_probe", "title": "检测节点目标网关"}})
+        try:
+            payload = response.json()
+        except ValueError:
+            summary = "目标地址返回成功，但响应不是合法 JSON。"
+            return JSONResponse({"task": {"status": "failed", "summary": summary, "logs": logs, "metadata": metadata, "kind": "gateway_probe", "title": "检测节点目标网关"}})
+        app_name = str(payload.get("app_name") or "")
+        preferred_lan_ip = str(payload.get("preferred_lan_ip") or "")
+        preferred_gateway_url = str(payload.get("preferred_gateway_base_url") or "")
+        active_nodes = str(payload.get("active_nodes") or "0")
+        metadata.update({"app_name": app_name, "preferred_lan_ip": preferred_lan_ip, "preferred_gateway_base_url": preferred_gateway_url, "active_nodes": active_nodes})
+        if app_name: logs.append(f"应用标识：{app_name}")
+        if preferred_lan_ip: logs.append(f"网关上报的局域网 IP：{preferred_lan_ip}")
+        if preferred_gateway_url: logs.append(f"网关上报的首选访问地址：{preferred_gateway_url}")
+        logs.append(f"当前在线节点数：{active_nodes}")
+        if node_id:
+            logs.append(f"开始检查节点注册状态：{node_id}")
+            try:
+                async with httpx.AsyncClient(timeout=timeout_ms / 1000, trust_env=False) as client:
+                    nodes_resp = await client.get(f"{gateway_base_url}/api/nodes")
+            except httpx.RequestError as exc:
+                summary = f"目标网关可达，但无法查询节点清单：{exc}"
+                logs.append(summary)
+                return JSONResponse({"task": {"status": "failed", "summary": summary, "logs": logs, "metadata": metadata, "kind": "gateway_probe", "title": "检测节点目标网关"}})
+            metadata["nodes_http_status"] = str(nodes_resp.status_code)
+            logs.append(f"节点清单返回 HTTP {nodes_resp.status_code}")
+            try:
+                nodes_payload = nodes_resp.json()
+                all_nodes = nodes_payload.get("nodes") or nodes_payload if isinstance(nodes_payload, list) else []
+                matched = next((n for n in all_nodes if n.get("node_id") == node_id), None)
+                metadata["node_registered"] = "true" if matched else "false"
+                if matched:
+                    logs.append(f"节点已连接：{node_id}")
+                    summary = f"目标网关可达，节点已连接：{node_id}"
+                else:
+                    logs.append(f"目标网关可达，但节点未注册/未在线：{node_id}")
+                    summary = f"目标网关可达，但节点未注册/未在线：{node_id}"
+            except ValueError:
+                summary = f"目标网关可达，但节点清单响应不是合法 JSON。"
+            return JSONResponse({"task": {"status": "succeeded", "summary": summary, "logs": logs, "metadata": metadata, "kind": "gateway_probe", "title": "检测节点目标网关"}})
+        summary = f"目标网关可达：{gateway_base_url}"
+        logs.append(summary)
+        return JSONResponse({"task": {"status": "succeeded", "summary": summary, "logs": logs, "metadata": metadata, "kind": "gateway_probe", "title": "检测节点目标网关"}})
 
     @app.get("/local/node/status", response_model=LocalNodeStatusResponse)
     async def local_node_status() -> LocalNodeStatusResponse:
