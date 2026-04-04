@@ -47,24 +47,8 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def auto_restore() -> None:
-        """On launcher restart, automatically bring back Redis + gateway if auto_start is enabled."""
-        p = app.state.profile
-        if not p.auto_start or not p.bootstrap_completed or not p.workdir:
-            return
-        layout = build_layout(p)
-        host_redis = redis_state(Path(p.workdir), "host-redis", p.redis_source)
-        if not host_redis.installed:
-            return
-        try:
-            if p.enable_gateway:
-                app.state.manager.start_host_redis(p, layout, Path(host_redis.executable_path))
-                app.state.manager.start_gateway(p, layout)
-            if p.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
-                node_cache = redis_state(Path(p.workdir), "node-cache-redis", p.node_cache_redis_source)
-                if node_cache.installed:
-                    app.state.manager.start_node_cache_redis(p, layout, Path(node_cache.executable_path))
-        except Exception:
-            pass  # best-effort, user can always click 一键启动
+        """Intentionally disabled: components are started on-demand when user selects a role."""
+        pass
 
     @app.get("/local/bootstrap/status", response_model=LauncherStatusResponse)
     async def bootstrap_status() -> LauncherStatusResponse:

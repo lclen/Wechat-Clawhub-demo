@@ -57,7 +57,7 @@ type LauncherState = "stopped" | "starting" | "running" | "degraded" | "failed";
 type LauncherRedisSource = "github" | "mirror";
 type LauncherNodeCachePolicy = "disabled" | "optional" | "enabled";
 type LauncherComponentStatus = { name: string; state: LauncherState; pid: number | null; detail: string; error_code: string; started_at: string | null; log_path: string | null };
-type LauncherProfile = { workdir: string; gateway_port: number; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
+type LauncherProfile = { workdir: string; gateway_port: number; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
 type LauncherWorkdirLayout = { root: string; host_redis_dir: string; transcript_dir: string; identity_dir: string; memory_dir: string; log_dir: string; runtime_dir: string; config_dir: string; node_cache_dir: string };
 type LauncherRedisInstallState = { installed: boolean; source: LauncherRedisSource; archive_path: string; executable_path: string; version: string; detail: string };
 type LauncherEnvironmentCheck = { name: string; ready: boolean; detail: string };
@@ -596,6 +596,45 @@ export function App() {
     let retryTimer = 0;
     const init = async () => {
       try {
+        // 先检查 launcher 状态，按角色决定是否需要启动 gateway
+        let launcherSt: LauncherStatusResponse | null = null;
+        try {
+          launcherSt = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
+        } catch { /* launcher 不可用时跳过 */ }
+
+        if (launcherSt && !cancelled) {
+          setLauncherStatus(launcherSt);
+          setLauncherAvailable(true);
+          const p = launcherSt.profile;
+          const gatewayComp = launcherSt.components.find(c => c.name === "gateway");
+          const gatewayDown = !gatewayComp || gatewayComp.state === "stopped" || gatewayComp.state === "failed";
+          // 网关角色且 gateway 未运行 → 自动拉起
+          if (p.enable_gateway && gatewayDown && p.bootstrap_completed && p.workdir) {
+            try {
+              await requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
+                method: "POST",
+                body: JSON.stringify({
+                  enable_local_node: p.enable_local_node,
+                  enable_gateway: true,
+                  enable_node_cache_redis: p.node_cache_policy !== "disabled",
+                  dispatch_mode_enabled: p.dispatch_mode_enabled,
+                  redis_source: p.redis_source,
+                  node_cache_redis_source: p.node_cache_redis_source,
+                }),
+              });
+              // 等 gateway 启动
+              await new Promise(r => window.setTimeout(r, 1500));
+            } catch { /* 启动失败时继续，让后续请求自然失败 */ }
+          }
+          // 节点角色 → 不请求 gateway，直接完成初始化
+          if (!p.enable_gateway) {
+            const draft = loadSetupDraft();
+            setSetupMode(draft.role ? "status" : "role");
+            setNotice("当前为节点角色，网关运行在远端机器上。");
+            return;
+          }
+        }
+
         const [system, model, wechat, nodeList, sessionList, profile] = await Promise.all([
           requestJson<SystemStatus>("/api/system/status"),
           requestJson<ModelStatus>("/api/models/builtin/status"),
