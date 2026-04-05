@@ -9,7 +9,14 @@ class RedisStore:
     """Thin async Redis wrapper used by gateway services."""
 
     def __init__(self, redis_url: str) -> None:
-        self._client = Redis.from_url(redis_url, decode_responses=True)
+        self._client = Redis.from_url(
+            redis_url,
+            decode_responses=True,
+            socket_connect_timeout=5,
+            socket_timeout=5,
+            socket_keepalive=True,
+            health_check_interval=30,
+        )
 
     @property
     def client(self) -> Redis:

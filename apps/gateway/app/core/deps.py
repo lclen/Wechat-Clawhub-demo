@@ -65,11 +65,26 @@ def get_setup_service(request: Request) -> SetupService:
 
 
 async def ensure_redis_available(store: RedisStore) -> None:
+    import asyncio
+    import logging
+    logger = logging.getLogger(__name__)
     try:
-        if not await store.ping():
+        logger.info("Checking Redis availability...")
+        # Add explicit timeout to prevent hanging
+        ping_result = await asyncio.wait_for(store.ping(), timeout=3.0)
+        logger.info(f"Redis ping result: {ping_result}")
+        if not ping_result:
+            logger.error("Redis ping returned false")
             raise RuntimeError("Redis ping returned false")
-    except Exception as exc:
+    except asyncio.TimeoutError as exc:
+        logger.error("Redis ping timeout after 3 seconds")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Redis is unavailable",
+            detail="Redis connection timeout",
+        ) from exc
+    except Exception as exc:
+        logger.error(f"Redis availability check failed: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Redis is unavailable: {exc}",
         ) from exc

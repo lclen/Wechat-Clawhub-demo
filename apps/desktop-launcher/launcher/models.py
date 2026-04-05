@@ -77,6 +77,7 @@ class LauncherEnvironmentStatus(BaseModel):
 class LauncherProfile(BaseModel):
     workdir: str = ""
     gateway_port: int = 8300
+    gateway_base_url: str = ""  # Remote gateway URL for worker-only nodes
     launcher_port: int = 8765
     host_redis_port: int = 6379
     node_cache_redis_port: int = 6380
