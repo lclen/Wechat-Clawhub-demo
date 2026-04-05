@@ -8,6 +8,7 @@
 2. **会话概览流** - 实时推送会话列表状态变更
 3. **节点事件流** - 节点与网关之间的双向事件通信
 4. **节点诊断流** - 节点诊断时间线的实时推送
+5. **网关摘要流** - 网关摘要状态（system/wechat/nodes）的统一推送
 
 这些功能统一采用 WebSocket 协议，替代传统的 HTTP 轮询方式，遵循"禁止新增轮询接口"的架构原则。
 
@@ -60,6 +61,20 @@
    - 路径：`/api/nodes/{node_id}/diagnostics/ws`
    - 连接建立时发送一次诊断快照
    - 后续在网关收到新的节点诊断事件时实时推送
+
+#### 4. 网关摘要流
+
+1. **GatewaySummaryStreamBroker** (`apps/gateway/app/services/gateway_summary_stream.py`)
+   - 统一网关摘要流的发布/订阅中心
+   - 管理所有摘要流订阅者
+
+2. **GatewaySummaryService** (`apps/gateway/app/services/gateway_summary_service.py`)
+   - 聚合 `system + wechat + nodes`
+   - 对外输出统一的 `GatewaySummaryResponse`
+
+3. **网关摘要 WebSocket 端点** (`apps/gateway/app/api/routes/system.py`)
+   - 路径：`/api/system/summary/ws`
+   - 用于 quick setup / connection / 顶部状态区统一读取运行摘要
 
 #### 3. 前端 WebSocket 客户端
 
@@ -124,6 +139,16 @@ SetupService.ingest_node_diagnostics_event()
 NodeDiagnosticsStreamBroker.publish()
         ↓
 连接页 WebSocket 订阅者
+```
+
+#### 网关摘要流
+
+```
+GatewaySummaryService.build_summary()
+        ↓
+GatewaySummaryStreamBroker.publish()
+        ↓
+前端摘要订阅者（quick setup / connection / 顶部状态）
 ```
 
 ## 协议规范
@@ -637,6 +662,55 @@ ws://<gateway-host>:<gateway-port>/api/nodes/<node_id>/diagnostics/ws
 - 后续节点经 task stream 上报新的 `diagnostics` 事件时，网关会把它并入现有诊断记录
 - 连接页优先使用这条 WebSocket；失败时才回退到单次 HTTP 读取
 
+---
+
+## 网关摘要流协议
+
+### 连接建立
+
+前端连接到：
+```
+ws://<gateway-host>:<gateway-port>/api/system/summary/ws
+```
+
+### 消息格式
+
+#### 统一摘要（gateway_summary）
+
+```json
+{
+  "type": "gateway_summary",
+  "summary": {
+    "system": {
+      "redis_ok": true,
+      "active_nodes": 2
+    },
+    "wechat": {
+      "configured": true,
+      "running": true,
+      "received_messages": 12,
+      "sent_messages": 9
+    },
+    "nodes": {
+      "nodes": [...],
+      "inventory": [...],
+      "summary": {
+        "paired_total": 2,
+        "online_total": 2,
+        "offline_total": 0
+      }
+    }
+  }
+}
+```
+
+### 行为说明
+
+- 建立连接时立即发送一次摘要快照
+- 网关后台会按固定节拍重算并推送摘要，用于替代前端反复请求 `/api/wechat/onboard/status` 和 `/api/nodes`
+- 微信 connect/disconnect、节点 register/heartbeat 等关键事件会额外触发一次即时 publish
+- 前端优先使用这条流；只有在流不可用时才回退到 HTTP 轮询
+
 ### 降级机制
 
 节点 Worker 实现了优雅的降级策略：
@@ -896,6 +970,8 @@ const connectOverviewSocket = () => {
 - `services/claw-node/claw_node/worker.py` - 节点 Worker 实现
 - `services/claw-node/claw_node/gateway_client.py` - 网关客户端
 - `apps/gateway/app/services/node_diagnostics_stream.py` - 节点诊断流 broker
+- `apps/gateway/app/services/gateway_summary_stream.py` - 网关摘要流 broker
+- `apps/gateway/app/services/gateway_summary_service.py` - 网关摘要聚合服务
 - `services/claw-node/claw_node/diagnostics.py` - 节点本地诊断与事件源
 
 ### 文档

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.core.config import get_settings
@@ -48,25 +48,31 @@ async def get_wechat_status(
 
 @router.post("/connect", response_model=WeChatStatusResponse)
 async def connect_wechat(
+    request: Request,
     payload: WeChatConnectRequest,
     store: RedisStore = Depends(get_redis_store),
     wechat_bot: WeChatBotService = Depends(get_wechat_bot),
 ) -> WeChatStatusResponse:
     await ensure_redis_available(store)
     try:
-        return await wechat_bot.connect(
+        status = await wechat_bot.connect(
             token=payload.token,
             base_url=payload.base_url,
             enable_polling=payload.enable_polling,
         )
+        await request.app.state.gateway_summary_service.publish_if_needed()
+        return status
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"WeChat connect failed: {exc}") from exc
 
 
 @router.post("/disconnect", response_model=WeChatStatusResponse)
 async def disconnect_wechat(
+    request: Request,
     store: RedisStore = Depends(get_redis_store),
     wechat_bot: WeChatBotService = Depends(get_wechat_bot),
 ) -> WeChatStatusResponse:
     await ensure_redis_available(store)
-    return await wechat_bot.disconnect()
+    status = await wechat_bot.disconnect()
+    await request.app.state.gateway_summary_service.publish_if_needed()
+    return status

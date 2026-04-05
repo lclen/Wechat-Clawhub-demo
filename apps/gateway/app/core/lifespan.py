@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -9,6 +11,8 @@ from app.core.config import get_settings
 from app.dispatch.queue import DispatchQueue
 from app.dispatch.scheduler import DispatchScheduler
 from app.services.node_auth import NodeAuthService
+from app.services.gateway_summary_service import GatewaySummaryService
+from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.node_stream import NodeStreamBroker
 from app.services.outgoing_dispatcher import OutgoingDispatcher
@@ -35,6 +39,7 @@ async def lifespan(app: FastAPI):
     session_stream = SessionStreamBroker()
     node_stream = NodeStreamBroker()
     node_diagnostics_stream = NodeDiagnosticsStreamBroker()
+    gateway_summary_stream = GatewaySummaryStreamBroker()
     session_manager = SessionManager(redis_store, transcript_writer, user_data_store, settings, session_stream=session_stream)
     scheduler = DispatchScheduler(node_registry, settings)
     wechat_bot = WeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
@@ -51,6 +56,15 @@ async def lifespan(app: FastAPI):
     wechat_bot.attach_dispatch_queue(dispatch_queue)
     setup_service = SetupService(settings=settings, wechat_bot=wechat_bot, diagnostics_stream=node_diagnostics_stream)
     node_auth = NodeAuthService(settings, setup_service=setup_service)
+    gateway_summary_service = GatewaySummaryService(
+        settings=settings,
+        store=redis_store,
+        registry=node_registry,
+        wechat_bot=wechat_bot,
+        setup_service=setup_service,
+        stream=gateway_summary_stream,
+    )
+    summary_task = asyncio.create_task(_gateway_summary_loop(gateway_summary_service), name="gateway-summary-loop")
 
     app.state.settings = settings
     app.state.redis_store = redis_store
@@ -60,6 +74,8 @@ async def lifespan(app: FastAPI):
     app.state.session_stream = session_stream
     app.state.node_stream = node_stream
     app.state.node_diagnostics_stream = node_diagnostics_stream
+    app.state.gateway_summary_stream = gateway_summary_stream
+    app.state.gateway_summary_service = gateway_summary_service
     app.state.dispatch_queue = dispatch_queue
     app.state.node_auth = node_auth
     app.state.wechat_bot = wechat_bot
@@ -69,5 +85,17 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        summary_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await summary_task
         await wechat_bot.shutdown()
         await redis_store.close()
+
+
+async def _gateway_summary_loop(service: GatewaySummaryService) -> None:
+    while True:
+        try:
+            await service.publish_if_needed()
+        except Exception:
+            pass
+        await asyncio.sleep(2.0)

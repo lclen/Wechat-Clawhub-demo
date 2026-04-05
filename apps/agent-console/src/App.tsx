@@ -35,6 +35,7 @@ type SessionsResponse = { sessions: SessionRecord[] };
 type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean };
 type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
 type SessionOverviewEnvelope = { type: "sessions_snapshot"; sessions: SessionRecord[] };
+type GatewaySummaryEnvelope = { type: "gateway_summary"; summary: { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse } };
 type SessionMessageCacheEntry = {
   session: SessionRecord | null;
   messages: MessageRecord[];
@@ -612,6 +613,7 @@ export function App() {
   const [sessionsLoaded, setSessionsLoaded] = useState(initialSummaryState.sessions.length > 0);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messageCursor, setMessageCursor] = useState<number>(0);
+  const [gatewaySummaryStreamActive, setGatewaySummaryStreamActive] = useState(false);
   const [qr, setQr] = useState<QrStart | null>(null);
   const [qrImageSrc, setQrImageSrc] = useState("");
   const [pollState, setPollState] = useState<PollResponse | null>(null);
@@ -1049,10 +1051,115 @@ export function App() {
     return url.toString();
   }
 
+  function buildGatewaySummaryWebSocketUrl(remoteGateway?: string | null) {
+    const baseUrl = remoteGateway?.trim() || window.location.origin;
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/api/system/summary/ws";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (usesRemoteGateway && !remoteGateway) {
+      setGatewaySummaryStreamActive(false);
+      return;
+    }
+    if (!usesRemoteGateway && localGatewayManaged === null) {
+      setGatewaySummaryStreamActive(false);
+      return;
+    }
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        socket = new WebSocket(buildGatewaySummaryWebSocketUrl(remoteGateway));
+      } catch {
+        setGatewaySummaryStreamActive(false);
+        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        return;
+      }
+
+      socket.onmessage = (event) => {
+        if (cancelled) return;
+        let payload: GatewaySummaryEnvelope;
+        try {
+          payload = JSON.parse(event.data) as GatewaySummaryEnvelope;
+        } catch {
+          return;
+        }
+        if (payload.type !== "gateway_summary") return;
+        setGatewaySummaryStreamActive(true);
+        setSystemStatus(payload.summary.system);
+        if (payload.summary.wechat.base_url) setWechatBaseUrl(payload.summary.wechat.base_url);
+        setWechatStatus(payload.summary.wechat);
+        syncNodeStateView(payload.summary.nodes);
+        if (currentRoleIsWorker) {
+          const nodeId = sessionRemoteNodeId;
+          const matched = payload.summary.nodes.nodes.find((item) => item.node_id === nodeId);
+          if (nodeId) {
+            setWorkerGatewayProbeTask({
+              task_id: "auto-stream",
+              kind: "gateway_probe",
+              status: "succeeded",
+              title: "检测节点目标网关",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              summary: matched ? `目标网关可达，节点已连接：${nodeId}` : `目标网关可达，但节点未注册/未在线：${nodeId}`,
+              logs: [],
+              metadata: {
+                gateway_base_url: remoteGateway,
+                node_id: nodeId,
+                node_registered: matched ? "true" : "false",
+                node_connection_state: matched?.status || "",
+              },
+            });
+          }
+        }
+      };
+
+      socket.onerror = () => {
+        setGatewaySummaryStreamActive(false);
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        setGatewaySummaryStreamActive(false);
+        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+      };
+    };
+
+    connect();
+    return () => {
+      cancelled = true;
+      setGatewaySummaryStreamActive(false);
+      window.clearTimeout(reconnectTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore teardown close errors
+      }
+    };
+  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId]);
+
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
+      if (gatewaySummaryStreamActive) {
+        return;
+      }
       if (workspace === "sessions") {
         return;
       }
@@ -1141,7 +1248,7 @@ export function App() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [currentRoleIsConsole, currentRoleIsWorker, launcherStatus, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, workspace]);
+  }, [currentRoleIsConsole, currentRoleIsWorker, gatewaySummaryStreamActive, launcherStatus, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, workspace]);
 
   useEffect(() => {
     if (workspace !== "sessions") return;

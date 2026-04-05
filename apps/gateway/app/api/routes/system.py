@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
 from app.core.config import Settings
 from app.core.deps import (
@@ -14,6 +14,8 @@ from app.core.deps import (
 )
 from app.models.node import SystemStatusResponse
 from app.access.wechat_bot import WeChatBotService
+from app.services.gateway_summary_service import GatewaySummaryService
+from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
 from app.services.node_registry import NodeRegistry
 from app.services.redis_store import RedisStore
 from app.utils.network import DEFAULT_GATEWAY_HOST, detect_lan_ip, preferred_gateway_base_url
@@ -55,3 +57,26 @@ async def get_system_status(
         preferred_gateway_base_url=settings.console_gateway_base_url.strip() or preferred_gateway_base_url(),
         timestamp=datetime.now(UTC),
     )
+
+
+@router.websocket("/summary/ws")
+async def stream_gateway_summary(
+    websocket: WebSocket,
+) -> None:
+    await websocket.accept()
+    try:
+        summary_service: GatewaySummaryService = websocket.app.state.gateway_summary_service
+        stream: GatewaySummaryStreamBroker = websocket.app.state.gateway_summary_stream
+    except AttributeError:
+        await websocket.close(code=4500, reason="server_not_ready")
+        return
+
+    try:
+        await stream.publish_snapshot(websocket=websocket, summary=await summary_service.build_summary())
+        await stream.subscribe(websocket)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await stream.unsubscribe(websocket)

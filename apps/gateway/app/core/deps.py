@@ -5,6 +5,8 @@ from fastapi import HTTPException, Request, status
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueue
 from app.access.wechat_bot import WeChatBotService
+from app.services.gateway_summary_service import GatewaySummaryService
+from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
 from app.services.node_registry import NodeRegistry
 from app.services.node_auth import NodeAuthService
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
@@ -47,6 +49,14 @@ def get_node_stream(request: Request) -> NodeStreamBroker:
 
 def get_node_diagnostics_stream(request: Request) -> NodeDiagnosticsStreamBroker:
     return request.app.state.node_diagnostics_stream
+
+
+def get_gateway_summary_stream(request: Request) -> GatewaySummaryStreamBroker:
+    return request.app.state.gateway_summary_stream
+
+
+def get_gateway_summary_service(request: Request) -> GatewaySummaryService:
+    return request.app.state.gateway_summary_service
 
 
 def get_node_auth(request: Request) -> NodeAuthService:

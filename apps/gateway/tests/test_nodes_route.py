@@ -3,9 +3,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import unittest
 
-from app.api.routes.nodes import build_node_inventory
 from app.models.node import NodeStatus
 from app.models.node import NodeRecord
+from app.services.node_inventory import build_node_inventory
 
 
 def build_node(
