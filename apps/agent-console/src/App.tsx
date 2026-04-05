@@ -828,7 +828,7 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [launcherAvailable, workspace]);
+  }, [launcherAvailable, workspace, localNodeModelDirty]);
 
   useEffect(() => {
     let cancelled = false;
