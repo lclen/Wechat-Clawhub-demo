@@ -70,14 +70,14 @@ type LauncherRedisSource = "github" | "mirror";
 type LauncherNodeCachePolicy = "disabled" | "optional" | "enabled";
 type LauncherMachineRole = "gateway" | "node" | "console" | "gateway_console";
 type LauncherComponentStatus = { name: string; state: LauncherState; pid: number | null; detail: string; error_code: string; started_at: string | null; log_path: string | null };
-type LauncherProfile = { workdir: string; gateway_port: number; gateway_base_url?: string; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
+type LauncherProfile = { workdir: string; gateway_port: number; gateway_base_url?: string; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean; local_node_id: string };
 type LauncherRuntimeModel = { machine_role: LauncherMachineRole; gateway_should_run: boolean; host_redis_should_run: boolean; local_node_should_run: boolean; node_cache_should_run: boolean; runtime_authority: string };
 type LauncherWorkdirLayout = { root: string; host_redis_dir: string; transcript_dir: string; identity_dir: string; memory_dir: string; log_dir: string; runtime_dir: string; config_dir: string; node_cache_dir: string };
 type LauncherRedisInstallState = { installed: boolean; source: LauncherRedisSource; archive_path: string; executable_path: string; version: string; detail: string };
 type LauncherEnvironmentCheck = { name: string; ready: boolean; detail: string };
 type LauncherEnvironmentStatus = { ready: boolean; python_version: string; checks: LauncherEnvironmentCheck[] };
 type LauncherStatusResponse = { profile: LauncherProfile; runtime_model: LauncherRuntimeModel; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[]; local_lan_ip: string };
-type LauncherStartRequest = { machine_role?: LauncherMachineRole; enable_local_node?: boolean; enable_gateway?: boolean; enable_node_cache_redis: boolean; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource };
+type LauncherStartRequest = { machine_role?: LauncherMachineRole; enable_local_node?: boolean; enable_gateway?: boolean; enable_node_cache_redis: boolean; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; local_node_id?: string };
 type LauncherLogResponse = { component: string; log_path: string | null; content: string };
 type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_model: string; openai_enable_thinking: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key_configured: boolean };
 type LocalNodeModelConfigRequest = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; dify_base_url: string; dify_api_key: string; restart_service: boolean };
@@ -362,9 +362,19 @@ function launcherManagedComponentsLabel(launcherStatus: LauncherStatusResponse |
   const parts: string[] = [];
   if (runtime.host_redis_should_run) parts.push("host-redis");
   if (runtime.gateway_should_run) parts.push("gateway");
-  if (runtime.local_node_should_run) parts.push("local-node");
+  if (runtime.local_node_should_run) {
+    parts.push(runtime.machine_role === "node" ? `worker-node(${launcherStatus?.profile.local_node_id || DEFAULT_WORKER_SETUP.node_id})` : "local-node");
+  }
   if (runtime.node_cache_should_run) parts.push("node-cache-redis");
   return parts.length ? parts.join(" / ") : "当前角色不托管本地后端组件";
+}
+
+function launcherLocalNodePolicyLabel(launcherStatus: LauncherStatusResponse | null) {
+  if (!launcherShouldRunLocalNode(launcherStatus)) return "当前角色不会托管任何本机节点服务";
+  if (launcherMachineRoleValue(launcherStatus) === "node") {
+    return `当前角色会托管工作节点 ${launcherStatus?.profile.local_node_id || DEFAULT_WORKER_SETUP.node_id}`;
+  }
+  return "当前角色会托管网关内置 local-node";
 }
 
 function summarizeWechatRuntime(launcherStatus: LauncherStatusResponse | null, wechatStatus: WeChatStatus | null, gatewaySetup: GatewaySetupConfig) {
@@ -534,18 +544,30 @@ function launcherRoleUsesLocalNode(machineRole: LauncherMachineRole) {
 function buildLauncherStartPayload(
   launcherStatus: LauncherStatusResponse | null,
   machineRole: LauncherMachineRole,
-  options?: { dispatchModeEnabled?: boolean; enableNodeCacheRedis?: boolean },
+  options?: { dispatchModeEnabled?: boolean; enableNodeCacheRedis?: boolean; localNodeId?: string },
 ): LauncherStartRequest {
   const dispatchModeEnabled = options?.dispatchModeEnabled ?? (launcherStatus?.profile.dispatch_mode_enabled ?? false);
   const enableNodeCacheRedis = options?.enableNodeCacheRedis
     ?? ((launcherStatus?.profile.node_cache_policy !== "disabled") && launcherRoleUsesLocalNode(machineRole) && !dispatchModeEnabled);
+  const localNodeId = machineRole === "node"
+    ? (options?.localNodeId?.trim() || launcherStatus?.profile.local_node_id?.trim() || DEFAULT_WORKER_SETUP.node_id)
+    : "local-node";
   return {
     machine_role: machineRole,
     enable_node_cache_redis: enableNodeCacheRedis,
     dispatch_mode_enabled: dispatchModeEnabled,
     redis_source: launcherStatus?.profile.redis_source || "mirror",
     node_cache_redis_source: launcherStatus?.profile.node_cache_redis_source || "mirror",
+    local_node_id: localNodeId,
   };
+}
+
+function resolveWorkerNodeId(currentValue: string, launcherProfile?: LauncherProfile | null) {
+  const trimmedCurrent = currentValue.trim();
+  if (trimmedCurrent && trimmedCurrent !== DEFAULT_WORKER_SETUP.node_id) return currentValue;
+  const launcherNodeId = launcherProfile?.local_node_id?.trim();
+  if (launcherNodeId && launcherNodeId !== "local-node") return launcherNodeId;
+  return currentValue;
 }
 function resolveWorkerGatewayBaseUrl(
   currentValue: string,
@@ -843,8 +865,14 @@ export function App() {
         if (cancelled) return;
 
         if (launcherSt) {
+          const launcherProfile = launcherSt.profile;
           setLauncherStatus(launcherSt);
           setLauncherAvailable(true);
+          setWorkerSetup((current) => ({
+            ...current,
+            node_id: resolveWorkerNodeId(current.node_id, launcherProfile),
+            gateway_base_url: launcherProfile.gateway_base_url?.trim() || current.gateway_base_url,
+          }));
           const runtimeRole = launcherMachineRoleValue(launcherSt);
           const gatewayShouldRun = launcherShouldRunGateway(launcherSt);
           // 无本地 gateway 的机器，不再继续请求本机 /api/*
@@ -891,6 +919,7 @@ export function App() {
         setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
         setWorkerSetup((current) => ({
           ...current,
+          node_id: resolveWorkerNodeId(current.node_id, launcherSt?.profile),
           gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
           dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
           dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
@@ -1700,6 +1729,7 @@ export function App() {
           method: "POST",
           body: JSON.stringify(buildLauncherStartPayload(launcherStatus, targetMachineRole, {
             dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
+            localNodeId: targetMachineRole === "node" ? workerSetup.node_id : undefined,
           })),
         }),
       );
@@ -1719,6 +1749,7 @@ export function App() {
           method: "POST",
           body: JSON.stringify(buildLauncherStartPayload(launcherStatus, targetMachineRole, {
             dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
+            localNodeId: targetMachineRole === "node" ? workerSetup.node_id : undefined,
           })),
         }),
       );
@@ -1758,6 +1789,7 @@ export function App() {
     setWorkerSetup((current) => ({
       ...DEFAULT_WORKER_SETUP,
       ...current,
+      node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
       gateway_base_url: setupProfile?.console.gateway_base_url || preferredGatewayBaseUrl,
       dify_base_url: setupProfile?.gateway.dify_base_url || DEFAULT_WORKER_SETUP.dify_base_url,
       dify_api_key: setupProfile?.gateway.dify_api_key || DEFAULT_WORKER_SETUP.dify_api_key,
@@ -1783,6 +1815,7 @@ export function App() {
     setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
     setWorkerSetup((current) => ({
       ...current,
+      node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
       gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
       dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
       dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
@@ -1808,6 +1841,7 @@ export function App() {
         setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
         setWorkerSetup((current) => ({
           ...current,
+          node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
           gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
           dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
           dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
@@ -1845,11 +1879,12 @@ export function App() {
       setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
       setGatewaySetup(profile.gateway);
       setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
-      setWorkerSetup((current) => ({
-        ...current,
-        gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
-        dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-        dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+        setWorkerSetup((current) => ({
+          ...current,
+          node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
+          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
+          dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
+          dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
         node_token: "",
       }));
       setSystemStatus(system);
@@ -2045,6 +2080,11 @@ export function App() {
       const status = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
       setLauncherStatus(status);
       setLauncherAvailable(true);
+      setWorkerSetup((current) => ({
+        ...current,
+        node_id: resolveWorkerNodeId(current.node_id, status.profile),
+        gateway_base_url: status.profile.gateway_base_url?.trim() || current.gateway_base_url,
+      }));
     } catch {
       setLauncherAvailable(false);
     }
@@ -2192,6 +2232,7 @@ export function App() {
           body: JSON.stringify(buildLauncherStartPayload(launcherStatus, defaultMachineRole, {
             dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
             enableNodeCacheRedis,
+            localNodeId: defaultMachineRole === "node" ? workerSetup.node_id : undefined,
           })),
         }),
       );
@@ -2983,7 +3024,7 @@ export function App() {
                           <InfoRow label="托管组件" value={launcherManagedComponentsLabel(launcherStatus)} multiline />
                           <InfoRow label="存储库目录" value={launcherStatus?.layout.root || "尚未选择"} multiline />
                           <InfoRow label="节点缓存策略" value={launcherStatus?.profile.node_cache_policy === "disabled" ? "关闭" : "已启用"} />
-                          <InfoRow label="本机节点策略" value={launcherShouldRunLocalNode(launcherStatus) ? "当前角色会托管 local-node" : "当前角色不会托管 local-node"} multiline />
+                          <InfoRow label="本机节点策略" value={launcherLocalNodePolicyLabel(launcherStatus)} multiline />
                           {!currentRoleIsWorker ? <InfoRow label="分发模式" value={gatewaySetup.dispatch_mode_enabled ? "已开启（主机只分发）" : "已关闭（本机节点可处理）"} /> : null}
                         </div>
 

@@ -10,7 +10,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from launcher.models import ComponentState, LauncherComponentStatus, LauncherNodeCachePolicy, LauncherProfile
+from launcher.models import (
+    ComponentState,
+    LauncherComponentStatus,
+    LauncherMachineRole,
+    LauncherNodeCachePolicy,
+    LauncherProfile,
+    derive_runtime_model,
+)
 from launcher.network import launcher_cors_origins, preferred_gateway_base_url
 from launcher.profile_store import LauncherWorkdirLayout
 from launcher.redis_runtime import write_redis_config
@@ -112,7 +119,7 @@ class ProcessManager:
         )
         if reused:
             return
-        node_id = "local-node"
+        node_id = self._resolved_local_node_id(profile)
         data_dir = Path(layout.node_cache_dir) / node_id / "redis"
         log_path = Path(layout.log_dir) / "node-cache-redis.log"
         config_path = Path(layout.config_dir) / "node-cache-redis.conf"
@@ -146,7 +153,7 @@ class ProcessManager:
             raise RuntimeError(detail)
         env = os.environ.copy()
         gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
-        local_node_id = profile.local_node_id.strip() or "local-node"
+        local_node_id = self._resolved_local_node_id(profile)
         env.update(
             {
                 "WCH_REDIS_URL": f"redis://127.0.0.1:{profile.host_redis_port}/0",
@@ -174,6 +181,16 @@ class ProcessManager:
         if current.state == ComponentState.RUNNING:
             self._statuses["local-node"] = current
             return
+        node_spec = self._resolved_local_node_spec(profile)
+        if node_spec["node_kind"] == "remote" and not self._read_existing_local_node_config(layout):
+            self._statuses["local-node"] = LauncherComponentStatus(
+                name="local-node",
+                state=ComponentState.FAILED,
+                detail="当前机器还没有完成工作节点安装，请先在快速配置中执行一次节点安装。",
+                error_code="node_not_installed",
+                log_path=str(self._local_node_wrapper_log_path(profile, layout)),
+            )
+            raise RuntimeError("当前机器还没有完成工作节点安装，请先在快速配置中执行一次节点安装。")
         self._install_or_restart_local_node(profile, layout)
 
     def restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
@@ -181,16 +198,15 @@ class ProcessManager:
         self._install_or_restart_local_node(profile, layout)
 
     def _install_or_restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
-        # 对于节点模式，使用配置的远程网关地址；对于网关模式，使用本机地址
-        if profile.gateway_base_url:
-            gateway_base_url = profile.gateway_base_url
-        else:
-            gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
-        local_node_id = profile.local_node_id.strip() or "local-node"
+        node_spec = self._resolved_local_node_spec(profile)
+        existing_config = self._read_existing_local_node_config(layout)
+        gateway_base_url = node_spec["gateway_base_url"] or existing_config.get("CLAW_GATEWAY_BASE_URL", "").strip()
+        local_node_id = node_spec["node_id"]
         install_dir = self._local_node_install_dir(layout)
         install_dir.mkdir(parents=True, exist_ok=True)
         log_path = Path(layout.log_dir) / "local-node-install.log"
         script_path = self._repo_root / "scripts" / "install-claw-node.ps1"
+        self._stop_conflicting_local_node_services(self._local_node_service_name(profile))
         command = [
             "powershell",
             "-NoProfile",
@@ -205,17 +221,21 @@ class ProcessManager:
             "-NodeToken",
             "",
             "-LocalDirectAuth",
-            "true",
+            "true" if node_spec["local_direct_auth"] else "false",
             "-NodeKind",
-            "local",
+            str(node_spec["node_kind"]),
             "-PairingKey",
-            os.environ.get("CLAW_PAIRING_KEY", "local-pairing-key"),
+            (
+                os.environ.get("CLAW_PAIRING_KEY", "local-pairing-key")
+                if node_spec["local_direct_auth"]
+                else existing_config.get("CLAW_PAIRING_KEY", "").strip()
+            ),
             "-MaxConcurrency",
             "1",
             "-InstallDir",
             str(install_dir),
             "-DiscoveryEnabled",
-            "true",  # 启用发现功能，让网关可以搜索到节点
+            "true" if node_spec["discovery_enabled"] else "false",
             "-DiscoveryPort",
             "9531",
             "-LocalCacheEnabled",
@@ -228,9 +248,9 @@ class ProcessManager:
             "windows-service",
         ]
         model_env = os.environ.copy()
-        # Also read from gateway .env so model config is always in sync
+        # Only the gateway built-in node inherits model config from the local gateway.
         gateway_env_path = self._repo_root / "apps" / "gateway" / ".env"
-        if gateway_env_path.exists():
+        if node_spec["local_direct_auth"] and gateway_env_path.exists():
             for raw_line in gateway_env_path.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
                 line = raw_line.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -253,20 +273,43 @@ class ProcessManager:
             model_env.setdefault("CLAW_MODEL_PROVIDER", "openai")
         if model_env.get("CLAW_DIFY_BASE_URL"):
             command.extend(["-DifyBaseUrl", model_env["CLAW_DIFY_BASE_URL"]])
+        elif existing_config.get("CLAW_DIFY_BASE_URL", "").strip():
+            command.extend(["-DifyBaseUrl", existing_config["CLAW_DIFY_BASE_URL"].strip()])
         if model_env.get("CLAW_DIFY_API_KEY"):
             command.extend(["-DifyApiKey", model_env["CLAW_DIFY_API_KEY"]])
+        elif existing_config.get("CLAW_DIFY_API_KEY", "").strip():
+            command.extend(["-DifyApiKey", existing_config["CLAW_DIFY_API_KEY"].strip()])
         if model_env.get("CLAW_OPENAI_BASE_URL"):
             command.extend(["-OpenAIBaseUrl", model_env["CLAW_OPENAI_BASE_URL"]])
+        elif existing_config.get("CLAW_OPENAI_BASE_URL", "").strip():
+            command.extend(["-OpenAIBaseUrl", existing_config["CLAW_OPENAI_BASE_URL"].strip()])
         if model_env.get("CLAW_OPENAI_API_KEY"):
             command.extend(["-OpenAIApiKey", model_env["CLAW_OPENAI_API_KEY"]])
+        elif existing_config.get("CLAW_OPENAI_API_KEY", "").strip():
+            command.extend(["-OpenAIApiKey", existing_config["CLAW_OPENAI_API_KEY"].strip()])
         if model_env.get("CLAW_OPENAI_MODEL"):
             command.extend(["-OpenAIModel", model_env["CLAW_OPENAI_MODEL"]])
+        elif existing_config.get("CLAW_OPENAI_MODEL", "").strip():
+            command.extend(["-OpenAIModel", existing_config["CLAW_OPENAI_MODEL"].strip()])
         if model_env.get("CLAW_OPENAI_ENABLE_THINKING"):
             command.extend(["-OpenAIEnableThinking", model_env["CLAW_OPENAI_ENABLE_THINKING"]])
+        elif existing_config.get("CLAW_OPENAI_ENABLE_THINKING", "").strip():
+            command.extend(["-OpenAIEnableThinking", existing_config["CLAW_OPENAI_ENABLE_THINKING"].strip()])
         self._run_sync_command(command, cwd=self._repo_root, log_path=log_path)
         self._statuses["local-node"] = self.local_node_service_status(profile, layout)
 
-    def _stop_conflicting_local_node_services(self) -> list[str]:
+    def _stop_conflicting_local_node_services(self, active_service_name: str) -> list[str]:
+        conflicting = [item for item in self._list_managed_node_services() if item != active_service_name]
+        stopped: list[str] = []
+        for service_name in conflicting:
+            try:
+                subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+                stopped.append(service_name)
+            except Exception:
+                continue
+        return stopped
+
+    def _list_managed_node_services(self) -> list[str]:
         try:
             output = subprocess.run(  # noqa: S603
                 ["sc.exe", "query", "state=", "all"],
@@ -279,19 +322,11 @@ class ProcessManager:
         except Exception:
             return []
         service_names = re.findall(r"SERVICE_NAME:\s+([^\r\n]+)", output)
-        conflicting = [
+        return [
             item.strip()
             for item in service_names
-            if item.strip().startswith("wechat-claw-node-") and "local" in item.lower()
+            if item.strip().startswith("wechat-claw-node-")
         ]
-        stopped: list[str] = []
-        for service_name in conflicting:
-            try:
-                subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
-                stopped.append(service_name)
-            except Exception:
-                continue
-        return stopped
 
     def local_node_service_status(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> LauncherComponentStatus:
         service_name = self._local_node_service_name(profile)
@@ -321,23 +356,58 @@ class ProcessManager:
         )
 
     def _local_node_service_name(self, profile: LauncherProfile) -> str:
-        return f"wechat-claw-node-{profile.local_node_id.strip() or 'local-node'}"
+        return f"wechat-claw-node-{self._resolved_local_node_id(profile)}"
+
+    def _resolved_local_node_id(self, profile: LauncherProfile) -> str:
+        return str(self._resolved_local_node_spec(profile)["node_id"])
+
+    def _resolved_local_node_spec(self, profile: LauncherProfile) -> dict[str, Any]:
+        runtime_model = derive_runtime_model(profile)
+        if runtime_model.machine_role == LauncherMachineRole.NODE and not runtime_model.gateway_should_run:
+            return {
+                "node_id": profile.local_node_id.strip() or "claw-node-1",
+                "node_kind": "remote",
+                "gateway_base_url": profile.gateway_base_url.strip(),
+                "local_direct_auth": False,
+                "discovery_enabled": True,
+            }
+        return {
+            "node_id": "local-node",
+            "node_kind": "local",
+            "gateway_base_url": preferred_gateway_base_url(profile.gateway_port),
+            "local_direct_auth": True,
+            "discovery_enabled": False,
+        }
 
     def _local_node_install_dir(self, layout: LauncherWorkdirLayout) -> Path:
         return Path(layout.runtime_dir) / "local-node-service"
+
+    def _read_existing_local_node_config(self, layout: LauncherWorkdirLayout) -> dict[str, str]:
+        config_path = self._local_node_install_dir(layout) / "config" / "node.env"
+        if not config_path.exists():
+            return {}
+        values: dict[str, str] = {}
+        for raw_line in config_path.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+        return values
 
     def _local_node_wrapper_log_path(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> Path:
         install_dir = self._local_node_install_dir(layout)
         return install_dir / "logs" / f"{self._local_node_service_name(profile)}.wrapper.log"
 
     def _stop_local_node_service(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
-        service_name = self._local_node_service_name(profile)
+        target_services = {self._local_node_service_name(profile), *self._list_managed_node_services()}
         install_dir = self._local_node_install_dir(layout)
-        exe_path = install_dir / f"{service_name}.exe"
-        if exe_path.exists():
-            subprocess.run([str(exe_path), "stop"], capture_output=True, text=True, check=False)  # noqa: S603
-            return
-        subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+        for service_name in target_services:
+            exe_path = install_dir / f"{service_name}.exe"
+            if exe_path.exists():
+                subprocess.run([str(exe_path), "stop"], capture_output=True, text=True, check=False)  # noqa: S603
+                continue
+            subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
 
     def _query_windows_service(self, service_name: str) -> dict[str, Any] | None:
         result = subprocess.run(  # noqa: S603

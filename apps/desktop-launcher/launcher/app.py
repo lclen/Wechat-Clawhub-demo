@@ -430,7 +430,9 @@ def create_app() -> FastAPI:
                 last_register_at_raw,
             ) = await _infer_local_node_runtime_status(
                 gateway_port=profile.gateway_port,
-                node_id=profile.local_node_id.strip() or "local-node",
+                gateway_base_url=profile.gateway_base_url,
+                node_id=app.state.manager._resolved_local_node_id(profile),  # type: ignore[attr-defined]
+                node_kind=node_kind or "local",
                 service_state=status.state,
                 model_settings=model_settings,
                 current_detail=status.detail,
@@ -887,32 +889,44 @@ def _local_node_has_model_config(model_settings: LocalNodeModelConfig) -> bool:
 async def _infer_local_node_runtime_status(
     *,
     gateway_port: int,
+    gateway_base_url: str,
     node_id: str,
+    node_kind: str,
     service_state: str,
     model_settings: LocalNodeModelConfig,
     current_detail: str,
 ) -> tuple[str, str, str, str, object]:
+    node_label = "本机内置节点" if node_kind == "local" else "当前工作节点"
     if service_state != "running":
-        return ("stopped", current_detail or "本机节点服务未运行。", "", "", None)
+        return ("stopped", current_detail or f"{node_label}服务未运行。", "", "", None)
     if not _local_node_has_model_config(model_settings):
         return (
             "needs_repair",
-            "本机节点服务已运行，但当前没有可用模型配置，因此不会发起 register。",
+            f"{node_label}服务已运行，但当前没有可用模型配置，因此不会发起 register。",
             "blocked_by_missing_model",
-            "请先为本机节点配置 OpenAI 兼容模型或 Dify。",
+            "请先为当前节点配置 OpenAI 兼容模型或 Dify。",
+            None,
+        )
+    target_gateway = (gateway_base_url.strip() or f"http://127.0.0.1:{gateway_port}").rstrip("/")
+    if node_kind != "local" and not gateway_base_url.strip():
+        return (
+            "waiting_pair",
+            "当前工作节点服务已运行，但还没有配置目标网关地址。",
+            "waiting_gateway",
+            "请先填写目标网关地址并完成一次配对。",
             None,
         )
     try:
         async with httpx.AsyncClient(timeout=2.5) as client:
-            system_response = await client.get(f"http://127.0.0.1:{gateway_port}/api/system/status")
+            system_response = await client.get(f"{target_gateway}/api/system/status")
             system_response.raise_for_status()
-            nodes_response = await client.get(f"http://127.0.0.1:{gateway_port}/api/nodes")
+            nodes_response = await client.get(f"{target_gateway}/api/nodes")
             nodes_response.raise_for_status()
             payload = nodes_response.json()
     except httpx.HTTPError as exc:
         return (
             "gateway_unreachable",
-            f"本机节点服务已运行，但当前主网关不可用：{exc}",
+            f"{node_label}服务已运行，但当前目标网关不可用：{exc}",
             "gateway_unreachable",
             str(exc),
             None,
@@ -923,7 +937,7 @@ async def _infer_local_node_runtime_status(
     if matched_online:
         return (
             "connected",
-            "本机节点已注册到当前主网关，并处于在线状态。",
+            f"{node_label}已注册到当前目标网关，并处于在线状态。",
             "succeeded",
             "",
             matched_online.get("last_heartbeat_at"),
@@ -935,21 +949,21 @@ async def _infer_local_node_runtime_status(
         if connection_state == "paired_offline":
             return (
                 "register_failed",
-                "本机节点服务已运行，但当前还未成功注册到主网关。",
+                f"{node_label}服务已运行，但当前还未成功注册到目标网关。",
                 "not_registered",
-                last_error or "网关尚未收到 local-node 的 register/heartbeat。",
+                last_error or f"网关尚未收到 {node_id} 的 register/heartbeat。",
                 matched_inventory.get("last_register_at"),
             )
         return (
             connection_state,
-            f"本机节点当前状态：{connection_state}",
+            f"{node_label}当前状态：{connection_state}",
             str(matched_inventory.get("last_register_result") or connection_state),
             last_error,
             matched_inventory.get("last_register_at"),
         )
     return (
         "waiting_register",
-        "本机节点服务已运行，正在等待向主网关发起首次注册。",
+        f"{node_label}服务已运行，正在等待向目标网关发起首次注册。",
         "pending",
         "",
         None,

@@ -125,6 +125,7 @@ class StartRequest(BaseModel):
     dispatch_mode_enabled: bool = False
     redis_source: RedisSource = RedisSource.MIRROR
     node_cache_redis_source: RedisSource = RedisSource.MIRROR
+    local_node_id: str | None = None
 
 
 class StopRequest(BaseModel):
@@ -228,6 +229,8 @@ def apply_start_request(profile: LauncherProfile, payload: StartRequest) -> Laun
     else:
         profile.enable_local_node = payload.enable_local_node
         profile.enable_gateway = payload.enable_gateway
+    if payload.local_node_id is not None:
+        profile.local_node_id = payload.local_node_id.strip() or "local-node"
     profile.node_cache_policy = LauncherNodeCachePolicy.ENABLED if payload.enable_node_cache_redis else LauncherNodeCachePolicy.DISABLED
     profile.dispatch_mode_enabled = payload.dispatch_mode_enabled
     profile.redis_source = payload.redis_source
@@ -237,9 +240,10 @@ def apply_start_request(profile: LauncherProfile, payload: StartRequest) -> Laun
 
 def derive_runtime_model(profile: LauncherProfile) -> LauncherRuntimeModel:
     gateway_should_run = bool(profile.enable_gateway)
-    # local-node 只在网关模式下运行，节点模式下不运行内置的 local-node
-    # 节点模式下应该运行用户配置的远程节点（如 agent-1），而不是内置的 local-node
-    local_node_should_run = bool(profile.enable_local_node) and bool(profile.enable_gateway) and not bool(profile.dispatch_mode_enabled)
+    # 节点角色和网关角色都可能托管一个节点进程，但它们的节点身份不同：
+    # - gateway/gateway_console: 运行本机内置 local-node
+    # - node: 运行用户配置的工作节点 ID
+    local_node_should_run = bool(profile.enable_local_node) and not bool(profile.dispatch_mode_enabled)
     node_cache_should_run = profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED
     if gateway_should_run and local_node_should_run:
         machine_role = LauncherMachineRole.GATEWAY_CONSOLE
