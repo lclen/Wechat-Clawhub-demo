@@ -47,8 +47,79 @@ def create_app() -> FastAPI:
 
     @app.on_event("startup")
     async def auto_restore() -> None:
-        """Intentionally disabled: components are started on-demand when user selects a role."""
-        pass
+        """Auto-restore services based on profile configuration."""
+        import logging
+        logger = logging.getLogger("launcher")
+
+        profile = app.state.profile
+
+        # 安全检查 1：必须启用自动启动
+        if not profile.auto_start:
+            logger.info("Auto-restore disabled: auto_start=False")
+            return
+
+        # 安全检查 2：必须完成过首次配置
+        if not profile.bootstrap_completed:
+            logger.info("Auto-restore skipped: bootstrap not completed yet")
+            return
+
+        logger.info("Auto-restore starting: enable_gateway=%s", profile.enable_gateway)
+
+        layout = build_layout(profile)
+        ensure_layout(layout)
+
+        # 安全检查 3：节点端不启动网关
+        if not profile.enable_gateway:
+            # 节点端只启动节点相关服务
+            logger.info("Auto-restore: worker node mode, starting node services only")
+            try:
+                if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
+                    node_state = await ensure_redis_binary(
+                        redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source),
+                        Path(layout.runtime_dir) / "vendor" / "node-cache-redis",
+                    )
+                    app.state.manager.start_node_cache_redis(profile, layout, Path(node_state.executable_path))
+                    logger.info("Auto-restore: node-cache-redis started")
+
+                if profile.enable_local_node:
+                    app.state.manager.start_local_node(profile, layout)
+                    logger.info("Auto-restore: local-node started")
+            except Exception as exc:
+                logger.warning("Auto-restore node services failed: %s", exc)
+            return
+
+        # 网关端启动逻辑
+        logger.info("Auto-restore: gateway mode, starting all services")
+        try:
+            # 启动 host-redis
+            host_state = await ensure_redis_binary(
+                redis_state(Path(profile.workdir), "host-redis", profile.redis_source),
+                Path(layout.runtime_dir) / "vendor" / "host-redis",
+            )
+            app.state.manager.start_host_redis(profile, layout, Path(host_state.executable_path))
+            logger.info("Auto-restore: host-redis started")
+
+            # 启动 gateway
+            app.state.manager.start_gateway(profile, layout)
+            logger.info("Auto-restore: gateway started")
+
+            # 启动 node-cache-redis（如果启用）
+            if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
+                node_state = await ensure_redis_binary(
+                    redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source),
+                    Path(layout.runtime_dir) / "vendor" / "node-cache-redis",
+                )
+                app.state.manager.start_node_cache_redis(profile, layout, Path(node_state.executable_path))
+                logger.info("Auto-restore: node-cache-redis started")
+
+            # 启动本地节点（如果启用且非分发模式）
+            if profile.enable_local_node and not profile.dispatch_mode_enabled:
+                app.state.manager.start_local_node(profile, layout)
+                logger.info("Auto-restore: local-node started")
+
+            logger.info("Auto-restore completed successfully")
+        except Exception as exc:
+            logger.warning("Auto-restore gateway services failed: %s", exc)
 
     @app.get("/local/bootstrap/status", response_model=LauncherStatusResponse)
     async def bootstrap_status() -> LauncherStatusResponse:

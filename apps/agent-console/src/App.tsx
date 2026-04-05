@@ -493,7 +493,9 @@ export function App() {
   const shouldAutoFollowMessagesRef = useRef(true);
   const previousMessageSessionIdRef = useRef<string | null>(null);
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
-  const sessionRemoteGatewayBaseUrl = gatewayEnabled === false ? workerSetup.gateway_base_url.trim() : "";
+  const sessionRemoteGatewayBaseUrl = gatewayEnabled === false
+    ? workerSetup.gateway_base_url.trim()
+    : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");
   const sessionRemoteNodeId = gatewayEnabled === false ? workerSetup.node_id.trim() : "";
 
   function scrollMessagesToBottom() {
