@@ -200,7 +200,8 @@ class Worker:
             return True
 
         if not task:
-            await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+            if self._settings.pull_wait_seconds <= 0:
+                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
             return True
 
         logger.info(
@@ -679,24 +680,33 @@ class Worker:
         )
 
     async def _try_send_task_stream_event(self, event: dict[str, Any]) -> bool:
+        """
+        尝试通过 WebSocket 发送事件，失败时返回 False。
+
+        注意：WebSocket 检查和发送都在锁内执行，避免竞态条件。
+        """
         if not self._settings.task_stream_enabled:
             return False
-        websocket = self._task_stream_websocket
-        if websocket is None:
-            return False
+
+        # 在锁内检查和发送，避免在检查后、发送前连接断开
         try:
             await self._send_task_stream_event(event)
             return True
         except Exception as exc:
             logger.warning("[worker] task stream event send failed, falling back to HTTP: %s", exc)
-            self._task_stream_websocket = None
             return False
 
     async def _send_task_stream_event(self, event: dict[str, Any]) -> None:
-        websocket = self._task_stream_websocket
-        if websocket is None:
-            raise RuntimeError("Task stream websocket is not connected")
+        """
+        通过 WebSocket 发送事件（带锁保护）。
+
+        注意：此方法假设调用者已经检查了 task_stream_enabled。
+        如果 WebSocket 未连接，会抛出 RuntimeError。
+        """
         async with self._task_stream_send_lock:
+            websocket = self._task_stream_websocket
+            if websocket is None:
+                raise RuntimeError("Task stream websocket is not connected")
             await websocket.send(json.dumps(event))
 
     def _enqueue_diagnostics_event(self, event: dict[str, object], snapshot: dict[str, object]) -> None:
@@ -708,17 +718,32 @@ class Worker:
         )
 
     async def _flush_pending_diagnostics_events(self) -> None:
-        if not self._settings.task_stream_enabled or self._task_stream_websocket is None:
+        """
+        刷新待发送的诊断事件队列。
+
+        注意：使用 try-except 处理 WebSocket 断开的情况，
+        避免在检查后、发送前连接断开导致的异常。
+        """
+        if not self._settings.task_stream_enabled:
             return
+
         while self._pending_diagnostics_events:
             payload = self._pending_diagnostics_events[0]
-            await self._send_task_stream_event(
-                {
-                    "type": "diagnostics",
-                    "diagnostics": payload,
-                }
-            )
-            self._pending_diagnostics_events.popleft()
+            try:
+                await self._send_task_stream_event(
+                    {
+                        "type": "diagnostics",
+                        "diagnostics": payload,
+                    }
+                )
+                self._pending_diagnostics_events.popleft()
+            except RuntimeError:
+                # WebSocket 未连接，停止刷新
+                break
+            except Exception as exc:
+                # 其他错误，记录日志并继续
+                logger.warning("[worker] failed to send diagnostics event: %s", exc)
+                self._pending_diagnostics_events.popleft()
 
     def _stringify_mapping(self, payload: dict[str, Any]) -> dict[str, str]:
         return {str(k): str(v) for k, v in payload.items()}

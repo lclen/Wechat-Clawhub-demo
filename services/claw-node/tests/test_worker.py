@@ -290,6 +290,67 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         websocket.send.assert_awaited_once()
         self.assertEqual(len(worker._pending_diagnostics_events), 0)
 
+    async def test_poll_once_skips_extra_sleep_after_empty_long_poll(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_PULL_WAIT_SECONDS=15,
+        )
+        worker = Worker(settings)
+        worker._gateway = MagicMock()
+        worker._gateway.pull_task = AsyncMock(return_value=None)
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        original_sleep = worker._poll_once.__globals__["asyncio"].sleep
+        worker._poll_once.__globals__["asyncio"].sleep = fake_sleep
+        try:
+            result = await worker._poll_once()
+        finally:
+            worker._poll_once.__globals__["asyncio"].sleep = original_sleep
+
+        self.assertTrue(result)
+        worker._gateway.pull_task.assert_awaited_once()
+        self.assertEqual(sleep_calls, [])
+
+    async def test_poll_once_keeps_sleep_for_short_polling_mode(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_PULL_WAIT_SECONDS=0,
+            CLAW_PULL_INTERVAL_MS=1500,
+        )
+        worker = Worker(settings)
+        worker._gateway = MagicMock()
+        worker._gateway.pull_task = AsyncMock(return_value=None)
+
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(delay: float) -> None:
+            sleep_calls.append(delay)
+
+        original_sleep = worker._poll_once.__globals__["asyncio"].sleep
+        worker._poll_once.__globals__["asyncio"].sleep = fake_sleep
+        try:
+            result = await worker._poll_once()
+        finally:
+            worker._poll_once.__globals__["asyncio"].sleep = original_sleep
+
+        self.assertTrue(result)
+        worker._gateway.pull_task.assert_awaited_once()
+        self.assertEqual(sleep_calls, [1.5])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,11 +7,13 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from app.core.config import Settings
 from app.core.deps import (
     ensure_redis_available,
+    get_gateway_summary_service,
     get_node_registry,
     get_redis_store,
     get_settings_dep,
     get_wechat_bot,
 )
+from app.models.gateway_summary import GatewaySummaryResponse
 from app.models.node import SystemStatusResponse
 from app.access.wechat_bot import WeChatBotService
 from app.services.gateway_summary_service import GatewaySummaryService
@@ -57,6 +59,13 @@ async def get_system_status(
         preferred_gateway_base_url=settings.console_gateway_base_url.strip() or preferred_gateway_base_url(),
         timestamp=datetime.now(UTC),
     )
+
+
+@router.get("/summary", response_model=GatewaySummaryResponse)
+async def get_gateway_summary(
+    summary_service: GatewaySummaryService = Depends(get_gateway_summary_service),
+) -> GatewaySummaryResponse:
+    return await summary_service.build_summary()
 
 
 @router.websocket("/summary/ws")

@@ -142,6 +142,7 @@ async def delete_node(
     store: RedisStore = Depends(get_redis_store),
     registry: NodeRegistry = Depends(get_node_registry),
     setup_service: SetupService = Depends(get_setup_service),
+    request: Request = None,
 ) -> NodeDeleteResponse:
     await ensure_redis_available(store)
     try:
@@ -150,6 +151,11 @@ async def delete_node(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     if not removed_pairing and not removed_runtime:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Node '{node_id}' not found")
+
+    # 推送 summary 更新（节点列表变更）
+    if request:
+        await request.app.state.gateway_summary_service.publish_if_needed()
+
     return NodeDeleteResponse(
         node_id=node_id,
         removed_pairing=removed_pairing,
@@ -169,6 +175,7 @@ async def disconnect_node(
     node_id: str,
     store: RedisStore = Depends(get_redis_store),
     registry: NodeRegistry = Depends(get_node_registry),
+    request: Request = None,
 ) -> NodeDeleteResponse:
     """Remove node from Redis active set only, keeping pairing token intact.
     The node can reconnect automatically on next heartbeat/register."""
@@ -179,6 +186,11 @@ async def disconnect_node(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     if not removed_runtime:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Node '{node_id}' not found in active registry")
+
+    # 推送 summary 更新（节点列表变更）
+    if request:
+        await request.app.state.gateway_summary_service.publish_if_needed()
+
     return NodeDeleteResponse(
         node_id=node_id,
         removed_pairing=False,

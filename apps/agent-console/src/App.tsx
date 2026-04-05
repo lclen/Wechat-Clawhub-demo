@@ -35,6 +35,7 @@ type SessionsResponse = { sessions: SessionRecord[] };
 type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean };
 type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
 type SessionOverviewEnvelope = { type: "sessions_snapshot"; sessions: SessionRecord[] };
+type GatewaySummaryResponse = { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse };
 type GatewaySummaryEnvelope = { type: "gateway_summary"; summary: { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse } };
 type SessionMessageCacheEntry = {
   session: SessionRecord | null;
@@ -122,7 +123,9 @@ type AppSummaryStateCache = {
 
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
+const SUMMARY_FALLBACK_POLL_MS = 10000; // summary WebSocket 降级时的 HTTP 轮询间隔（10 秒）
 const RETRY_POLL_MS = 1000; // backend unreachable — retry quickly
+const SUMMARY_RETRY_POLL_MS = 3000;
 const SETUP_DRAFT_KEY = "wechat-claw-hub.quick-setup.draft";
 const UI_STATE_CACHE_KEY = "wechat-claw-hub.ui-state";
 const SUMMARY_STATE_CACHE_KEY = "wechat-claw-hub.summary-state";
@@ -367,6 +370,21 @@ function launcherManagedComponentsLabel(launcherStatus: LauncherStatusResponse |
   }
   if (runtime.node_cache_should_run) parts.push("node-cache-redis");
   return parts.length ? parts.join(" / ") : "当前角色不托管本地后端组件";
+}
+
+function applyGatewaySummaryToState(
+  summary: GatewaySummaryResponse,
+  options: {
+    setSystemStatus: React.Dispatch<React.SetStateAction<SystemStatus | null>>;
+    setWechatStatus: React.Dispatch<React.SetStateAction<WeChatStatus | null>>;
+    setWechatBaseUrl: React.Dispatch<React.SetStateAction<string>>;
+    syncNodeStateView: (next: NodeListResponse) => void;
+  },
+) {
+  options.setSystemStatus(summary.system);
+  if (summary.wechat.base_url) options.setWechatBaseUrl(summary.wechat.base_url);
+  options.setWechatStatus(summary.wechat);
+  options.syncNodeStateView(summary.nodes);
 }
 
 function launcherLocalNodePolicyLabel(launcherStatus: LauncherStatusResponse | null) {
@@ -741,20 +759,8 @@ export function App() {
     setManualPair((current) => (current.pairing_key.trim() ? current : { ...current, pairing_key: workerSetup.pairing_key.trim() }));
   }, [workerSetup.pairing_key]);
 
-  useEffect(() => {
-    if (!currentRoleIsWorker) return;
-    // 节点角色下 live poll 已自动更新探测状态，不需要单独触发
-    if (!launcherShouldRunGateway(launcherStatus)) return;
-    const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
-    const nodeId = workerSetup.node_id.trim();
-    if (!gatewayBaseUrl || !nodeId || busy === "setup-gateway-probe") return;
-    const probeKey = `${gatewayBaseUrl}::${nodeId}`;
-    if (workerGatewayAutoProbeKeyRef.current === probeKey) return;
-    const timer = window.setTimeout(() => {
-      void probeWorkerGateway({ silent: true, reason: "auto" });
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [busy, currentRoleIsWorker, launcherStatus, workerSetup.gateway_base_url, workerSetup.node_id]);
+  // 移除自动探测 useEffect，统一使用 summary 轮询获取节点状态
+  // 节点角色下的探测状态由 summary 轮询自动构造（见 Line 1218-1257）
 
   useEffect(() => {
     let cancelled = false;
@@ -901,12 +907,12 @@ export function App() {
           }
         }
 
-        const [system, profile] = await Promise.all([
-          requestJson<SystemStatus>("/api/system/status"),
+        const [summary, profile] = await Promise.all([
+          requestJson<GatewaySummaryResponse>("/api/system/summary"),
           requestJson<SetupProfileResponse>("/api/setup/profile"),
         ]);
         if (cancelled) return;
-        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
+        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, summary.system);
         setSetupProfile(profile);
         const initialWorkspace = profile.setup_completed
           ? (initialUiState.workspace ?? resolveInitialWorkspace(profile))
@@ -920,15 +926,20 @@ export function App() {
         setWorkerSetup((current) => ({
           ...current,
           node_id: resolveWorkerNodeId(current.node_id, launcherSt?.profile),
-          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
+          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, summary.system),
           dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
           dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
         }));
-        setSystemStatus(system);
+        applyGatewaySummaryToState(summary, {
+          setSystemStatus,
+          setWechatStatus,
+          setWechatBaseUrl,
+          syncNodeStateView,
+        });
         setNotice(
           profile.recommended_workspace === "quick_setup"
             ? "检测到这是首次启动，先完成快速配置。"
-            : system.redis_ok
+            : summary.system.redis_ok
               ? "主网关在线，正在加载微信、节点和会话概览…"
               : "主网关已启动，但 Redis 当前不可用。",
         );
@@ -938,15 +949,6 @@ export function App() {
             if (cancelled) return;
             setModelStatus(model);
           }),
-          requestJson<WeChatStatus>("/api/wechat/onboard/status").then((wechat) => {
-            if (cancelled) return;
-            if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-            setWechatStatus(wechat);
-          }),
-          requestJson<NodeListResponse>("/api/nodes").then((nodeList) => {
-            if (cancelled) return;
-            syncNodeStateView(nodeList);
-          }),
           requestJson<SessionsResponse>("/api/sessions").then((sessionList) => {
             if (cancelled) return;
             syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
@@ -954,7 +956,7 @@ export function App() {
             setNotice(
               profile.recommended_workspace === "quick_setup"
                 ? "检测到这是首次启动，先完成快速配置。"
-                : system.redis_ok
+                : summary.system.redis_ok
                   ? (sessionList.sessions.length ? "主网关在线。默认进入会话观察台。" : "主网关在线。可以先在接入中心做模型检测。")
                   : "主网关已启动，但 Redis 当前不可用。",
             );
@@ -1134,10 +1136,12 @@ export function App() {
         }
         if (payload.type !== "gateway_summary") return;
         setGatewaySummaryStreamActive(true);
-        setSystemStatus(payload.summary.system);
-        if (payload.summary.wechat.base_url) setWechatBaseUrl(payload.summary.wechat.base_url);
-        setWechatStatus(payload.summary.wechat);
-        syncNodeStateView(payload.summary.nodes);
+        applyGatewaySummaryToState(payload.summary, {
+          setSystemStatus,
+          setWechatStatus,
+          setWechatBaseUrl,
+          syncNodeStateView,
+        });
         if (currentRoleIsWorker) {
           const nodeId = sessionRemoteNodeId;
           const matched = payload.summary.nodes.nodes.find((item) => item.node_id === nodeId);
@@ -1195,26 +1199,29 @@ export function App() {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
+      // WebSocket 连接成功时跳过 HTTP 轮询
       if (gatewaySummaryStreamActive) {
         return;
       }
-      if (workspace === "sessions") {
-        return;
-      }
+      // 所有工作区都需要 summary 数据（节点状态、微信状态、系统状态）
+      // 移除 sessions 工作区的特殊处理，统一使用 WebSocket 优先 + HTTP 降级策略
       if (currentRoleIsWorker) {
         const remoteGateway = sessionRemoteGatewayBaseUrl;
         const nodeId = sessionRemoteNodeId;
         if (!remoteGateway || !nodeId) return;
         let failed = false;
         try {
-          const nodeResp = await requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null);
+          const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null);
           if (cancelled) return;
-          // 更新节点连接状态
-          if (nodeResp) {
-            const allNodes: NodeRecord[] = nodeResp.nodes || nodeResp || [];
+          if (summary) {
+            applyGatewaySummaryToState(summary, {
+              setSystemStatus,
+              setWechatStatus,
+              setWechatBaseUrl,
+              syncNodeStateView,
+            });
+            const allNodes: NodeRecord[] = summary.nodes.nodes || [];
             const matched = allNodes.find((n: NodeRecord) => n.node_id === nodeId);
-            // Update nodes state so workerGatewayConnection.remoteNode gets populated
-            syncNodeStateView({ nodes: allNodes, inventory: [], summary: { paired_total: 0, online_total: allNodes.length, offline_total: 0 } });
             setWorkerGatewayProbeTask({
               task_id: "auto-poll",
               kind: "gateway_probe",
@@ -1234,7 +1241,8 @@ export function App() {
           }
         } catch { failed = true; }
         finally {
-          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
+          // summary 轮询作为 WebSocket 降级，使用较长间隔（10 秒）
+          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? SUMMARY_RETRY_POLL_MS : SUMMARY_FALLBACK_POLL_MS);
         }
         return;
       }
@@ -1247,39 +1255,41 @@ export function App() {
         if (!remoteGateway) return;
         let failed = false;
         try {
-          const [wechat, nodeList] = await Promise.all([
-            requestJson<WeChatStatus>(`${remoteGateway}/api/wechat/onboard/status`).catch(() => null),
-            requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null),
-          ]);
+          const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null);
           if (cancelled) return;
-          if (wechat) {
-            if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-            setWechatStatus(wechat);
+          if (summary) {
+            applyGatewaySummaryToState(summary, {
+              setSystemStatus,
+              setWechatStatus,
+              setWechatBaseUrl,
+              syncNodeStateView,
+            });
           }
-          if (nodeList) syncNodeStateView(nodeList);
         } catch {
           failed = true;
         } finally {
-          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
+          // summary 轮询作为 WebSocket 降级，使用较长间隔（10 秒）
+          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? SUMMARY_RETRY_POLL_MS : SUMMARY_FALLBACK_POLL_MS);
         }
         return;
       }
       if (localGatewayManaged === null) { timer = window.setTimeout(() => void run(), 500); return; }
       let failed = false;
       try {
-        const [wechat, nodeList] = await Promise.all([
-          requestJson<WeChatStatus>("/api/wechat/onboard/status"),
-          requestJson<NodeListResponse>("/api/nodes"),
-        ]);
+        const summary = await requestJson<GatewaySummaryResponse>("/api/system/summary");
         if (cancelled) return;
-        if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-        setWechatStatus(wechat);
-        syncNodeStateView(nodeList);
+        applyGatewaySummaryToState(summary, {
+          setSystemStatus,
+          setWechatStatus,
+          setWechatBaseUrl,
+          syncNodeStateView,
+        });
       } catch {
         failed = true;
         // keep live polling resilient
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
+        // summary 轮询作为 WebSocket 降级，使用较长间隔（10 秒）
+        if (!cancelled) timer = window.setTimeout(() => void run(), failed ? SUMMARY_RETRY_POLL_MS : SUMMARY_FALLBACK_POLL_MS);
       }
     };
     void run();
@@ -1866,32 +1876,32 @@ export function App() {
         );
         return;
       }
-      const [profile, system, model, wechat, nodeList] = await Promise.all([
+      const [profile, summary, model] = await Promise.all([
         requestJson<SetupProfileResponse>("/api/setup/profile"),
-        requestJson<SystemStatus>("/api/system/status"),
+        requestJson<GatewaySummaryResponse>("/api/system/summary"),
         requestJson<ModelStatus>("/api/models/builtin/status"),
-        requestJson<WeChatStatus>("/api/wechat/onboard/status"),
-        requestJson<NodeListResponse>("/api/nodes"),
       ]);
-      const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
+      const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, summary.system);
       setSetupProfile(profile);
       setSetupTask(profile.last_task);
       setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
       setGatewaySetup(profile.gateway);
       setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
-        setWorkerSetup((current) => ({
-          ...current,
-          node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
-          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
-          dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-          dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+      setWorkerSetup((current) => ({
+        ...current,
+        node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
+        gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, summary.system),
+        dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
+        dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
         node_token: "",
       }));
-      setSystemStatus(system);
+      applyGatewaySummaryToState(summary, {
+        setSystemStatus,
+        setWechatStatus,
+        setWechatBaseUrl,
+        syncNodeStateView,
+      });
       setModelStatus(model);
-      setWechatStatus(wechat);
-      if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-      syncNodeStateView(nodeList);
       if (launcherAvailable) {
         await refreshLauncherStatus();
       }
@@ -2035,6 +2045,12 @@ export function App() {
       setNotice(`搜索局域网节点失败：${(error as Error).message}`);
     }
   }
+  /**
+   * 手动触发网关探测（仅用于 quick_setup 工作区的"检测连接"按钮）
+   *
+   * 注意：节点角色和控制台角色的自动探测已统一到 summary 轮询中，
+   * 不再需要调用此函数进行自动探测。
+   */
   async function probeWorkerGateway(options?: { silent?: boolean; reason?: "manual" | "auto" | "post-install" }) {
     const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
     if (!gatewayBaseUrl) return setNotice("请先填写目标网关地址。");
