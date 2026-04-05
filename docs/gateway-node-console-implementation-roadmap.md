@@ -90,12 +90,19 @@
   - 添加节点删除/断开连接的 summary 推送触发
   - 统一所有工作区使用 WebSocket 优先 + HTTP 降级策略
 
+- ✅ **节点事件流竞态条件修复**（已完成，2026-04-06）
+  - 修复 `_try_send_task_stream_event()` 的竞态条件
+  - 将 WebSocket 检查和发送都放在锁内执行
+  - 修复 `_flush_pending_diagnostics_events()` 的类似问题
+  - 添加测试用例验证修复（14/14 测试通过）
+  - 详见：`docs/node-event-stream-race-condition-fix.md`
+
 **下一步行动**：
 
-1. **节点事件流稳定性收口**
-   - 继续验证 WebSocket 主链路的断线恢复
-   - 补齐 diagnostics 事件的持久化与历史查询
-   - 修复潜在的竞态条件（详见 `docs/code-review-407dfe5.md`）
+1. **实现 diagnostics 事件存储**（低优先级）
+   - 将 `diagnostics` 事件存储到 Redis 或数据库
+   - 支持历史诊断查询
+   - 完善节点诊断功能
 
 2. **完全替代轮询**（长期目标）
    - 当 WebSocket 稳定后，考虑移除 HTTP 轮询
@@ -109,6 +116,7 @@
 - ✅ 节点 `pull-task` HTTP 长轮询兜底已完成
 - ✅ 控制台摘要轮询频率已优化（3.2 秒 → 10 秒）
 - ✅ Summary 事件流已完善（WebSocket 优先 + HTTP 降级）
+- ✅ 节点事件流竞态条件已修复
 
 ## 3.2 第二优先级：统一运行模型
 

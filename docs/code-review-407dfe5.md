@@ -48,51 +48,30 @@
 
 ### ⚠️ 潜在问题
 
-#### 1. **竞态条件风险** (中等优先级)
+#### 1. ~~**竞态条件风险**~~ ✅ **已修复**（2026-04-06）
 
-**位置**: `services/claw-node/claw_node/worker.py:677-689`
+**位置**: `services/claw-node/claw_node/worker.py:682-703`
 
-```python
-async def _try_send_task_stream_event(self, event: dict[str, Any]) -> bool:
-    if not self._settings.task_stream_enabled:
-        return False
-    websocket = self._task_stream_websocket  # ← 读取
-    if websocket is None:
-        return False
-    try:
-        await self._send_task_stream_event(event)  # ← 使用
-        return True
-    except Exception as exc:
-        logger.warning("[worker] task stream event send failed, falling back to HTTP: %s", exc)
-        self._task_stream_websocket = None  # ← 清空
-        return False
-```
-
-**问题**: 
-- `_task_stream_websocket` 在 `_task_stream_loop` 中被设置和清空（line 225, 278, 394）
+**问题描述**: 
+- `_task_stream_websocket` 在 `_task_stream_loop` 中被设置和清空（line 228, 278, 394）
 - `_try_send_task_stream_event` 在任务处理线程中被调用
 - 虽然有 `_task_stream_send_lock` 保护发送操作，但检查 `websocket is None` 和实际发送之间存在时间窗口
 - 如果在检查后、发送前连接断开，可能导致发送到已关闭的 WebSocket
 
-**建议修复**:
-```python
-async def _try_send_task_stream_event(self, event: dict[str, Any]) -> bool:
-    if not self._settings.task_stream_enabled:
-        return False
-    
-    # 在锁内检查和发送，避免竞态条件
-    async with self._task_stream_send_lock:
-        websocket = self._task_stream_websocket
-        if websocket is None:
-            return False
-        try:
-            await websocket.send(json.dumps(event))
-            return True
-        except Exception as exc:
-            logger.warning("[worker] task stream event send failed, falling back to HTTP: %s", exc)
-            self._task_stream_websocket = None
-            return False
-```
+**修复方案**（已实施）:
+- 将 WebSocket 检查和发送都放在锁内执行
+- `_send_task_stream_event()` 在锁内检查 WebSocket 状态并发送
+- `_try_send_task_stream_event()` 直接调用 `_send_task_stream_event()`，由它处理锁和检查
+- 同时修复了 `_flush_pending_diagnostics_events()` 的类似问题
+
+**验证**：
+- 添加了两个测试用例验证修复
+- 所有测试通过（14/14）
+- 详见：`docs/node-event-stream-race-condition-fix.md`
+**验证**：
+- 添加了两个测试用例验证修复
+- 所有测试通过（14/14）
+- 详见：`docs/node-event-stream-race-condition-fix.md`
 
 #### 2. **WebSocket 连接状态不一致** (低优先级)
 

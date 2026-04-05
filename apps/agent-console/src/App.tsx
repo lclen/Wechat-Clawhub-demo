@@ -712,6 +712,33 @@ export function App() {
     );
   }
 
+  async function refreshGatewaySummarySnapshot() {
+    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (usesRemoteGateway) {
+      if (!remoteGateway) return null;
+      const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`);
+      applyGatewaySummaryToState(summary, {
+        setSystemStatus,
+        setWechatStatus,
+        setWechatBaseUrl,
+        syncNodeStateView,
+      });
+      return summary;
+    }
+    if (localGatewayManaged === false) {
+      return null;
+    }
+    const summary = await requestJson<GatewaySummaryResponse>("/api/system/summary");
+    applyGatewaySummaryToState(summary, {
+      setSystemStatus,
+      setWechatStatus,
+      setWechatBaseUrl,
+      syncNodeStateView,
+    });
+    return summary;
+  }
+
   useEffect(() => {
     window.localStorage.setItem(
       SETUP_DRAFT_KEY,
@@ -2300,9 +2327,7 @@ export function App() {
           syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
         }),
         refreshSessionDetail(sessionId),
-        requestJson<NodeListResponse>("/api/nodes").then((nodeList) => {
-          syncNodeStateView(nodeList);
-        }),
+        refreshGatewaySummarySnapshot(),
       ]);
       setNotice(result.detail || "已提交会话切换请求。");
     } catch (error) {
@@ -2343,8 +2368,7 @@ export function App() {
             if (envelope.task.status === "succeeded") {
               window.setTimeout(() => {
                 closePairingModal();
-                requestJson<NodeListResponse>("/api/nodes")
-                  .then((refreshed) => syncNodeStateView(refreshed))
+                refreshGatewaySummarySnapshot()
                   .catch(() => undefined);
               }, 2000);
             }
@@ -2390,8 +2414,7 @@ export function App() {
       setSetupTask(result.task);
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: result.pairing_status }));
       startPairingModal(result.task.task_id);
-      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeStateView(refreshedNodes);
+      await refreshGatewaySummarySnapshot();
     } catch (error) {
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: "offline" }));
       appendPairingClientError("扫描结果配对", target, error as Error);
@@ -2437,8 +2460,7 @@ export function App() {
         ...current,
         node_id: result.node_id || current.node_id,
       }));
-      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeStateView(refreshedNodes);
+      await refreshGatewaySummarySnapshot();
     } catch (error) {
       appendPairingClientError("按地址配对", target, error as Error);
       setNotice(`按地址配对失败：${(error as Error).message}`);
@@ -2452,14 +2474,27 @@ export function App() {
         `delete-node-${node.node_id}`,
         () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}`, { method: "DELETE" }),
       );
-      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeStateView(refreshedNodes);
+      await refreshGatewaySummarySnapshot();
       setNotice(result.detail || `已删除节点 ${node.node_id}。`);
       if (workerSetup.node_id.trim() === node.node_id) {
         setWorkerGatewayProbeTask(null);
       }
     } catch (error) {
       setNotice(`删除节点失败：${(error as Error).message}`);
+    }
+  }
+  async function disconnectPairedNode(node: NodeInventoryRecord) {
+    const confirmed = window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`);
+    if (!confirmed) return;
+    try {
+      const result = await withBusy(
+        `disconnect-node-${node.node_id}`,
+        () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" }),
+      );
+      await refreshGatewaySummarySnapshot();
+      setNotice(result.detail || `已断开节点 ${node.node_id}。`);
+    } catch (error) {
+      setNotice(`断开失败：${(error as Error).message}`);
     }
   }
   function submitSetupRole() {
@@ -3469,7 +3504,7 @@ export function App() {
                               {selectedNodeId === node.node_id ? "收起诊断" : "查看诊断"}
                             </button>
                             {node.node_kind === "remote" && node.paired ? <button type="button" className="ghost-button launcher-row-btn" onClick={() => void deletePairedNode(node)} disabled={busy !== null}>{busy === `delete-node-${node.node_id}` ? "处理中..." : "删除节点"}</button> : null}
-                            {node.node_kind === "remote" && node.online ? <button type="button" className="ghost-button launcher-row-btn" onClick={async () => { if (!window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`)) return; try { const r = await withBusy(`disconnect-node-${node.node_id}`, () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" })); const refreshed = await requestJson<NodeListResponse>("/api/nodes"); syncNodeStateView(refreshed); setNotice(r.detail || `已断开节点 ${node.node_id}。`); } catch (e) { setNotice(`断开失败：${(e as Error).message}`); } }} disabled={busy !== null}>{busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接"}</button> : null}
+                            {node.node_kind === "remote" && node.online ? <button type="button" className="ghost-button launcher-row-btn" onClick={() => void disconnectPairedNode(node)} disabled={busy !== null}>{busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接"}</button> : null}
                           </div>
                         </article>
                       )})}

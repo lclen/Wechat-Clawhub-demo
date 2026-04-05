@@ -351,6 +351,102 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         worker._gateway.pull_task.assert_awaited_once()
         self.assertEqual(sleep_calls, [1.5])
 
+    async def test_try_send_task_stream_event_race_condition_safe(self) -> None:
+        """
+        测试 _try_send_task_stream_event 在并发场景下的线程安全性。
+
+        场景：在检查 WebSocket 连接后、发送前，连接被另一个协程断开。
+        预期：不会抛出异常，返回 False 表示发送失败。
+        """
+        import asyncio
+        from unittest.mock import Mock
+
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_TASK_STREAM_ENABLED="true",
+        )
+        worker = Worker(settings)
+
+        # 模拟 WebSocket 连接
+        mock_websocket = Mock()
+        mock_websocket.send = AsyncMock()
+        worker._task_stream_websocket = mock_websocket
+
+        # 模拟在发送过程中连接断开
+        async def disconnect_during_send(data: str) -> None:
+            # 模拟发送失败
+            worker._task_stream_websocket = None
+            raise RuntimeError("Connection closed")
+
+        mock_websocket.send.side_effect = disconnect_during_send
+
+        # 尝试发送事件
+        result = await worker._try_send_task_stream_event({"type": "test"})
+
+        # 验证：发送失败，返回 False，不抛出异常
+        self.assertFalse(result)
+        self.assertIsNone(worker._task_stream_websocket)
+
+    async def test_try_send_task_stream_event_concurrent_disconnect(self) -> None:
+        """
+        测试多个协程同时尝试发送事件时的线程安全性。
+
+        场景：多个协程同时调用 _try_send_task_stream_event，
+        其中一个协程在发送时断开连接。
+        预期：所有协程都能正确处理，不会崩溃。
+        """
+        import asyncio
+        from unittest.mock import Mock
+
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_TASK_STREAM_ENABLED="true",
+        )
+        worker = Worker(settings)
+
+        # 模拟 WebSocket 连接
+        mock_websocket = Mock()
+        send_count = 0
+
+        async def send_with_disconnect(data: str) -> None:
+            nonlocal send_count
+            send_count += 1
+            if send_count == 2:
+                # 第二次发送时断开连接
+                worker._task_stream_websocket = None
+                raise RuntimeError("Connection closed")
+            # 其他发送成功
+            await asyncio.sleep(0.01)
+
+        mock_websocket.send = AsyncMock(side_effect=send_with_disconnect)
+        worker._task_stream_websocket = mock_websocket
+
+        # 并发发送多个事件
+        results = await asyncio.gather(
+            worker._try_send_task_stream_event({"type": "event1"}),
+            worker._try_send_task_stream_event({"type": "event2"}),
+            worker._try_send_task_stream_event({"type": "event3"}),
+            return_exceptions=True,
+        )
+
+        # 验证：至少有一个失败，没有抛出未捕获的异常
+        self.assertIsInstance(results, list)
+        self.assertEqual(len(results), 3)
+        # 第一个成功，第二个失败，第三个失败（因为连接已断开）
+        self.assertTrue(results[0])
+        self.assertFalse(results[1])
+        self.assertFalse(results[2])
+
 
 if __name__ == "__main__":
     unittest.main()

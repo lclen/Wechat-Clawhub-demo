@@ -774,6 +774,29 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("WCH_NODE_TOKENS={}", env_text)
         registry.remove.assert_awaited_once_with("node-a")
 
+    async def test_full_reset_clears_persisted_diagnostics_for_all_nodes(self) -> None:
+        self.settings.node_tokens = {"node-a": "token-a"}
+        registry = SimpleNamespace(remove=AsyncMock(return_value=True))
+        store = SimpleNamespace(
+            smembers=AsyncMock(return_value={"node-a", "node-b", "local-node"}),
+            get=AsyncMock(),
+            set=AsyncMock(),
+            sadd=AsyncMock(),
+            delete=AsyncMock(return_value=1),
+            srem=AsyncMock(return_value=1),
+        )
+        service = SetupService(settings=self.settings, wechat_bot=self.wechat_bot, redis_store=store)
+        service._gateway_env_path = self.service._gateway_env_path
+
+        result = await service.full_reset(registry)
+
+        registry.remove.assert_awaited_once_with("node-a")
+        self.assertEqual(set(result["cleared_diagnostics"]), {"node-a", "node-b", "local-node"})
+        self.assertEqual(store.delete.await_count, 3)
+        self.assertEqual(store.srem.await_count, 3)
+        env_text = service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("WCH_NODE_TOKENS={}", env_text)
+
     async def test_ingest_node_diagnostics_event_updates_auth_failure_state(self) -> None:
         self.service.ingest_node_diagnostics_event(
             "node-remote",
@@ -803,6 +826,45 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostics["last_register_result"], "failed")
         self.assertEqual(diagnostics["last_pairing_trace_id"], "trace-123")
         self.assertEqual(diagnostics["timeline"][-1]["category"], "register")
+
+    async def test_load_persisted_node_diagnostics_restores_timeline(self) -> None:
+        persisted_payload = {
+            "node_id": "node-remote",
+            "node_kind": "remote",
+            "connection_state": "auth_failed",
+            "last_error": "401 Unauthorized",
+            "last_pairing_trace_id": "trace-restore",
+            "last_pairing_status": "paired",
+            "last_register_result": "failed",
+            "last_register_at": datetime.now(UTC).isoformat(),
+            "timeline": [
+                {
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "level": "error",
+                    "category": "register",
+                    "result": "failed",
+                    "message": "401 Unauthorized",
+                    "trace_id": "trace-restore",
+                    "metadata": {"source": "persisted"},
+                }
+            ],
+        }
+        store = SimpleNamespace(
+            smembers=AsyncMock(return_value={"node-remote"}),
+            get=AsyncMock(return_value=json.dumps(persisted_payload, ensure_ascii=False)),
+            set=AsyncMock(),
+            sadd=AsyncMock(),
+            delete=AsyncMock(),
+            srem=AsyncMock(),
+        )
+        service = SetupService(settings=self.settings, wechat_bot=self.wechat_bot, redis_store=store)
+
+        await service.load_persisted_node_diagnostics()
+
+        diagnostics = service.get_node_diagnostics("node-remote")
+        self.assertEqual(diagnostics["connection_state"], "auth_failed")
+        self.assertEqual(diagnostics["last_pairing_trace_id"], "trace-restore")
+        self.assertEqual(diagnostics["timeline"][-1]["metadata"]["source"], "persisted")
 
     async def test_write_env_updates_normalizes_blank_lines_and_windows_newlines(self) -> None:
         self.service._gateway_env_path.write_text(

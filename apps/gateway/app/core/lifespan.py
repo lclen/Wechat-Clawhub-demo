@@ -54,7 +54,12 @@ async def lifespan(app: FastAPI):
         node_stream=node_stream,
     )
     wechat_bot.attach_dispatch_queue(dispatch_queue)
-    setup_service = SetupService(settings=settings, wechat_bot=wechat_bot, diagnostics_stream=node_diagnostics_stream)
+    setup_service = SetupService(
+        settings=settings,
+        wechat_bot=wechat_bot,
+        diagnostics_stream=node_diagnostics_stream,
+        redis_store=redis_store,
+    )
     node_auth = NodeAuthService(settings, setup_service=setup_service)
     gateway_summary_service = GatewaySummaryService(
         settings=settings,
@@ -65,6 +70,8 @@ async def lifespan(app: FastAPI):
         stream=gateway_summary_stream,
     )
     summary_task = asyncio.create_task(_gateway_summary_loop(gateway_summary_service), name="gateway-summary-loop")
+
+    await setup_service.load_persisted_node_diagnostics()
 
     app.state.settings = settings
     app.state.redis_store = redis_store

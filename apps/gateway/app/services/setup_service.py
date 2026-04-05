@@ -33,6 +33,7 @@ from app.models.setup import (
 )
 from app.services.node_registry import NodeRegistry
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
+from app.services.redis_store import RedisStore
 from app.utils.network import (
     directed_broadcast_targets,
     is_virtual_nic_ip,
@@ -96,16 +97,19 @@ class SetupService:
     _DEFAULT_BUILTIN_MODEL_NAME = "qwen3.5-plus"
     _PAIR_CONFIRM_TIMEOUT_SECONDS = 8.0
     _PAIR_CONFIRM_INTERVAL_SECONDS = 0.5
+    _NODE_DIAGNOSTICS_INDEX_KEY = "wch:node:diagnostics:index"
 
     def __init__(
         self,
         settings: Settings,
         wechat_bot: WeChatBotService,
         diagnostics_stream: NodeDiagnosticsStreamBroker | None = None,
+        redis_store: RedisStore | None = None,
     ) -> None:
         self._settings = settings
         self._wechat_bot = wechat_bot
         self._diagnostics_stream = diagnostics_stream
+        self._redis_store = redis_store
         self._tasks: dict[str, SetupTaskState] = {}
         self._last_task_id: str | None = None
         self._worker_setup_completed = False
@@ -116,6 +120,28 @@ class SetupService:
         self._node_install_script = self._repo_root / "scripts" / "install-claw-node.ps1"
         self._discovered_nodes: dict[str, DiscoveredNodeRecord] = {}
         self._pairing_diagnostics: dict[str, PairingDiagnosticState] = {}
+
+    async def load_persisted_node_diagnostics(self) -> None:
+        if self._redis_store is None:
+            return
+        try:
+            node_ids = await self._redis_store.smembers(self._NODE_DIAGNOSTICS_INDEX_KEY)
+        except Exception:
+            return
+        for node_id in node_ids:
+            try:
+                encoded = await self._redis_store.get(self._node_diagnostics_key(node_id))
+            except Exception:
+                continue
+            if not encoded:
+                continue
+            try:
+                payload = json.loads(encoded)
+            except Exception:
+                continue
+            state = self._deserialize_pairing_state(node_id, payload)
+            if state is not None:
+                self._pairing_diagnostics[node_id] = state
 
     def get_profile(self) -> SetupProfileResponse:
         gateway = GatewaySetupConfig(
@@ -303,16 +329,20 @@ class SetupService:
 
     async def full_reset(self, registry: NodeRegistry) -> dict[str, object]:
         """Full reset: clear in-memory state, remove all paired node tokens, and purge node registry."""
+        diagnostics_node_ids = await self._list_persisted_node_diagnostics_ids()
         self.reset_setup_state()
         removed_node_ids = list(self._settings.node_tokens.keys())
         for node_id in removed_node_ids:
             self._settings.node_tokens.pop(node_id, None)
             await registry.remove(node_id)
+        for node_id in diagnostics_node_ids:
+            await self._delete_persisted_node_diagnostics(node_id)
         # Always persist to .env even if empty, to ensure stale tokens are removed on restart
         self._persist_node_tokens()
         return {
             "removed_nodes": removed_node_ids,
             "cleared_memory": True,
+            "cleared_diagnostics": sorted(diagnostics_node_ids),
         }
 
     async def reset_worker_node_credentials(self, node_id: str, install_dir: str) -> SetupTaskResult:
@@ -709,9 +739,12 @@ class SetupService:
         current.connection_state = connection_state
         current.last_error = last_error.strip()
         current.updated_at = utcnow()
+        self._schedule_node_diagnostics_sync(normalized_node_id)
 
     def _clear_pairing_diagnostic(self, node_id: str) -> None:
-        self._pairing_diagnostics.pop(node_id.strip(), None)
+        normalized_node_id = node_id.strip()
+        self._pairing_diagnostics.pop(normalized_node_id, None)
+        self._schedule_node_diagnostics_delete(normalized_node_id)
 
     def record_pairing_event(
         self,
@@ -983,13 +1016,129 @@ class SetupService:
         return current_state
 
     def _schedule_node_diagnostics_publish(self, node_id: str) -> None:
-        if self._diagnostics_stream is None or not self._diagnostics_stream.has_subscribers(node_id):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._sync_node_diagnostics(node_id))
+
+    def _schedule_node_diagnostics_sync(self, node_id: str) -> None:
+        self._schedule_node_diagnostics_publish(node_id)
+
+    def _schedule_node_diagnostics_delete(self, node_id: str) -> None:
+        if not node_id or self._redis_store is None:
             return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self._diagnostics_stream.publish(node_id, self.get_node_diagnostics(node_id)))
+        loop.create_task(self._delete_persisted_node_diagnostics(node_id))
+
+    async def _sync_node_diagnostics(self, node_id: str) -> None:
+        diagnostics = self.get_node_diagnostics(node_id)
+        if self._redis_store is not None:
+            await self._persist_node_diagnostics(node_id, diagnostics)
+        if self._diagnostics_stream is not None and self._diagnostics_stream.has_subscribers(node_id):
+            await self._diagnostics_stream.publish(node_id, diagnostics)
+
+    async def _persist_node_diagnostics(self, node_id: str, diagnostics: dict[str, object]) -> None:
+        if self._redis_store is None:
+            return
+        try:
+            await self._redis_store.set(
+                self._node_diagnostics_key(node_id),
+                json.dumps(self._serialize_diagnostics_payload(diagnostics), ensure_ascii=False),
+            )
+            await self._redis_store.sadd(self._NODE_DIAGNOSTICS_INDEX_KEY, node_id)
+        except Exception:
+            return
+
+    async def _list_persisted_node_diagnostics_ids(self) -> set[str]:
+        if self._redis_store is None:
+            return set()
+        try:
+            return {node_id.strip() for node_id in await self._redis_store.smembers(self._NODE_DIAGNOSTICS_INDEX_KEY) if node_id.strip()}
+        except Exception:
+            return set()
+
+    async def _delete_persisted_node_diagnostics(self, node_id: str) -> None:
+        if self._redis_store is None:
+            return
+        try:
+            await self._redis_store.delete(self._node_diagnostics_key(node_id))
+            await self._redis_store.srem(self._NODE_DIAGNOSTICS_INDEX_KEY, node_id)
+        except Exception:
+            return
+
+    def _node_diagnostics_key(self, node_id: str) -> str:
+        return f"wch:node:diagnostics:{node_id}"
+
+    def _serialize_diagnostics_payload(self, diagnostics: dict[str, object]) -> dict[str, object]:
+        payload = dict(diagnostics)
+        for key in (
+            "last_pairing_at",
+            "last_register_at",
+            "last_heartbeat_at",
+            "last_auth_failure_at",
+        ):
+            value = payload.get(key)
+            if isinstance(value, datetime):
+                payload[key] = value.isoformat()
+        timeline = payload.get("timeline")
+        if isinstance(timeline, list):
+            serialized_timeline: list[dict[str, object]] = []
+            for item in timeline:
+                if not isinstance(item, dict):
+                    continue
+                entry = dict(item)
+                timestamp = entry.get("timestamp")
+                if isinstance(timestamp, datetime):
+                    entry["timestamp"] = timestamp.isoformat()
+                serialized_timeline.append(entry)
+            payload["timeline"] = serialized_timeline
+        return payload
+
+    def _deserialize_pairing_state(self, node_id: str, payload: dict[str, object]) -> PairingDiagnosticState | None:
+        normalized_node_id = node_id.strip()
+        if not normalized_node_id:
+            return None
+        state = PairingDiagnosticState(
+            node_id=normalized_node_id,
+            connection_state=str(payload.get("connection_state") or "paired_offline"),
+            node_kind=str(payload.get("node_kind") or self._resolve_node_kind(normalized_node_id)),
+        )
+        state.last_error = str(payload.get("last_error") or "")
+        state.last_pairing_trace_id = str(payload.get("last_pairing_trace_id") or "")
+        state.last_pairing_status = str(payload.get("last_pairing_status") or "")
+        state.last_pairing_at = self._coerce_datetime(payload.get("last_pairing_at"))
+        state.last_register_result = str(payload.get("last_register_result") or "")
+        state.last_register_at = self._coerce_datetime(payload.get("last_register_at"))
+        state.last_heartbeat_result = str(payload.get("last_heartbeat_result") or "")
+        state.last_heartbeat_at = self._coerce_datetime(payload.get("last_heartbeat_at"))
+        state.last_auth_failure_at = self._coerce_datetime(payload.get("last_auth_failure_at"))
+        state.last_auth_decision = str(payload.get("last_auth_decision") or "")
+        state.last_auth_client_host = str(payload.get("last_auth_client_host") or "")
+        state.last_auth_path = str(payload.get("last_auth_path") or "")
+        state.expected_token_masked = str(payload.get("expected_token_masked") or "")
+        state.provided_token_masked = str(payload.get("provided_token_masked") or "")
+        state.updated_at = self._coerce_datetime(payload.get("updated_at"), utcnow()) or utcnow()
+        timeline = payload.get("timeline")
+        if isinstance(timeline, list):
+            for item in timeline[-24:]:
+                if not isinstance(item, dict):
+                    continue
+                state.timeline.append(
+                    {
+                        "timestamp": self._coerce_datetime(item.get("timestamp"), utcnow()) or utcnow(),
+                        "level": str(item.get("level") or "info"),
+                        "category": str(item.get("category") or "runtime"),
+                        "result": str(item.get("result") or ""),
+                        "message": str(item.get("message") or ""),
+                        "trace_id": str(item.get("trace_id") or ""),
+                        "metadata": {str(key): str(value) for key, value in (item.get("metadata") or {}).items()} if isinstance(item.get("metadata"), dict) else {},
+                    }
+                )
+        return state
 
     async def _apply_gateway_config(
         self,
