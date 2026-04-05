@@ -181,7 +181,11 @@ class ProcessManager:
         self._install_or_restart_local_node(profile, layout)
 
     def _install_or_restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
-        gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
+        # 对于节点模式，使用配置的远程网关地址；对于网关模式，使用本机地址
+        if profile.gateway_base_url:
+            gateway_base_url = profile.gateway_base_url
+        else:
+            gateway_base_url = preferred_gateway_base_url(profile.gateway_port)
         local_node_id = profile.local_node_id.strip() or "local-node"
         install_dir = self._local_node_install_dir(layout)
         install_dir.mkdir(parents=True, exist_ok=True)
@@ -211,7 +215,7 @@ class ProcessManager:
             "-InstallDir",
             str(install_dir),
             "-DiscoveryEnabled",
-            "false",
+            "true",  # 启用发现功能，让网关可以搜索到节点
             "-DiscoveryPort",
             "9531",
             "-LocalCacheEnabled",

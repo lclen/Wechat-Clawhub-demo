@@ -109,6 +109,7 @@ class LauncherStatusResponse(BaseModel):
     node_cache_redis: LauncherRedisInstallState
     environment: LauncherEnvironmentStatus
     components: list[LauncherComponentStatus] = Field(default_factory=list)
+    local_lan_ip: str = ""  # 当前机器的局域网IP
 
 
 class InstallRedisRequest(BaseModel):
@@ -236,7 +237,9 @@ def apply_start_request(profile: LauncherProfile, payload: StartRequest) -> Laun
 
 def derive_runtime_model(profile: LauncherProfile) -> LauncherRuntimeModel:
     gateway_should_run = bool(profile.enable_gateway)
-    local_node_should_run = bool(profile.enable_local_node) and not bool(profile.dispatch_mode_enabled)
+    # local-node 只在网关模式下运行，节点模式下不运行内置的 local-node
+    # 节点模式下应该运行用户配置的远程节点（如 agent-1），而不是内置的 local-node
+    local_node_should_run = bool(profile.enable_local_node) and bool(profile.enable_gateway) and not bool(profile.dispatch_mode_enabled)
     node_cache_should_run = profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED
     if gateway_should_run and local_node_should_run:
         machine_role = LauncherMachineRole.GATEWAY_CONSOLE

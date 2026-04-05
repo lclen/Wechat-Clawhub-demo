@@ -50,8 +50,7 @@ def create_app() -> FastAPI:
     app.state.dist_dir = repo_root / "apps" / "agent-console" / "dist"
     app.state.state_path = default_state_path()
 
-    @app.on_event("startup")
-    async def auto_restore() -> None:
+    async def restore_runtime_services() -> None:
         """Auto-restore services based on profile configuration."""
         import logging
         logger = logging.getLogger("launcher")
@@ -89,11 +88,16 @@ def create_app() -> FastAPI:
                         redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source),
                         Path(layout.runtime_dir) / "vendor" / "node-cache-redis",
                     )
-                    app.state.manager.start_node_cache_redis(profile, layout, Path(node_state.executable_path))
+                    await asyncio.to_thread(
+                        app.state.manager.start_node_cache_redis,
+                        profile,
+                        layout,
+                        Path(node_state.executable_path),
+                    )
                     logger.info("Auto-restore: node-cache-redis started")
 
                 if runtime_model.local_node_should_run:
-                    app.state.manager.start_local_node(profile, layout)
+                    await asyncio.to_thread(app.state.manager.start_local_node, profile, layout)
                     logger.info("Auto-restore: local-node started")
             except Exception as exc:
                 logger.warning("Auto-restore node services failed: %s", exc)
@@ -107,11 +111,16 @@ def create_app() -> FastAPI:
                 redis_state(Path(profile.workdir), "host-redis", profile.redis_source),
                 Path(layout.runtime_dir) / "vendor" / "host-redis",
             )
-            app.state.manager.start_host_redis(profile, layout, Path(host_state.executable_path))
+            await asyncio.to_thread(
+                app.state.manager.start_host_redis,
+                profile,
+                layout,
+                Path(host_state.executable_path),
+            )
             logger.info("Auto-restore: host-redis started")
 
             # 启动 gateway
-            app.state.manager.start_gateway(profile, layout)
+            await asyncio.to_thread(app.state.manager.start_gateway, profile, layout)
             logger.info("Auto-restore: gateway started")
 
             # 启动 node-cache-redis（如果启用）
@@ -120,20 +129,30 @@ def create_app() -> FastAPI:
                     redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source),
                     Path(layout.runtime_dir) / "vendor" / "node-cache-redis",
                 )
-                app.state.manager.start_node_cache_redis(profile, layout, Path(node_state.executable_path))
+                await asyncio.to_thread(
+                    app.state.manager.start_node_cache_redis,
+                    profile,
+                    layout,
+                    Path(node_state.executable_path),
+                )
                 logger.info("Auto-restore: node-cache-redis started")
 
             # 启动本地节点（如果启用且非分发模式）
             if runtime_model.local_node_should_run:
-                app.state.manager.start_local_node(profile, layout)
+                await asyncio.to_thread(app.state.manager.start_local_node, profile, layout)
                 logger.info("Auto-restore: local-node started")
 
             logger.info("Auto-restore completed successfully")
         except Exception as exc:
             logger.warning("Auto-restore gateway services failed: %s", exc)
 
+    @app.on_event("startup")
+    async def auto_restore() -> None:
+        app.state.restore_task = asyncio.create_task(restore_runtime_services())
+
     @app.get("/local/bootstrap/status", response_model=LauncherStatusResponse)
     async def bootstrap_status() -> LauncherStatusResponse:
+        from launcher.network import detect_lan_ip
         profile = app.state.profile
         layout = build_layout(profile)
         host_state = redis_state(Path(profile.workdir), "host-redis", profile.redis_source) if profile.workdir else redis_state(Path("."), "host-redis", profile.redis_source)
@@ -146,6 +165,7 @@ def create_app() -> FastAPI:
             node_cache_redis=node_state,
             environment=detect_environment(app.state.repo_root),
             components=app.state.manager.statuses(profile, layout),
+            local_lan_ip=detect_lan_ip() or "",
         )
 
     @app.get("/local/setup/profile")
@@ -158,14 +178,15 @@ def create_app() -> FastAPI:
         runtime_model = derive_runtime_model(p)
         role = "worker_node" if runtime_model.machine_role == "node" else None
         completed_roles = [role] if role else []
+        preferred_gateway_base_url = str(getattr(p, "gateway_base_url", "") or "").strip()
         result = {
             "recommended_workspace": "connection" if completed_roles else "quick_setup",
             "setup_completed": bool(completed_roles),
             "completed_roles": completed_roles,
             "available_roles": ["gateway_host", "gateway_host_console", "worker_node", "console_only"],
-            "preferred_gateway_base_url": "",
+            "preferred_gateway_base_url": preferred_gateway_base_url,
             "gateway": {"redis_url": "", "default_agent_id": "default-agent", "dify_base_url": "", "dify_api_key": "", "builtin_model_base_url": "", "builtin_model_api_key": "", "builtin_model_name": "", "wechat_base_url": "", "wechat_token": "", "dispatch_mode_enabled": False},
-            "console": {"gateway_base_url": ""},
+            "console": {"gateway_base_url": preferred_gateway_base_url},
             "last_task": None,
             "code_reload_test": "Code reloaded successfully",  # Test marker
         }
@@ -669,7 +690,7 @@ def create_app() -> FastAPI:
         }
 
         try:
-            async with websockets.connect(target, extra_headers=request_headers, open_timeout=30, max_size=4_000_000) as upstream:
+            async with websockets.connect(target, additional_headers=request_headers, open_timeout=30, max_size=4_000_000) as upstream:
                 async def client_to_upstream() -> None:
                     while True:
                         message = await websocket.receive()

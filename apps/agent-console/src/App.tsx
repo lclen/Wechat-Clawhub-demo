@@ -70,13 +70,13 @@ type LauncherRedisSource = "github" | "mirror";
 type LauncherNodeCachePolicy = "disabled" | "optional" | "enabled";
 type LauncherMachineRole = "gateway" | "node" | "console" | "gateway_console";
 type LauncherComponentStatus = { name: string; state: LauncherState; pid: number | null; detail: string; error_code: string; started_at: string | null; log_path: string | null };
-type LauncherProfile = { workdir: string; gateway_port: number; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
+type LauncherProfile = { workdir: string; gateway_port: number; gateway_base_url?: string; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
 type LauncherRuntimeModel = { machine_role: LauncherMachineRole; gateway_should_run: boolean; host_redis_should_run: boolean; local_node_should_run: boolean; node_cache_should_run: boolean; runtime_authority: string };
 type LauncherWorkdirLayout = { root: string; host_redis_dir: string; transcript_dir: string; identity_dir: string; memory_dir: string; log_dir: string; runtime_dir: string; config_dir: string; node_cache_dir: string };
 type LauncherRedisInstallState = { installed: boolean; source: LauncherRedisSource; archive_path: string; executable_path: string; version: string; detail: string };
 type LauncherEnvironmentCheck = { name: string; ready: boolean; detail: string };
 type LauncherEnvironmentStatus = { ready: boolean; python_version: string; checks: LauncherEnvironmentCheck[] };
-type LauncherStatusResponse = { profile: LauncherProfile; runtime_model: LauncherRuntimeModel; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[] };
+type LauncherStatusResponse = { profile: LauncherProfile; runtime_model: LauncherRuntimeModel; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[]; local_lan_ip: string };
 type LauncherStartRequest = { machine_role?: LauncherMachineRole; enable_local_node?: boolean; enable_gateway?: boolean; enable_node_cache_redis: boolean; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource };
 type LauncherLogResponse = { component: string; log_path: string | null; content: string };
 type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_model: string; openai_enable_thinking: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key_configured: boolean };
@@ -633,7 +633,11 @@ export function App() {
   const effectiveRole = resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []);
   const currentRoleIsWorker = isWorkerRole(effectiveRole);
   const currentRoleIsConsole = isConsoleRole(effectiveRole);
+  const runtimeMachineRole = launcherMachineRoleValue(launcherStatus);
   const localGatewayManaged = launcherAvailable ? launcherShouldRunGateway(launcherStatus) : null;
+  const shouldUseLocalGatewayApi = localGatewayManaged !== false;
+  const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+  const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
   const sessionRemoteGatewayBaseUrl = currentRoleIsWorker
     ? workerSetup.gateway_base_url.trim()
     : currentRoleIsConsole
@@ -836,8 +840,9 @@ export function App() {
         try {
           launcherSt = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
         } catch { /* launcher 不可用时跳过 */ }
+        if (cancelled) return;
 
-        if (launcherSt && !cancelled) {
+        if (launcherSt) {
           setLauncherStatus(launcherSt);
           setLauncherAvailable(true);
           const runtimeRole = launcherMachineRoleValue(launcherSt);
@@ -1067,6 +1072,10 @@ export function App() {
     let socket: WebSocket | null = null;
     const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (localGatewayManaged === false && !usesRemoteGateway) {
+      setGatewaySummaryStreamActive(false);
+      return;
+    }
     if (usesRemoteGateway && !remoteGateway) {
       setGatewaySummaryStreamActive(false);
       return;
@@ -1198,6 +1207,10 @@ export function App() {
         finally {
           if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
         }
+        return;
+      }
+      if (!shouldUseLocalGatewayApi && !shouldUseRemoteGatewayApi) {
+        if (!cancelled) timer = window.setTimeout(() => void run(), IDLE_POLL_MS);
         return;
       }
       if (!launcherShouldRunGateway(launcherStatus) && currentRoleIsConsole) {
@@ -1760,7 +1773,9 @@ export function App() {
     setNotice("已重置当前填写内容。");
   }
   async function refreshSetupProfile() {
-    const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
+    const profile = shouldUseLocalGatewayApi
+      ? await requestJson<SetupProfileResponse>("/api/setup/profile")
+      : await requestJson<SetupProfileResponse>("/local/setup/profile");
     const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, systemStatus);
     setSetupProfile(profile);
     setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
@@ -1776,6 +1791,47 @@ export function App() {
   }
   async function refreshQuickSetupStatus() {
     try {
+      if (!shouldUseLocalGatewayApi) {
+        const profile = await requestJson<SetupProfileResponse>("/local/setup/profile");
+        const remoteGateway = sessionRemoteGatewayBaseUrl.trim();
+        const remoteWechat = currentRoleIsConsole && remoteGateway
+          ? await requestJson<WeChatStatus>(`${remoteGateway}/api/wechat/onboard/status`).catch(() => null)
+          : null;
+        const remoteNodeList = remoteGateway
+          ? await requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null)
+          : null;
+        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, systemStatus);
+        setSetupProfile(profile);
+        setSetupTask(profile.last_task);
+        setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
+        setGatewaySetup(profile.gateway);
+        setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
+        setWorkerSetup((current) => ({
+          ...current,
+          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
+          dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
+          dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+          node_token: "",
+        }));
+        if (remoteWechat) {
+          setWechatStatus(remoteWechat);
+          if (remoteWechat.base_url) setWechatBaseUrl(remoteWechat.base_url);
+        }
+        if (remoteNodeList) {
+          syncNodeStateView(remoteNodeList);
+        }
+        if (launcherAvailable) {
+          await refreshLauncherStatus();
+        }
+        setNotice(
+          remoteGateway
+            ? currentRoleIsWorker
+              ? "已刷新当前节点状态与远端网关连接信息。"
+              : "已刷新当前连接状态。"
+            : "已刷新当前本机状态。",
+        );
+        return;
+      }
       const [profile, system, model, wechat, nodeList] = await Promise.all([
         requestJson<SetupProfileResponse>("/api/setup/profile"),
         requestJson<SystemStatus>("/api/system/status"),
@@ -1810,6 +1866,7 @@ export function App() {
     }
   }
   async function refreshSystemStatus() {
+    if (!shouldUseLocalGatewayApi) return;
     const system = await requestJson<SystemStatus>("/api/system/status");
     setSystemStatus(system);
   }
@@ -1842,12 +1899,21 @@ export function App() {
   }
   async function runWorkerSetup(options?: { showResultScreen?: boolean }) {
     const showResultScreen = options?.showResultScreen ?? true;
-    const isWorkerRole = launcherMachineRoleValue(launcherStatus) === "node";
     try {
+      if (launcherAvailable && runtimeMachineRole !== "node") {
+        await applyLauncherPolicyForRole("worker_node");
+      }
+      if (launcherAvailable && workerSetup.gateway_base_url.trim()) {
+        await requestJson<LauncherStatusResponse>("/local/bootstrap/set-gateway-url", {
+          method: "POST",
+          body: JSON.stringify({ gateway_base_url: workerSetup.gateway_base_url.trim() }),
+        });
+        await refreshLauncherStatus();
+      }
       const result = await withBusy(
         "setup-worker",
         () => requestJson<SetupTaskEnvelope>(
-          isWorkerRole ? "/local/node/install" : "/api/setup/node/install",
+          "/local/node/install",
           { method: "POST", body: JSON.stringify({ config: workerSetup }) }
         ),
       );
@@ -1859,7 +1925,7 @@ export function App() {
         node_token: "",
       }));
       workerGatewayAutoProbeKeyRef.current = "";
-      if (!isWorkerRole) await refreshSetupProfile();
+      await refreshSetupProfile();
       setNotice("节点安装任务已启动；本次不会生成 token，安装完成后请到网关角色下完成配对。");
     } catch (error) {
       setNotice(`启动工作节点安装失败：${(error as Error).message}`);
@@ -1956,7 +2022,7 @@ export function App() {
         updated_at: new Date().toISOString(),
       });
       const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, node_id: nodeId || undefined, timeout_ms: 3000 };
-      const probeUrl = launcherMachineRoleValue(launcherStatus) === "node" ? "/local/gateway/probe" : "/api/setup/gateway/probe";
+      const probeUrl = shouldUseWorkerLocalApi || runtimeMachineRole === "node" ? "/local/gateway/probe" : "/api/setup/gateway/probe";
       const result = await withBusy(
         "setup-gateway-probe",
         () => requestJson<SetupTaskEnvelope>(probeUrl, { method: "POST", body: JSON.stringify(payload) }),
@@ -2448,7 +2514,7 @@ export function App() {
     () => setupRole ? roleName(setupRole) : (setupProfile?.completed_roles.length ? setupProfile.completed_roles.map(roleName).join(" / ") : "未选择"),
     [setupProfile?.completed_roles, setupRole],
   );
-  const currentNodeLanIp = systemStatus?.preferred_lan_ip || setupTask?.metadata.lan_ip || "";
+  const currentNodeLanIp = launcherStatus?.local_lan_ip || setupTask?.metadata.lan_ip || "";
   const workerGatewayConnection = useMemo(() => {
     const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
     const nodeId = workerSetup.node_id.trim();
