@@ -27,6 +27,44 @@ async def list_sessions(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
+@router.websocket("/overview/ws")
+async def stream_session_overview(
+    websocket: WebSocket,
+) -> None:
+    await websocket.accept()
+
+    try:
+        store: RedisStore = websocket.app.state.redis_store
+        manager: SessionManager = websocket.app.state.session_manager
+        stream: SessionStreamBroker = websocket.app.state.session_stream
+    except AttributeError:
+        await websocket.close(code=4500, reason="server_not_ready")
+        return
+
+    try:
+        if not await store.ping():
+            await websocket.close(code=4503, reason="redis_unavailable")
+            return
+    except Exception:
+        await websocket.close(code=4503, reason="redis_unavailable")
+        return
+
+    try:
+        await stream.publish_overview_snapshot(
+            websocket=websocket,
+            sessions=await manager.list_sessions(),
+        )
+        await stream.subscribe_overview(websocket)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    except SessionManagerError:
+        await websocket.close(code=4503, reason="session_unavailable")
+    finally:
+        await stream.unsubscribe_overview(websocket)
+
+
 @router.get("/{session_id}", response_model=SessionDetailResponse)
 async def get_session(
     session_id: str,

@@ -53,9 +53,10 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(worker._inference)
         self.assertIn("No inference backend is configured", worker._inference_error or "")
-        worker._register_with_gateway.assert_not_awaited()
-        self.assertIsNone(worker._heartbeat_task)
+        worker._register_with_gateway.assert_awaited_once()
+        self.assertIsNotNone(worker._heartbeat_task)
         self.assertIsNone(worker._polling_task)
+        await worker._stop_gateway_loops()
 
     async def test_register_401_keeps_worker_discoverable(self) -> None:
         settings = NodeSettings(
@@ -200,6 +201,58 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("CLAW_GATEWAY_BASE_URL=http://127.0.0.1:8300", persisted)
             self.assertIn("CLAW_NODE_TOKEN=stale-token", persisted)
             self.assertIn("CLAW_LOCAL_DIRECT_AUTH=false", persisted)
+
+    async def test_submit_task_result_prefers_task_stream_event(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        websocket = AsyncMock()
+        worker._task_stream_websocket = websocket  # type: ignore[assignment]
+        worker._gateway.submit_result = AsyncMock()
+
+        await worker._submit_task_result(
+            task_id="task-1",
+            session_id="session-1",
+            context_version=2,
+            content="hello",
+            metadata={"source": "test"},
+            usage={"completion_tokens": "12"},
+        )
+
+        websocket.send.assert_awaited_once()
+        worker._gateway.submit_result.assert_not_awaited()
+
+    async def test_submit_task_failure_falls_back_to_http_when_stream_send_fails(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        websocket = AsyncMock()
+        websocket.send = AsyncMock(side_effect=RuntimeError("socket closed"))
+        worker._task_stream_websocket = websocket  # type: ignore[assignment]
+        worker._gateway.submit_failure = AsyncMock()
+
+        await worker._submit_task_failure(
+            task_id="task-1",
+            session_id="session-1",
+            context_version=2,
+            error_code="RuntimeError",
+            error_message="boom",
+            retryable=False,
+        )
+
+        worker._gateway.submit_failure.assert_awaited_once()
 
 
 if __name__ == "__main__":

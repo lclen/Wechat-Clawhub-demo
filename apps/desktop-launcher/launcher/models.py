@@ -117,6 +117,7 @@ class InstallRedisRequest(BaseModel):
 
 
 class StartRequest(BaseModel):
+    machine_role: LauncherMachineRole | None = None
     enable_local_node: bool = True
     enable_gateway: bool = True
     enable_node_cache_redis: bool = False
@@ -202,6 +203,35 @@ class LocalNodeModelConfigRequest(BaseModel):
     dify_base_url: str = ""
     dify_api_key: str = ""
     restart_service: bool = True
+
+
+def apply_machine_role(profile: LauncherProfile, machine_role: LauncherMachineRole) -> LauncherProfile:
+    if machine_role == LauncherMachineRole.GATEWAY:
+        profile.enable_gateway = True
+        profile.enable_local_node = False
+    elif machine_role == LauncherMachineRole.NODE:
+        profile.enable_gateway = False
+        profile.enable_local_node = True
+    elif machine_role == LauncherMachineRole.CONSOLE:
+        profile.enable_gateway = False
+        profile.enable_local_node = False
+    else:
+        profile.enable_gateway = True
+        profile.enable_local_node = True
+    return profile
+
+
+def apply_start_request(profile: LauncherProfile, payload: StartRequest) -> LauncherProfile:
+    if payload.machine_role is not None:
+        apply_machine_role(profile, payload.machine_role)
+    else:
+        profile.enable_local_node = payload.enable_local_node
+        profile.enable_gateway = payload.enable_gateway
+    profile.node_cache_policy = LauncherNodeCachePolicy.ENABLED if payload.enable_node_cache_redis else LauncherNodeCachePolicy.DISABLED
+    profile.dispatch_mode_enabled = payload.dispatch_mode_enabled
+    profile.redis_source = payload.redis_source
+    profile.node_cache_redis_source = payload.node_cache_redis_source
+    return profile
 
 
 def derive_runtime_model(profile: LauncherProfile) -> LauncherRuntimeModel:

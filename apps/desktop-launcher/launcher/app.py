@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from launcher.models import (
+    apply_start_request,
     DispatchModeToggleRequest,
     InstallRedisRequest,
     LauncherNodeCachePolicy,
@@ -227,12 +228,7 @@ def create_app() -> FastAPI:
         if not profile.workdir:
             from launcher.runtime import resource_root
             profile.workdir = str(resource_root())
-        profile.enable_local_node = payload.enable_local_node
-        profile.enable_gateway = payload.enable_gateway
-        profile.node_cache_policy = LauncherNodeCachePolicy.ENABLED if payload.enable_node_cache_redis else LauncherNodeCachePolicy.DISABLED
-        profile.dispatch_mode_enabled = payload.dispatch_mode_enabled
-        profile.redis_source = payload.redis_source
-        profile.node_cache_redis_source = payload.node_cache_redis_source
+        profile = apply_start_request(profile, payload)
         save_profile(profile, app.state.state_path)
         app.state.profile = profile
         layout = build_layout(profile)
@@ -265,6 +261,9 @@ def create_app() -> FastAPI:
                     ) from exc
             except Exception:
                 pass
+        else:
+            app.state.manager.stop("gateway", profile, layout)
+            app.state.manager.stop("host-redis", profile, layout)
 
         if runtime_model.node_cache_should_run:
             node_state = await ensure_redis_binary(

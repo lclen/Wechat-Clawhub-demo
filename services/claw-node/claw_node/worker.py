@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 import websockets
+from websockets import WebSocketClientProtocol
 
 from claw_node.config import NodeSettings
 from claw_node.diagnostics import NodeDiagnostics
@@ -37,6 +38,8 @@ class Worker:
         self._auth_failed = False
         self._heartbeat_task: asyncio.Task | None = None
         self._polling_task: asyncio.Task | None = None
+        self._task_stream_websocket: WebSocketClientProtocol | None = None
+        self._task_stream_send_lock = asyncio.Lock()
 
     async def run(self) -> None:
         self._diagnostics.refresh_settings()
@@ -219,6 +222,7 @@ class Worker:
                 continue
             try:
                 async with self._gateway.task_stream_connection() as websocket:
+                    self._task_stream_websocket = websocket
                     logger.info(
                         "[worker] task stream connected node_id=%s wait_seconds=%s",
                         self._settings.node_id,
@@ -228,13 +232,13 @@ class Worker:
                         if self._semaphore.locked():
                             await asyncio.sleep(self._settings.pull_interval_ms / 1000)
                             continue
-                        await websocket.send(json.dumps({"type": "ready"}))
+                        await self._send_task_stream_event({"type": "ready"})
                         raw_payload = await websocket.recv()
                         payload = json.loads(raw_payload)
                         payload_type = payload.get("type")
                         if payload_type == "noop":
                             continue
-                        if payload_type != "task" or not isinstance(payload.get("task"), dict):
+                        if payload_type not in {"task", "task_assigned"} or not isinstance(payload.get("task"), dict):
                             logger.warning("[worker] task stream received unexpected payload: %s", payload)
                             continue
                         task = payload["task"]
@@ -270,6 +274,8 @@ class Worker:
                 logger.warning("[worker] task stream unavailable, falling back to HTTP polling: %s", exc)
                 if not await self._poll_once():
                     return
+            finally:
+                self._task_stream_websocket = None
             await asyncio.sleep(self._settings.task_stream_reconnect_seconds)
 
     def _on_task_done(self, task: asyncio.Task) -> None:
@@ -385,6 +391,7 @@ class Worker:
                 await task
         self._heartbeat_task = None
         self._polling_task = None
+        self._task_stream_websocket = None
 
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:
         trace_id = payload.get("pairing_trace_id", "").strip()
@@ -564,12 +571,13 @@ class Worker:
                 recent_messages=recent_messages,
             )
             submit_started_at = time.perf_counter()
-            await self._gateway.submit_result(
+            await self._submit_task_result(
                 task_id=task["task_id"],
                 session_id=task["session_id"],
                 context_version=task["context_version"],
                 content=answer,
                 metadata=self._stringify_mapping(usage or {}),
+                usage=self._stringify_mapping(usage or {}),
             )
             total_ms = (time.perf_counter() - started_at) * 1000
             submit_ms = (time.perf_counter() - submit_started_at) * 1000
@@ -598,7 +606,7 @@ class Worker:
                 level="error",
             )
             with suppress(Exception):
-                await self._gateway.submit_failure(
+                await self._submit_task_failure(
                     task_id=task["task_id"],
                     session_id=task["session_id"],
                     context_version=task["context_version"],
@@ -606,6 +614,86 @@ class Worker:
                     error_message=str(exc),
                     retryable=False,
                 )
+
+    async def _submit_task_result(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        context_version: int,
+        content: str,
+        metadata: dict[str, str] | None = None,
+        usage: dict[str, str] | None = None,
+    ) -> None:
+        event = {
+            "type": "task_result",
+            "task_id": task_id,
+            "session_id": session_id,
+            "context_version": context_version,
+            "content": content,
+            "metadata": metadata or {},
+            "usage": usage or {},
+        }
+        if await self._try_send_task_stream_event(event):
+            return
+        await self._gateway.submit_result(
+            task_id=task_id,
+            session_id=session_id,
+            context_version=context_version,
+            content=content,
+            metadata=metadata,
+        )
+
+    async def _submit_task_failure(
+        self,
+        *,
+        task_id: str,
+        session_id: str,
+        context_version: int,
+        error_code: str,
+        error_message: str,
+        retryable: bool = False,
+    ) -> None:
+        event = {
+            "type": "task_failure",
+            "task_id": task_id,
+            "session_id": session_id,
+            "context_version": context_version,
+            "error_code": error_code,
+            "error_message": error_message,
+            "retryable": retryable,
+        }
+        if await self._try_send_task_stream_event(event):
+            return
+        await self._gateway.submit_failure(
+            task_id=task_id,
+            session_id=session_id,
+            context_version=context_version,
+            error_code=error_code,
+            error_message=error_message,
+            retryable=retryable,
+        )
+
+    async def _try_send_task_stream_event(self, event: dict[str, Any]) -> bool:
+        if not self._settings.task_stream_enabled:
+            return False
+        websocket = self._task_stream_websocket
+        if websocket is None:
+            return False
+        try:
+            await self._send_task_stream_event(event)
+            return True
+        except Exception as exc:
+            logger.warning("[worker] task stream event send failed, falling back to HTTP: %s", exc)
+            self._task_stream_websocket = None
+            return False
+
+    async def _send_task_stream_event(self, event: dict[str, Any]) -> None:
+        websocket = self._task_stream_websocket
+        if websocket is None:
+            raise RuntimeError("Task stream websocket is not connected")
+        async with self._task_stream_send_lock:
+            await websocket.send(json.dumps(event))
 
     def _stringify_mapping(self, payload: dict[str, Any]) -> dict[str, str]:
         return {str(k): str(v) for k, v in payload.items()}

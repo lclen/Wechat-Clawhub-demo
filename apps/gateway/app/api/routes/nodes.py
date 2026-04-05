@@ -332,48 +332,52 @@ async def stream_node_tasks(
                 })
 
             elif event_type == "task_result":
-                # Node completed a task
-                task_id = event.get("task_id")
-                result = event.get("result")
-                if not task_id or not result:
+                if not event.get("task_id") or not event.get("session_id") or event.get("content") is None:
                     await websocket.send_json({"type": "error", "reason": "invalid_task_result"})
                     continue
                 try:
-                    # Convert to TaskResultRequest format
                     from app.models.dispatch import TaskResultRequest
                     payload = TaskResultRequest(
+                        task_id=str(event["task_id"]),
+                        session_id=str(event["session_id"]),
                         node_id=node_id,
-                        task_id=task_id,
-                        result=result,
+                        context_version=int(event.get("context_version", 0)),
+                        content=str(event["content"]),
+                        usage=event.get("usage") if isinstance(event.get("usage"), dict) else None,
+                        metadata={k: str(v) for k, v in (event.get("metadata") or {}).items()} if isinstance(event.get("metadata"), dict) else {},
                     )
                     await dispatch_queue.submit_result(payload)
-                    await websocket.send_json({"type": "ack", "task_id": task_id})
                 except DispatchTaskNotFoundError:
-                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "task_not_found"})
+                    await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "task_not_found"})
                 except DispatchQueueError:
-                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "dispatch_error"})
+                    await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "dispatch_error"})
 
             elif event_type == "task_failure":
-                # Node failed a task
-                task_id = event.get("task_id")
-                error = event.get("error")
-                if not task_id or not error:
+                if (
+                    not event.get("task_id")
+                    or not event.get("session_id")
+                    or not event.get("error_code")
+                    or not event.get("error_message")
+                ):
                     await websocket.send_json({"type": "error", "reason": "invalid_task_failure"})
                     continue
                 try:
-                    # Convert to TaskFailureRequest format
                     from app.models.dispatch import TaskFailureRequest
                     payload = TaskFailureRequest(
+                        task_id=str(event["task_id"]),
+                        session_id=str(event["session_id"]),
                         node_id=node_id,
-                        task_id=task_id,
-                        error=error,
+                        context_version=int(event.get("context_version", 0)),
+                        error_code=str(event["error_code"]),
+                        error_message=str(event["error_message"]),
+                        retryable=bool(event.get("retryable", False)),
+                        metadata={k: str(v) for k, v in (event.get("metadata") or {}).items()} if isinstance(event.get("metadata"), dict) else {},
                     )
                     await dispatch_queue.submit_failure(payload)
-                    await websocket.send_json({"type": "ack", "task_id": task_id})
                 except DispatchTaskNotFoundError:
-                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "task_not_found"})
+                    await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "task_not_found"})
                 except DispatchQueueError:
-                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "dispatch_error"})
+                    await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "dispatch_error"})
 
             elif event_type == "heartbeat":
                 # Node heartbeat

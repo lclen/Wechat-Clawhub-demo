@@ -240,6 +240,7 @@ class SessionManager:
             raise SessionManagerError("Failed to update dispatch state") from exc
         parsed = self._parse_session(meta, session.context_summary)
         self._user_data_store.persist_session(parsed)
+        await self._publish_overview_if_needed()
         return parsed
 
     async def clear_dispatch_state(self, session_id: str, *, expected_task_id: str | None = None) -> SessionRecord:
@@ -264,6 +265,7 @@ class SessionManager:
             raise SessionManagerError("Failed to clear dispatch state") from exc
         parsed = self._parse_session(meta, session.context_summary)
         self._user_data_store.persist_session(parsed)
+        await self._publish_overview_if_needed()
         return parsed
 
     async def _get_or_create_session(self, *, channel: str, user_id: str, agent_id: str) -> SessionRecord:
@@ -311,6 +313,7 @@ class SessionManager:
             )
             parsed = self._parse_session(meta, "")
             self._user_data_store.persist_session(parsed)
+            await self._publish_overview_if_needed()
             return parsed
         except RedisError as exc:
             raise SessionManagerError("Failed to create session") from exc
@@ -357,8 +360,14 @@ class SessionManager:
                 messages=[message],
                 next_cursor=updated_message_count,
             )
+        await self._publish_overview_if_needed()
 
         return parsed
+
+    async def _publish_overview_if_needed(self) -> None:
+        if not self._session_stream or not self._session_stream.has_overview_subscribers():
+            return
+        await self._session_stream.publish_overview(await self.list_sessions())
 
     def _parse_session(self, raw: dict[str, str], summary: str | None) -> SessionRecord:
         last_dispatch_raw = raw.get("last_dispatch_at") or None
