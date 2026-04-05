@@ -493,8 +493,8 @@ export function App() {
   const shouldAutoFollowMessagesRef = useRef(true);
   const previousMessageSessionIdRef = useRef<string | null>(null);
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
-  const sessionRemoteGatewayBaseUrl = gatewayEnabled === false ? workerSetup.gateway_base_url.trim() : "";
-  const sessionRemoteNodeId = gatewayEnabled === false ? workerSetup.node_id.trim() : "";
+  const sessionRemoteGatewayBaseUrl = gatewayEnabled !== true ? workerSetup.gateway_base_url.trim() : "";
+  const sessionRemoteNodeId = gatewayEnabled !== true ? workerSetup.node_id.trim() : "";
 
   function scrollMessagesToBottom() {
     const container = messagesRef.current;
@@ -1578,7 +1578,7 @@ export function App() {
         updated_at: new Date().toISOString(),
       });
       const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, node_id: nodeId || undefined, timeout_ms: 3000 };
-      const probeUrl = launcherStatus?.profile.enable_gateway === false ? "/local/gateway/probe" : "/api/setup/gateway/probe";
+      const probeUrl = launcherStatus?.profile.enable_gateway !== true ? "/local/gateway/probe" : "/api/setup/gateway/probe";
       const result = await withBusy(
         "setup-gateway-probe",
         () => requestJson<SetupTaskEnvelope>(probeUrl, { method: "POST", body: JSON.stringify(payload) }),

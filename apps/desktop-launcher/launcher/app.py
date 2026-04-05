@@ -68,10 +68,13 @@ def create_app() -> FastAPI:
     @app.get("/local/setup/profile")
     async def local_setup_profile() -> JSONResponse:
         """Minimal setup profile for worker-role machines without a local gateway."""
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info("=== local_setup_profile called ===")
         p = app.state.profile
         role = "worker_node" if not p.enable_gateway else None
         completed_roles = [role] if role else []
-        return JSONResponse({
+        result = {
             "recommended_workspace": "connection" if completed_roles else "quick_setup",
             "setup_completed": bool(completed_roles),
             "completed_roles": completed_roles,
@@ -80,7 +83,21 @@ def create_app() -> FastAPI:
             "gateway": {"redis_url": "", "default_agent_id": "default-agent", "dify_base_url": "", "dify_api_key": "", "builtin_model_base_url": "", "builtin_model_api_key": "", "builtin_model_name": "", "wechat_base_url": "", "wechat_token": "", "dispatch_mode_enabled": False},
             "console": {"gateway_base_url": ""},
             "last_task": None,
-        })
+            "code_reload_test": "Code reloaded successfully",  # Test marker
+        }
+        logger.info(f"Returning profile with test marker")
+        return JSONResponse(result)
+
+    @app.post("/local/bootstrap/set-gateway-url", response_model=LauncherStatusResponse)
+    async def set_gateway_url(request: Request) -> LauncherStatusResponse:
+        """Set remote gateway URL for worker-only nodes."""
+        body = await request.json()
+        gateway_url = str(body.get("gateway_base_url", "")).strip()
+        profile = app.state.profile
+        profile.gateway_base_url = gateway_url
+        save_profile(profile, app.state.state_path)
+        app.state.profile = profile
+        return await bootstrap_status()
 
     @app.post("/local/bootstrap/install-redis", response_model=LauncherStatusResponse)
     async def install_redis(payload: InstallRedisRequest) -> LauncherStatusResponse:
@@ -493,8 +510,17 @@ def create_app() -> FastAPI:
 
     @app.api_route("/api/{path:path}", methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"])
     async def proxy_api(path: str, request: Request) -> JSONResponse:
+        import logging
+        logger = logging.getLogger(__name__)
         profile = app.state.profile
-        target = f"http://127.0.0.1:{profile.gateway_port}/api/{path}"
+
+        # Use remote gateway URL if configured, otherwise use local gateway
+        if profile.gateway_base_url:
+            target = f"{profile.gateway_base_url.rstrip('/')}/api/{path}"
+        else:
+            target = f"http://127.0.0.1:{profile.gateway_port}/api/{path}"
+
+        logger.info(f"Proxying {request.method} /api/{path} -> {target}")
         try:
             body = await request.body()
             headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length", "connection"}}
@@ -506,8 +532,19 @@ def create_app() -> FastAPI:
                     content=body,
                     headers=headers,
                 )
+            logger.info(f"Gateway response: {response.status_code}")
+        except httpx.TimeoutException as exc:
+            logger.error(f"Gateway timeout for {target}: {exc}")
+            raise HTTPException(status_code=504, detail=f"Gateway timeout: {exc}") from exc
         except httpx.ConnectError as exc:
+            logger.error(f"Gateway connection error for {target}: {exc}")
             raise HTTPException(status_code=503, detail=f"Gateway is not running: {exc}") from exc
+        except httpx.HTTPError as exc:
+            logger.error(f"Gateway HTTP error for {target}: {exc}")
+            raise HTTPException(status_code=502, detail=f"Gateway error: {exc}") from exc
+        except Exception as exc:
+            logger.error(f"Unexpected error proxying to {target}: {exc}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Proxy error: {exc}") from exc
 
         # After a successful gateway config save, sync model config to local node.
         if (

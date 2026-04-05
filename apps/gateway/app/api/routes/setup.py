@@ -107,8 +107,18 @@ async def probe_worker_gateway(
     payload: GatewayProbeRequest,
     setup_service: SetupService = Depends(get_setup_service),
 ) -> SetupTaskEnvelope:
-    task = await setup_service.probe_gateway(payload.gateway_base_url, payload.node_id, payload.timeout_ms)
-    return SetupTaskEnvelope(task=task)
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.info(f"probe_worker_gateway called with gateway_base_url={payload.gateway_base_url}, node_id={payload.node_id}")
+    try:
+        task = await setup_service.probe_gateway(payload.gateway_base_url, payload.node_id, payload.timeout_ms)
+        logger.info(f"probe_gateway completed: task_id={task.task_id}, status={task.status}")
+        response = SetupTaskEnvelope(task=task)
+        logger.info(f"Response object created successfully")
+        return response
+    except Exception as exc:
+        logger.error(f"Unexpected error in probe_worker_gateway: {exc}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Internal error: {exc}") from exc
 
 
 @router.post("/discovery/scan", response_model=DiscoveryScanResponse)
