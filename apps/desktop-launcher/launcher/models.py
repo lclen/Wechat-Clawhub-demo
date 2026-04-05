@@ -24,6 +24,13 @@ class LauncherNodeCachePolicy(StrEnum):
     ENABLED = "enabled"
 
 
+class LauncherMachineRole(StrEnum):
+    GATEWAY = "gateway"
+    NODE = "node"
+    CONSOLE = "console"
+    GATEWAY_CONSOLE = "gateway_console"
+
+
 class LauncherComponentStatus(BaseModel):
     name: str
     state: ComponentState
@@ -84,8 +91,18 @@ class LauncherProfile(BaseModel):
     enable_gateway: bool = True
 
 
+class LauncherRuntimeModel(BaseModel):
+    machine_role: LauncherMachineRole = LauncherMachineRole.GATEWAY_CONSOLE
+    gateway_should_run: bool = True
+    host_redis_should_run: bool = True
+    local_node_should_run: bool = True
+    node_cache_should_run: bool = False
+    runtime_authority: str = "launcher"
+
+
 class LauncherStatusResponse(BaseModel):
     profile: LauncherProfile
+    runtime_model: LauncherRuntimeModel
     layout: LauncherWorkdirLayout
     host_redis: LauncherRedisInstallState
     node_cache_redis: LauncherRedisInstallState
@@ -184,3 +201,25 @@ class LocalNodeModelConfigRequest(BaseModel):
     dify_base_url: str = ""
     dify_api_key: str = ""
     restart_service: bool = True
+
+
+def derive_runtime_model(profile: LauncherProfile) -> LauncherRuntimeModel:
+    gateway_should_run = bool(profile.enable_gateway)
+    local_node_should_run = bool(profile.enable_local_node) and not bool(profile.dispatch_mode_enabled)
+    node_cache_should_run = profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED
+    if gateway_should_run and local_node_should_run:
+        machine_role = LauncherMachineRole.GATEWAY_CONSOLE
+    elif gateway_should_run:
+        machine_role = LauncherMachineRole.GATEWAY
+    elif local_node_should_run:
+        machine_role = LauncherMachineRole.NODE
+    else:
+        machine_role = LauncherMachineRole.CONSOLE
+    return LauncherRuntimeModel(
+        machine_role=machine_role,
+        gateway_should_run=gateway_should_run,
+        host_redis_should_run=gateway_should_run,
+        local_node_should_run=local_node_should_run,
+        node_cache_should_run=node_cache_should_run,
+        runtime_authority="launcher",
+    )

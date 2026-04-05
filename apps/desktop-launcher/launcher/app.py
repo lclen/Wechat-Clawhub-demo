@@ -16,6 +16,7 @@ from launcher.models import (
     InstallRedisRequest,
     LauncherNodeCachePolicy,
     LauncherStatusResponse,
+    derive_runtime_model,
     LogResponse,
     LocalNodeActionResponse,
     LocalNodeExportResponse,
@@ -52,6 +53,7 @@ def create_app() -> FastAPI:
         logger = logging.getLogger("launcher")
 
         profile = app.state.profile
+        runtime_model = derive_runtime_model(profile)
 
         # 安全检查 1：必须启用自动启动
         if not profile.auto_start:
@@ -63,17 +65,22 @@ def create_app() -> FastAPI:
             logger.info("Auto-restore skipped: bootstrap not completed yet")
             return
 
-        logger.info("Auto-restore starting: enable_gateway=%s", profile.enable_gateway)
+        logger.info(
+            "Auto-restore starting: role=%s gateway_should_run=%s local_node_should_run=%s",
+            runtime_model.machine_role,
+            runtime_model.gateway_should_run,
+            runtime_model.local_node_should_run,
+        )
 
         layout = build_layout(profile)
         ensure_layout(layout)
 
         # 安全检查 3：节点端不启动网关
-        if not profile.enable_gateway:
+        if not runtime_model.gateway_should_run:
             # 节点端只启动节点相关服务
             logger.info("Auto-restore: worker node mode, starting node services only")
             try:
-                if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
+                if runtime_model.node_cache_should_run:
                     node_state = await ensure_redis_binary(
                         redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source),
                         Path(layout.runtime_dir) / "vendor" / "node-cache-redis",
@@ -81,7 +88,7 @@ def create_app() -> FastAPI:
                     app.state.manager.start_node_cache_redis(profile, layout, Path(node_state.executable_path))
                     logger.info("Auto-restore: node-cache-redis started")
 
-                if profile.enable_local_node:
+                if runtime_model.local_node_should_run:
                     app.state.manager.start_local_node(profile, layout)
                     logger.info("Auto-restore: local-node started")
             except Exception as exc:
@@ -104,7 +111,7 @@ def create_app() -> FastAPI:
             logger.info("Auto-restore: gateway started")
 
             # 启动 node-cache-redis（如果启用）
-            if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
+            if runtime_model.node_cache_should_run:
                 node_state = await ensure_redis_binary(
                     redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source),
                     Path(layout.runtime_dir) / "vendor" / "node-cache-redis",
@@ -113,7 +120,7 @@ def create_app() -> FastAPI:
                 logger.info("Auto-restore: node-cache-redis started")
 
             # 启动本地节点（如果启用且非分发模式）
-            if profile.enable_local_node and not profile.dispatch_mode_enabled:
+            if runtime_model.local_node_should_run:
                 app.state.manager.start_local_node(profile, layout)
                 logger.info("Auto-restore: local-node started")
 
@@ -129,6 +136,7 @@ def create_app() -> FastAPI:
         node_state = redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source) if profile.workdir else redis_state(Path("."), "node-cache-redis", profile.node_cache_redis_source)
         return LauncherStatusResponse(
             profile=profile,
+            runtime_model=derive_runtime_model(profile),
             layout=layout,
             host_redis=host_state,
             node_cache_redis=node_state,
@@ -140,7 +148,8 @@ def create_app() -> FastAPI:
     async def local_setup_profile() -> JSONResponse:
         """Minimal setup profile for worker-role machines without a local gateway."""
         p = app.state.profile
-        role = "worker_node" if not p.enable_gateway else None
+        runtime_model = derive_runtime_model(p)
+        role = "worker_node" if runtime_model.machine_role == "node" else None
         completed_roles = [role] if role else []
         return JSONResponse({
             "recommended_workspace": "connection" if completed_roles else "quick_setup",
@@ -211,12 +220,13 @@ def create_app() -> FastAPI:
         app.state.profile = profile
         layout = build_layout(profile)
         ensure_layout(layout)
+        runtime_model = derive_runtime_model(profile)
 
         host_state = await ensure_redis_binary(
             redis_state(Path(profile.workdir), "host-redis", profile.redis_source),
             Path(layout.runtime_dir) / "vendor" / "host-redis",
         )
-        if payload.enable_gateway:
+        if runtime_model.gateway_should_run:
             try:
                 app.state.manager.start_host_redis(profile, layout, Path(host_state.executable_path))
             except Exception:
@@ -239,7 +249,7 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
 
-        if profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED:
+        if runtime_model.node_cache_should_run:
             node_state = await ensure_redis_binary(
                 redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source),
                 Path(layout.runtime_dir) / "vendor" / "node-cache-redis",
@@ -248,7 +258,7 @@ def create_app() -> FastAPI:
         else:
             app.state.manager.stop("node-cache-redis")
 
-        if profile.enable_local_node and not profile.dispatch_mode_enabled:
+        if runtime_model.local_node_should_run:
             app.state.manager.start_local_node(profile, layout)
         else:
             app.state.manager.stop("local-node", profile, layout)

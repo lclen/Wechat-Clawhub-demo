@@ -288,6 +288,8 @@ async def stream_node_tasks(
         store: RedisStore = websocket.app.state.redis_store
         dispatch_queue: DispatchQueue = websocket.app.state.dispatch_queue
         node_auth: NodeAuthService = websocket.app.state.node_auth
+        node_stream = websocket.app.state.node_stream
+        registry: NodeRegistry = websocket.app.state.node_registry
     except AttributeError:
         await websocket.close(code=4500, reason="server_not_ready")
         return
@@ -306,26 +308,94 @@ async def stream_node_tasks(
         await websocket.close(code=4503, reason="redis_unavailable")
         return
 
+    # Register node connection
+    await node_stream.register_connection(node_id, websocket)
+
     try:
         while True:
-            message = await websocket.receive_json()
-            if not isinstance(message, dict) or message.get("type") != "ready":
-                await websocket.close(code=4400, reason="invalid_node_stream_message")
-                return
-            task = await dispatch_queue.pull_for_node(node_id, wait_seconds=wait_seconds)
-            if task is None:
-                await websocket.send_json({"type": "noop"})
-                continue
-            await websocket.send_json(
-                {
-                    "type": "task",
+            event = await node_stream.receive_event(websocket)
+            if event is None:
+                # Connection closed
+                break
+
+            event_type = event.get("type")
+
+            if event_type == "ready":
+                # Node is ready for a task
+                task = await dispatch_queue.pull_for_node(node_id, wait_seconds=wait_seconds)
+                if task is None:
+                    await websocket.send_json({"type": "noop"})
+                    continue
+                await websocket.send_json({
+                    "type": "task_assigned",
                     "task": task.model_dump(mode="json"),
-                }
-            )
+                })
+
+            elif event_type == "task_result":
+                # Node completed a task
+                task_id = event.get("task_id")
+                result = event.get("result")
+                if not task_id or not result:
+                    await websocket.send_json({"type": "error", "reason": "invalid_task_result"})
+                    continue
+                try:
+                    # Convert to TaskResultRequest format
+                    from app.models.dispatch import TaskResultRequest
+                    payload = TaskResultRequest(
+                        node_id=node_id,
+                        task_id=task_id,
+                        result=result,
+                    )
+                    await dispatch_queue.submit_result(payload)
+                    await websocket.send_json({"type": "ack", "task_id": task_id})
+                except DispatchTaskNotFoundError:
+                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "task_not_found"})
+                except DispatchQueueError:
+                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "dispatch_error"})
+
+            elif event_type == "task_failure":
+                # Node failed a task
+                task_id = event.get("task_id")
+                error = event.get("error")
+                if not task_id or not error:
+                    await websocket.send_json({"type": "error", "reason": "invalid_task_failure"})
+                    continue
+                try:
+                    # Convert to TaskFailureRequest format
+                    from app.models.dispatch import TaskFailureRequest
+                    payload = TaskFailureRequest(
+                        node_id=node_id,
+                        task_id=task_id,
+                        error=error,
+                    )
+                    await dispatch_queue.submit_failure(payload)
+                    await websocket.send_json({"type": "ack", "task_id": task_id})
+                except DispatchTaskNotFoundError:
+                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "task_not_found"})
+                except DispatchQueueError:
+                    await websocket.send_json({"type": "error", "task_id": task_id, "reason": "dispatch_error"})
+
+            elif event_type == "heartbeat":
+                # Node heartbeat
+                await websocket.send_json({"type": "pong"})
+
+            elif event_type == "diagnostics":
+                # Node diagnostics update
+                diagnostics = event.get("diagnostics")
+                if diagnostics:
+                    # Store diagnostics (future enhancement)
+                    await websocket.send_json({"type": "ack"})
+
+            else:
+                # Unknown event type, but don't close connection
+                await websocket.send_json({"type": "error", "reason": "unknown_event_type"})
+
     except WebSocketDisconnect:
-        return
+        pass
     except DispatchQueueError:
         await websocket.close(code=4503, reason="dispatch_unavailable")
+    finally:
+        await node_stream.unregister_connection(node_id)
 
 
 @router.post("/{node_id}/task-result", response_model=NodeOperationResponse)
