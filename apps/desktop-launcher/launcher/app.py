@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
+import asyncio
+import inspect
 import json
 import zipfile
 from datetime import datetime
@@ -690,7 +691,13 @@ def create_app() -> FastAPI:
         }
 
         try:
-            async with websockets.connect(target, additional_headers=request_headers, open_timeout=30, max_size=4_000_000) as upstream:
+            connect_kwargs = {
+                "open_timeout": 30,
+                "max_size": 4_000_000,
+            }
+            header_kwarg = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
+            connect_kwargs[header_kwarg] = request_headers
+            async with websockets.connect(target, **connect_kwargs) as upstream:
                 async def client_to_upstream() -> None:
                     while True:
                         message = await websocket.receive()

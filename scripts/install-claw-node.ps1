@@ -218,6 +218,67 @@ function Ensure-Directory([string]$Path) {
     New-Item -ItemType Directory -Force $Path | Out-Null
 }
 
+function Remove-FirewallRuleIfExists([string]$DisplayName) {
+    $getRule = Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue
+    if (-not $getRule) {
+        return
+    }
+    $existing = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
+    if ($existing) {
+        $existing | Remove-NetFirewallRule | Out-Null
+    }
+}
+
+function Ensure-FirewallPortRule(
+    [string]$DisplayName,
+    [ValidateSet("TCP", "UDP")][string]$Protocol,
+    [int]$Port,
+    [string]$Description
+) {
+    $getRule = Get-Command Get-NetFirewallRule -ErrorAction SilentlyContinue
+    $newRule = Get-Command New-NetFirewallRule -ErrorAction SilentlyContinue
+    if (-not $getRule -or -not $newRule) {
+        Write-Step "NetSecurity module unavailable; skipping firewall rule '$DisplayName'"
+        return
+    }
+    $existing = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
+    if ($existing) {
+        $existing | Remove-NetFirewallRule | Out-Null
+    }
+    New-NetFirewallRule `
+        -DisplayName $DisplayName `
+        -Direction Inbound `
+        -Action Allow `
+        -Enabled True `
+        -Profile Any `
+        -Protocol $Protocol `
+        -LocalPort $Port `
+        -Description $Description | Out-Null
+    Write-Step "Firewall rule ready: $DisplayName ($Protocol/$Port)"
+}
+
+function Sync-NodeFirewallRules([string]$NodeId, [bool]$DiscoveryEnabled, [int]$DiscoveryPort) {
+    $discoveryRuleName = "wechat-claw-node-$NodeId-discovery-udp-$DiscoveryPort"
+    $pairingPort = $DiscoveryPort + 1
+    $pairingRuleName = "wechat-claw-node-$NodeId-pairing-tcp-$pairingPort"
+    if ($DiscoveryEnabled) {
+        Ensure-FirewallPortRule `
+            -DisplayName $discoveryRuleName `
+            -Protocol "UDP" `
+            -Port $DiscoveryPort `
+            -Description "Allow claw-node UDP discovery probes for node $NodeId"
+        Ensure-FirewallPortRule `
+            -DisplayName $pairingRuleName `
+            -Protocol "TCP" `
+            -Port $pairingPort `
+            -Description "Allow claw-node pairing HTTP traffic for node $NodeId"
+        return
+    }
+    Remove-FirewallRuleIfExists -DisplayName $discoveryRuleName
+    Remove-FirewallRuleIfExists -DisplayName $pairingRuleName
+    Write-Step "Discovery disabled; removed stale firewall rules for node $NodeId"
+}
+
 function Get-BundlePathCandidates([string]$InputPath, [string]$ScriptDir, [string]$RepoRoot) {
     $candidates = New-Object System.Collections.Generic.List[string]
 
@@ -449,6 +510,8 @@ $EnvContent = @(
 
 Write-Step "Writing fixed node config file: $EnvPath"
 Write-Utf8NoBomFile -Path $EnvPath -Content ($EnvContent + [Environment]::NewLine)
+
+Sync-NodeFirewallRules -NodeId $NodeId -DiscoveryEnabled $DiscoveryEnabledBool -DiscoveryPort $DiscoveryPort
 
 # Also write a minimal .env in the bundle working directory as fallback,
 # so the node process can find CLAW_ENV_FILE even if WinSW env injection fails.
