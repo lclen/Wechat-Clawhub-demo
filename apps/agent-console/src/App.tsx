@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
   resolveInitialWorkspace,
@@ -2049,7 +2049,7 @@ export function App() {
       setLauncherAvailable(false);
     }
   }
-  async function refreshLocalNodeStatus() {
+  const refreshLocalNodeStatus = useCallback(async () => {
     if (!launcherAvailable) return;
     try {
       const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
@@ -2069,7 +2069,7 @@ export function App() {
     } catch {
       // local diagnostics are best-effort
     }
-  }
+  }, [launcherAvailable, localNodeModelDirty]);
   async function refreshLocalNodeLogs() {
     if (!launcherAvailable) return;
     try {
