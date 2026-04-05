@@ -501,7 +501,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         task = await self.service.reset_worker_node_credentials("node-b", str(install_dir))
 
         self.assertEqual(task.status, "succeeded")
-        self.assertIn("已清空本机节点 token", task.summary)
+        self.assertIn("已清空本机节点 ID、token、网关地址和配对密钥", task.summary)
         env_text = env_path.read_text(encoding="utf-8")
         self.assertIn("CLAW_NODE_TOKEN=\n", env_text)
 
@@ -773,6 +773,36 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
         self.assertIn("WCH_NODE_TOKENS={}", env_text)
         registry.remove.assert_awaited_once_with("node-a")
+
+    async def test_ingest_node_diagnostics_event_updates_auth_failure_state(self) -> None:
+        self.service.ingest_node_diagnostics_event(
+            "node-remote",
+            {
+                "event": {
+                    "category": "register",
+                    "result": "failed",
+                    "message": "401 Unauthorized",
+                    "trace_id": "trace-123",
+                    "level": "error",
+                    "metadata": {"source": "node-runtime"},
+                },
+                "snapshot": {
+                    "node_id": "node-remote",
+                    "node_kind": "remote",
+                    "current_state": "auth_failed",
+                    "last_error": "401 Unauthorized",
+                    "last_pairing_trace_id": "trace-123",
+                    "last_register_result": "failed",
+                    "last_register_at": datetime.now(UTC).isoformat(),
+                },
+            },
+        )
+
+        diagnostics = self.service.get_node_diagnostics("node-remote")
+        self.assertEqual(diagnostics["connection_state"], "auth_failed")
+        self.assertEqual(diagnostics["last_register_result"], "failed")
+        self.assertEqual(diagnostics["last_pairing_trace_id"], "trace-123")
+        self.assertEqual(diagnostics["timeline"][-1]["category"], "register")
 
     async def test_write_env_updates_normalizes_blank_lines_and_windows_newlines(self) -> None:
         self.service._gateway_env_path.write_text(

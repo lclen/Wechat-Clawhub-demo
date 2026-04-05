@@ -7,6 +7,7 @@ from app.core.deps import (
     ensure_redis_available,
     get_dispatch_queue,
     get_node_auth,
+    get_node_diagnostics_stream,
     get_node_registry,
     get_redis_store,
     get_settings_dep,
@@ -29,6 +30,7 @@ from app.models.node import (
     NodeUpdateRequest,
 )
 from app.services.node_auth import NodeAuthService
+from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.node_registry import NodeNotFoundError, NodeRegistry, NodeRegistryError
 from app.services.redis_store import RedisStore
 from app.services.setup_service import SetupService
@@ -259,6 +261,34 @@ async def get_node_diagnostics(
     return NodeDiagnosticsResponse(node_id=node_id, diagnostics=diagnostics)
 
 
+@router.websocket("/{node_id}/diagnostics/ws")
+async def stream_node_diagnostics(
+    websocket: WebSocket,
+    node_id: str,
+) -> None:
+    await websocket.accept()
+    try:
+        setup_service: SetupService = websocket.app.state.setup_service
+        stream: NodeDiagnosticsStreamBroker = websocket.app.state.node_diagnostics_stream
+    except AttributeError:
+        await websocket.close(code=4500, reason="server_not_ready")
+        return
+
+    try:
+        await stream.publish_snapshot(
+            node_id=node_id,
+            websocket=websocket,
+            diagnostics=setup_service.get_node_diagnostics(node_id),
+        )
+        await stream.subscribe(node_id, websocket)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await stream.unsubscribe(node_id, websocket)
+
+
 @router.post("/{node_id}/pull-task", response_model=PullTaskResponse)
 async def pull_task(
     request: Request,
@@ -386,7 +416,8 @@ async def stream_node_tasks(
             elif event_type == "diagnostics":
                 # Node diagnostics update
                 diagnostics = event.get("diagnostics")
-                if diagnostics:
+                if isinstance(diagnostics, dict):
+                    websocket.app.state.setup_service.ingest_node_diagnostics_event(node_id, diagnostics)
                     # Store diagnostics (future enhancement)
                     await websocket.send_json({"type": "ack"})
 

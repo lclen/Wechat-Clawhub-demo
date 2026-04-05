@@ -7,6 +7,7 @@ from app.dispatch.queue import DispatchQueue
 from app.access.wechat_bot import WeChatBotService
 from app.services.node_registry import NodeRegistry
 from app.services.node_auth import NodeAuthService
+from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.node_stream import NodeStreamBroker
 from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.redis_store import RedisStore
@@ -42,6 +43,10 @@ def get_session_stream(request: Request) -> SessionStreamBroker:
 
 def get_node_stream(request: Request) -> NodeStreamBroker:
     return request.app.state.node_stream
+
+
+def get_node_diagnostics_stream(request: Request) -> NodeDiagnosticsStreamBroker:
+    return request.app.state.node_diagnostics_stream
 
 
 def get_node_auth(request: Request) -> NodeAuthService:

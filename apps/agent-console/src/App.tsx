@@ -30,7 +30,7 @@ type NodeListResponse = { nodes: NodeRecord[]; inventory: NodeInventoryRecord[];
 type NodeDiagnosticsEvent = { timestamp: string; level: string; category: string; result: string; message: string; trace_id: string; metadata: Record<string, string> };
 type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; connection_state: NodeInventoryConnectionState; last_error: string; last_pairing_trace_id: string; last_pairing_status: string; last_pairing_at: string | null; last_register_result: string; last_register_at: string | null; last_heartbeat_result: string; last_heartbeat_at: string | null; last_auth_failure_at: string | null; last_auth_decision: string; last_auth_client_host: string; last_auth_path: string; expected_token_masked: string; provided_token_masked: string; timeline: NodeDiagnosticsEvent[] };
 type NodeDiagnosticsResponse = { node_id: string; diagnostics: NodeDiagnosticsRecord };
-type NodeMessageItem = { session_id: string; user_id: string; channel: string; role: MessageRecord["role"]; content: string; created_at: string; node_id: string | null };
+type NodeDiagnosticsStreamEnvelope = { type: "diagnostics_snapshot"; node_id: string; diagnostics: NodeDiagnosticsRecord };
 type SessionsResponse = { sessions: SessionRecord[] };
 type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean };
 type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
@@ -333,13 +333,11 @@ function launcherMachineRoleValue(launcherStatus: LauncherStatusResponse | null)
 }
 
 function launcherShouldRunGateway(launcherStatus: LauncherStatusResponse | null) {
-  if (launcherStatus?.runtime_model) return launcherStatus.runtime_model.gateway_should_run;
-  return launcherStatus?.profile.enable_gateway !== false;
+  return launcherStatus?.runtime_model?.gateway_should_run ?? false;
 }
 
 function launcherShouldRunLocalNode(launcherStatus: LauncherStatusResponse | null) {
-  if (launcherStatus?.runtime_model) return launcherStatus.runtime_model.local_node_should_run;
-  return launcherStatus?.profile.enable_local_node ?? true;
+  return launcherStatus?.runtime_model?.local_node_should_run ?? false;
 }
 
 function launcherMachineRoleLabel(launcherStatus: LauncherStatusResponse | null) {
@@ -603,8 +601,6 @@ export function App() {
   const [nodeInventorySummary, setNodeInventorySummary] = useState<NodeInventorySummary>(initialSummaryState.node_list?.summary ?? { paired_total: 0, online_total: 0, offline_total: 0 });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialUiState.selected_node_id);
   const [selectedNodeDiagnostics, setSelectedNodeDiagnostics] = useState<NodeDiagnosticsRecord | null>(null);
-  const [nodeMessages, setNodeMessages] = useState<NodeMessageItem[]>([]);
-  const [nodeMessagesLoaded, setNodeMessagesLoaded] = useState(false);
   const [sessions, setSessions] = useState<SessionRecord[]>(initialSummaryState.sessions);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialUiState.selected_session_id);
   const [activeSession, setActiveSession] = useState<SessionRecord | null>(
@@ -1043,6 +1039,16 @@ export function App() {
     return url.toString();
   }
 
+  function buildNodeDiagnosticsWebSocketUrl(nodeId: string, remoteGateway?: string | null) {
+    const baseUrl = remoteGateway?.trim() || window.location.origin;
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = `/api/nodes/${encodeURIComponent(nodeId)}/diagnostics/ws`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
@@ -1056,10 +1062,7 @@ export function App() {
         if (!remoteGateway || !nodeId) return;
         let failed = false;
         try {
-          const [sessionList, nodeResp] = await Promise.all([
-            requestJson<SessionsResponse>(`${remoteGateway}/api/sessions`),
-            requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null),
-          ]);
+          const nodeResp = await requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null);
           if (cancelled) return;
           // 更新节点连接状态
           if (nodeResp) {
@@ -1084,10 +1087,6 @@ export function App() {
               },
             });
           }
-          // 只显示分配给当前节点的会话
-          const nodeSessions = sessionList.sessions.filter(s => s.assigned_node_id === nodeId);
-          syncSessions(nodeSessions, setSessions, setSelectedSessionId, setActiveSession);
-          setSessionsLoaded(true);
         } catch { failed = true; }
         finally {
           if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
@@ -1099,10 +1098,9 @@ export function App() {
         if (!remoteGateway) return;
         let failed = false;
         try {
-          const [wechat, nodeList, sessionList] = await Promise.all([
+          const [wechat, nodeList] = await Promise.all([
             requestJson<WeChatStatus>(`${remoteGateway}/api/wechat/onboard/status`).catch(() => null),
             requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null),
-            requestJson<SessionsResponse>(`${remoteGateway}/api/sessions`),
           ]);
           if (cancelled) return;
           if (wechat) {
@@ -1110,8 +1108,6 @@ export function App() {
             setWechatStatus(wechat);
           }
           if (nodeList) syncNodeStateView(nodeList);
-          syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
-          setSessionsLoaded(true);
         } catch {
           failed = true;
         } finally {
@@ -1387,76 +1383,80 @@ export function App() {
       setSelectedNodeDiagnostics(null);
       return;
     }
-    // 节点角色下没有本机 gateway，跳过诊断轮询
-    if (!launcherShouldRunGateway(launcherStatus)) return;
+    const useRemoteGateway = currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus);
+    const remoteGateway = useRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (useRemoteGateway && !remoteGateway) return;
+    if (!useRemoteGateway && !launcherShouldRunGateway(launcherStatus)) return;
     let cancelled = false;
     let timer = 0;
-    const run = async () => {
-      try {
-        const detail = await requestJson<NodeDiagnosticsResponse>(`/api/nodes/${encodeURIComponent(selectedNodeId)}/diagnostics`);
-        if (!cancelled) setSelectedNodeDiagnostics(detail.diagnostics);
-      } catch {
-        if (!cancelled) setSelectedNodeDiagnostics(null);
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void run(), 4000);
-      }
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+
+    const scheduleHttpFallback = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        try {
+          const detail = await requestJson<NodeDiagnosticsResponse>(
+            useRemoteGateway
+              ? `${remoteGateway}/api/nodes/${encodeURIComponent(selectedNodeId)}/diagnostics`
+              : `/api/nodes/${encodeURIComponent(selectedNodeId)}/diagnostics`,
+          );
+          if (!cancelled) setSelectedNodeDiagnostics(detail.diagnostics);
+        } catch {
+          if (!cancelled) setSelectedNodeDiagnostics(null);
+        }
+      }, 200);
     };
-    void run();
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        socket = new WebSocket(buildNodeDiagnosticsWebSocketUrl(selectedNodeId, remoteGateway));
+      } catch {
+        scheduleHttpFallback();
+        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        return;
+      }
+
+      socket.onmessage = (event) => {
+        if (cancelled) return;
+        let payload: NodeDiagnosticsStreamEnvelope;
+        try {
+          payload = JSON.parse(event.data) as NodeDiagnosticsStreamEnvelope;
+        } catch {
+          return;
+        }
+        if (payload.type !== "diagnostics_snapshot" || payload.node_id !== selectedNodeId) return;
+        setSelectedNodeDiagnostics(payload.diagnostics);
+      };
+
+      socket.onerror = () => {
+        scheduleHttpFallback();
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+      };
+    };
+
+    connect();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(reconnectTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore teardown close errors
+      }
     };
-  }, [launcherStatus, selectedNodeId, workspace]);
-
-  useEffect(() => {
-    if (workspace !== "connection" || !selectedNodeId) {
-      setNodeMessages([]);
-      setNodeMessagesLoaded(true);
-      return;
-    }
-
-    const targetSessions = sessions.filter((session) => session.assigned_node_id === selectedNodeId);
-    if (!targetSessions.length) {
-      setNodeMessages([]);
-      setNodeMessagesLoaded(true);
-      return;
-    }
-
-    let cancelled = false;
-    setNodeMessagesLoaded(false);
-
-    void Promise.all(
-      targetSessions.map(async (session) => {
-        const detail = await requestJson<SessionMessagesResponse>(
-          `/api/sessions/${encodeURIComponent(session.session_id)}/messages`,
-        );
-        return detail.messages
-          .filter((message) => (message.node_id || session.assigned_node_id) === selectedNodeId)
-          .map((message) => ({
-            session_id: session.session_id,
-            user_id: session.user_id,
-            channel: session.channel,
-            role: message.role,
-            content: message.content,
-            created_at: message.created_at,
-            node_id: message.node_id,
-          }));
-      }),
-    )
-      .then((groups) => {
-        if (cancelled) return;
-        const merged = groups.flat().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 30);
-        setNodeMessages(merged);
-        setNodeMessagesLoaded(true);
-      })
-      .catch(() => {
-        if (!cancelled) setNodeMessagesLoaded(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedNodeId, sessions, workspace]);
+  }, [currentRoleIsConsole, launcherStatus, selectedNodeId, sessionRemoteGatewayBaseUrl, workspace]);
 
   useEffect(() => {
     if (!setupTask || (setupTask.status !== "pending" && setupTask.status !== "running")) return;

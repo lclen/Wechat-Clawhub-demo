@@ -32,6 +32,7 @@ from app.models.setup import (
     utcnow,
 )
 from app.services.node_registry import NodeRegistry
+from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.utils.network import (
     directed_broadcast_targets,
     is_virtual_nic_ip,
@@ -96,9 +97,15 @@ class SetupService:
     _PAIR_CONFIRM_TIMEOUT_SECONDS = 8.0
     _PAIR_CONFIRM_INTERVAL_SECONDS = 0.5
 
-    def __init__(self, settings: Settings, wechat_bot: WeChatBotService) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        wechat_bot: WeChatBotService,
+        diagnostics_stream: NodeDiagnosticsStreamBroker | None = None,
+    ) -> None:
         self._settings = settings
         self._wechat_bot = wechat_bot
+        self._diagnostics_stream = diagnostics_stream
         self._tasks: dict[str, SetupTaskState] = {}
         self._last_task_id: str | None = None
         self._worker_setup_completed = False
@@ -734,6 +741,7 @@ class SetupService:
             metadata=metadata,
             level=level,
         )
+        self._schedule_node_diagnostics_publish(state.node_id)
 
     def record_register_event(
         self,
@@ -766,6 +774,7 @@ class SetupService:
             metadata=metadata,
             level=level,
         )
+        self._schedule_node_diagnostics_publish(state.node_id)
 
     def record_heartbeat_event(
         self,
@@ -800,6 +809,7 @@ class SetupService:
                 metadata=metadata,
                 level=level,
             )
+        self._schedule_node_diagnostics_publish(state.node_id)
 
     def record_auth_event(
         self,
@@ -842,6 +852,41 @@ class SetupService:
             },
             level="error" if decision != "accepted" else "info",
         )
+        self._schedule_node_diagnostics_publish(state.node_id)
+
+    def ingest_node_diagnostics_event(self, node_id: str, payload: dict[str, object]) -> None:
+        event = payload.get("event")
+        snapshot = payload.get("snapshot")
+        if not isinstance(event, dict):
+            return
+        normalized_node_id = node_id.strip()
+        node_kind = str((snapshot or {}).get("node_kind", self._resolve_node_kind(normalized_node_id))) if isinstance(snapshot, dict) else self._resolve_node_kind(normalized_node_id)
+        state = self._ensure_pairing_state(normalized_node_id, node_kind=node_kind)
+        if isinstance(snapshot, dict):
+            state.last_error = str(snapshot.get("last_error") or state.last_error)
+            state.last_pairing_trace_id = str(snapshot.get("last_pairing_trace_id") or state.last_pairing_trace_id)
+            state.last_pairing_status = str(snapshot.get("last_pair_result") or state.last_pairing_status)
+            state.last_pairing_at = self._coerce_datetime(snapshot.get("last_pair_at"), state.last_pairing_at)
+            state.last_register_result = str(snapshot.get("last_register_result") or state.last_register_result)
+            state.last_register_at = self._coerce_datetime(snapshot.get("last_register_at"), state.last_register_at)
+            state.last_heartbeat_result = str(snapshot.get("last_heartbeat_result") or state.last_heartbeat_result)
+            state.last_heartbeat_at = self._coerce_datetime(snapshot.get("last_heartbeat_at"), state.last_heartbeat_at)
+            runtime_state = str(snapshot.get("current_state") or "").strip()
+            mapped_state = self._map_runtime_state_to_connection_state(runtime_state, state.connection_state, state.node_kind, state.last_error)
+            if mapped_state:
+                state.connection_state = mapped_state
+        metadata = event.get("metadata")
+        self._append_diagnostic_timeline(
+            state,
+            category=str(event.get("category", "runtime")),
+            result=str(event.get("result", "")),
+            message=str(event.get("message", "")),
+            trace_id=str(event.get("trace_id", "")),
+            metadata={str(key): str(value) for key, value in metadata.items()} if isinstance(metadata, dict) else {},
+            level=str(event.get("level", "info")),
+        )
+        state.updated_at = utcnow()
+        self._schedule_node_diagnostics_publish(state.node_id)
 
     def get_node_diagnostics(self, node_id: str) -> dict[str, object]:
         state = self._ensure_pairing_state(node_id, node_kind=self._resolve_node_kind(node_id))
@@ -905,6 +950,46 @@ class SetupService:
                 "metadata": metadata or {},
             }
         )
+
+    def _coerce_datetime(self, value: object, fallback: datetime | None = None) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return fallback
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return fallback
+
+    def _map_runtime_state_to_connection_state(
+        self,
+        runtime_state: str,
+        current_state: str,
+        node_kind: str,
+        last_error: str = "",
+    ) -> str:
+        normalized = runtime_state.strip()
+        if normalized == "connected":
+            return "connected"
+        if normalized == "pairing_pending":
+            return "pairing_pending"
+        if normalized == "auth_failed":
+            return "auth_failed"
+        if normalized in {"register_failed", "needs_repair"}:
+            return "register_failed"
+        lowered_error = last_error.lower()
+        if "401" in lowered_error or "unauthorized" in lowered_error:
+            return "auth_failed"
+        if normalized == "waiting_pair":
+            return "paired_offline" if node_kind == "local" else current_state
+        return current_state
+
+    def _schedule_node_diagnostics_publish(self, node_id: str) -> None:
+        if self._diagnostics_stream is None or not self._diagnostics_stream.has_subscribers(node_id):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._diagnostics_stream.publish(node_id, self.get_node_diagnostics(node_id)))
 
     async def _apply_gateway_config(
         self,

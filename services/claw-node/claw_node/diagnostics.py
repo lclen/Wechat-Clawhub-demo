@@ -5,7 +5,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from claw_node.config import NodeSettings
 
@@ -33,8 +33,13 @@ class NodeDiagnosticEvent:
 
 
 class NodeDiagnostics:
-    def __init__(self, settings: NodeSettings) -> None:
+    def __init__(
+        self,
+        settings: NodeSettings,
+        event_hook: Callable[[dict[str, object], dict[str, object]], None] | None = None,
+    ) -> None:
         self._settings = settings
+        self._event_hook = event_hook
         self._dir = settings.resolved_diagnostics_dir
         self._status_path = self._dir / "node-status.json"
         self._events_path = self._dir / "node-events.jsonl"
@@ -216,6 +221,7 @@ class NodeDiagnostics:
         self._events.append(event)
         self._append_event_file(event)
         self.flush()
+        self._notify_event_hook(event)
 
     def flush(self) -> None:
         self._snapshot["updated_at"] = self._utcnow().isoformat()
@@ -228,6 +234,25 @@ class NodeDiagnostics:
 
     def export_summary(self) -> dict[str, object]:
         return dict(self._snapshot)
+
+    def export_runtime_state(self) -> dict[str, object]:
+        return {
+            "node_id": self._snapshot.get("node_id", self._settings.node_id),
+            "node_kind": self._snapshot.get("node_kind", self._settings.node_kind),
+            "gateway_base_url": self._snapshot.get("gateway_base_url", self._settings.gateway_base_url),
+            "token_masked": self._snapshot.get("token_masked", self._mask_token(self._settings.node_token)),
+            "current_state": self._snapshot.get("current_state", ""),
+            "detail": self._snapshot.get("detail", ""),
+            "last_error": self._snapshot.get("last_error", ""),
+            "last_pairing_trace_id": self._snapshot.get("last_pairing_trace_id", ""),
+            "last_pair_result": self._snapshot.get("last_pair_result", ""),
+            "last_pair_at": self._snapshot.get("last_pair_at"),
+            "last_register_result": self._snapshot.get("last_register_result", ""),
+            "last_register_at": self._snapshot.get("last_register_at"),
+            "last_heartbeat_result": self._snapshot.get("last_heartbeat_result", ""),
+            "last_heartbeat_at": self._snapshot.get("last_heartbeat_at"),
+            "updated_at": self._snapshot.get("updated_at"),
+        }
 
     def _load_existing_snapshot(self) -> dict[str, Any]:
         if not self._status_path.exists():
@@ -303,6 +328,14 @@ class NodeDiagnostics:
         self._dir.mkdir(parents=True, exist_ok=True)
         with self._events_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(event.to_dict(), ensure_ascii=False) + "\n")
+
+    def _notify_event_hook(self, event: NodeDiagnosticEvent) -> None:
+        if self._event_hook is None:
+            return
+        try:
+            self._event_hook(event.to_dict(), self.export_runtime_state())
+        except Exception:
+            return
 
     def _mask_token(self, token: str | None) -> str:
         normalized = (token or "").strip()

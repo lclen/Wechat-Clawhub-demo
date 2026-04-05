@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from contextlib import suppress
 from typing import Any
 
@@ -25,7 +26,8 @@ logger = logging.getLogger(__name__)
 class Worker:
     def __init__(self, settings: NodeSettings) -> None:
         self._settings = settings
-        self._diagnostics = NodeDiagnostics(settings)
+        self._pending_diagnostics_events: deque[dict[str, Any]] = deque(maxlen=100)
+        self._diagnostics = NodeDiagnostics(settings, event_hook=self._enqueue_diagnostics_event)
         self._gateway = GatewayClient(settings)
         self._inference_error: str | None = None
         self._inference = self._build_inference_client(settings)
@@ -223,6 +225,7 @@ class Worker:
             try:
                 async with self._gateway.task_stream_connection() as websocket:
                     self._task_stream_websocket = websocket
+                    await self._flush_pending_diagnostics_events()
                     logger.info(
                         "[worker] task stream connected node_id=%s wait_seconds=%s",
                         self._settings.node_id,
@@ -232,6 +235,7 @@ class Worker:
                         if self._semaphore.locked():
                             await asyncio.sleep(self._settings.pull_interval_ms / 1000)
                             continue
+                        await self._flush_pending_diagnostics_events()
                         await self._send_task_stream_event({"type": "ready"})
                         raw_payload = await websocket.recv()
                         payload = json.loads(raw_payload)
@@ -694,6 +698,27 @@ class Worker:
             raise RuntimeError("Task stream websocket is not connected")
         async with self._task_stream_send_lock:
             await websocket.send(json.dumps(event))
+
+    def _enqueue_diagnostics_event(self, event: dict[str, object], snapshot: dict[str, object]) -> None:
+        self._pending_diagnostics_events.append(
+            {
+                "event": event,
+                "snapshot": snapshot,
+            }
+        )
+
+    async def _flush_pending_diagnostics_events(self) -> None:
+        if not self._settings.task_stream_enabled or self._task_stream_websocket is None:
+            return
+        while self._pending_diagnostics_events:
+            payload = self._pending_diagnostics_events[0]
+            await self._send_task_stream_event(
+                {
+                    "type": "diagnostics",
+                    "diagnostics": payload,
+                }
+            )
+            self._pending_diagnostics_events.popleft()
 
     def _stringify_mapping(self, payload: dict[str, Any]) -> dict[str, str]:
         return {str(k): str(v) for k, v in payload.items()}

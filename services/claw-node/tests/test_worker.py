@@ -254,6 +254,42 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         worker._gateway.submit_failure.assert_awaited_once()
 
+    async def test_flush_pending_diagnostics_events_sends_over_task_stream(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        websocket = AsyncMock()
+        worker._task_stream_websocket = websocket  # type: ignore[assignment]
+
+        worker._enqueue_diagnostics_event(
+            {
+                "category": "register",
+                "result": "failed",
+                "message": "401 Unauthorized",
+                "trace_id": "trace-1",
+                "level": "error",
+                "metadata": {"source": "node-runtime"},
+            },
+            {
+                "node_id": "node-local-1",
+                "node_kind": "remote",
+                "current_state": "auth_failed",
+                "last_error": "401 Unauthorized",
+                "last_register_result": "failed",
+            },
+        )
+
+        await worker._flush_pending_diagnostics_events()
+
+        websocket.send.assert_awaited_once()
+        self.assertEqual(len(worker._pending_diagnostics_events), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

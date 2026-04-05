@@ -7,6 +7,7 @@
 1. **会话消息流** - 在会话观察台实现消息的实时更新
 2. **会话概览流** - 实时推送会话列表状态变更
 3. **节点事件流** - 节点与网关之间的双向事件通信
+4. **节点诊断流** - 节点诊断时间线的实时推送
 
 这些功能统一采用 WebSocket 协议，替代传统的 HTTP 轮询方式，遵循"禁止新增轮询接口"的架构原则。
 
@@ -47,6 +48,18 @@
    - 维护与网关的 WebSocket 连接
    - 发送事件到网关
    - 优雅降级到 HTTP（WebSocket 不可用时）
+
+#### 3. 节点诊断流
+
+1. **NodeDiagnosticsStreamBroker** (`apps/gateway/app/services/node_diagnostics_stream.py`)
+   - 节点诊断流的发布/订阅中心
+   - 管理按 `node_id` 维度的 WebSocket 订阅关系
+   - 用于连接页的节点诊断实时更新
+
+2. **节点诊断 WebSocket 端点** (`apps/gateway/app/api/routes/nodes.py`)
+   - 路径：`/api/nodes/{node_id}/diagnostics/ws`
+   - 连接建立时发送一次诊断快照
+   - 后续在网关收到新的节点诊断事件时实时推送
 
 #### 3. 前端 WebSocket 客户端
 
@@ -95,6 +108,22 @@
 - task_failure: 任务失败报告
 - heartbeat: 心跳保活
 - diagnostics: 诊断信息上报
+```
+
+#### 节点诊断流
+
+```
+NodeDiagnostics(record_event)
+        ↓
+Worker event hook
+        ↓
+/api/nodes/{node_id}/ws  diagnostics event
+        ↓
+SetupService.ingest_node_diagnostics_event()
+        ↓
+NodeDiagnosticsStreamBroker.publish()
+        ↓
+连接页 WebSocket 订阅者
 ```
 
 ## 协议规范
@@ -560,6 +589,53 @@ ws://<gateway-host>:<gateway-port>/api/nodes/<node_id>/ws?wait_seconds=15
 ```
 
 **注意**：当前版本诊断事件被接收但未存储，标记为未来增强功能。
+**更新**：当前版本已经会把节点运行态诊断并入网关诊断时间线，并实时推送给连接页。
+
+---
+
+## 节点诊断流协议
+
+### 连接建立
+
+前端连接到：
+```
+ws://<gateway-host>:<gateway-port>/api/nodes/<node_id>/diagnostics/ws
+```
+
+### 消息格式
+
+#### 诊断快照（diagnostics_snapshot）
+
+```json
+{
+  "type": "diagnostics_snapshot",
+  "node_id": "node-1",
+  "diagnostics": {
+    "node_id": "node-1",
+    "connection_state": "connected",
+    "last_register_result": "succeeded",
+    "timeline": [
+      {
+        "timestamp": "2026-04-05T10:30:00Z",
+        "level": "info",
+        "category": "register",
+        "result": "succeeded",
+        "message": "register succeeded",
+        "trace_id": "trace-123",
+        "metadata": {
+          "source": "node-runtime"
+        }
+      }
+    ]
+  }
+}
+```
+
+### 行为说明
+
+- 连接建立后立即下发当前节点诊断快照
+- 后续节点经 task stream 上报新的 `diagnostics` 事件时，网关会把它并入现有诊断记录
+- 连接页优先使用这条 WebSocket；失败时才回退到单次 HTTP 读取
 
 ### 降级机制
 
@@ -819,6 +895,8 @@ const connectOverviewSocket = () => {
 - `apps/gateway/app/api/routes/nodes.py` - 节点 WebSocket 端点
 - `services/claw-node/claw_node/worker.py` - 节点 Worker 实现
 - `services/claw-node/claw_node/gateway_client.py` - 网关客户端
+- `apps/gateway/app/services/node_diagnostics_stream.py` - 节点诊断流 broker
+- `services/claw-node/claw_node/diagnostics.py` - 节点本地诊断与事件源
 
 ### 文档
 - `docs/changelog.md` - 变更日志
