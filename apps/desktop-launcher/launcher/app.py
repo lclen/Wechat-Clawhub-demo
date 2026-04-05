@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import zipfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request
+import websockets
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -644,6 +647,66 @@ def create_app() -> FastAPI:
             return JSONResponse(status_code=response.status_code, content=response.json())
         return JSONResponse(status_code=response.status_code, content={"detail": response.text})
 
+    @app.websocket("/api/{path:path}")
+    async def proxy_api_websocket(websocket: WebSocket, path: str) -> None:
+        import logging
+        logger = logging.getLogger(__name__)
+
+        profile = app.state.profile
+        if profile.gateway_base_url:
+            base_url = profile.gateway_base_url.rstrip("/")
+        else:
+            base_url = f"http://127.0.0.1:{profile.gateway_port}"
+
+        target = _build_ws_proxy_target(base_url, f"/api/{path}", websocket.query_params)
+        await websocket.accept()
+        logger.info("Proxying WebSocket /api/%s -> %s", path, target)
+
+        request_headers = {
+            key: value
+            for key, value in websocket.headers.items()
+            if key.lower() not in {"host", "connection", "upgrade", "sec-websocket-key", "sec-websocket-version", "sec-websocket-extensions"}
+        }
+
+        try:
+            async with websockets.connect(target, extra_headers=request_headers, open_timeout=30, max_size=4_000_000) as upstream:
+                async def client_to_upstream() -> None:
+                    while True:
+                        message = await websocket.receive()
+                        if message.get("type") == "websocket.disconnect":
+                            break
+                        text = message.get("text")
+                        if text is not None:
+                            await upstream.send(text)
+                            continue
+                        data = message.get("bytes")
+                        if data is not None:
+                            await upstream.send(data)
+
+                async def upstream_to_client() -> None:
+                    while True:
+                        message = await upstream.recv()
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(message)
+
+                forward_client = asyncio.create_task(client_to_upstream(), name=f"ws-proxy-client:{path}")
+                forward_upstream = asyncio.create_task(upstream_to_client(), name=f"ws-proxy-upstream:{path}")
+                done, pending = await asyncio.wait(
+                    {forward_client, forward_upstream},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                for task in done:
+                    with contextlib.suppress(asyncio.CancelledError, WebSocketDisconnect, websockets.ConnectionClosed):
+                        await task
+        except Exception as exc:
+            logger.warning("WebSocket proxy failed for /api/%s -> %s: %s", path, target, exc)
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011, reason="proxy_failed")
+
     # SPA fallback: serve index.html for any unmatched route
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str) -> FileResponse:
@@ -663,6 +726,13 @@ def create_app() -> FastAPI:
         app.mount("/assets", StaticFiles(directory=dist_dir / "assets"), name="assets")
 
     return app
+
+
+def _build_ws_proxy_target(base_url: str, path: str, query_params) -> str:
+    parts = urlsplit(base_url.rstrip("/"))
+    scheme = "wss" if parts.scheme == "https" else "ws"
+    query_string = urlencode(list(query_params.multi_items())) if hasattr(query_params, "multi_items") else urlencode(query_params)
+    return urlunsplit((scheme, parts.netloc, path, query_string, ""))
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
