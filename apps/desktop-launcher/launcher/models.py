@@ -242,8 +242,9 @@ def derive_runtime_model(profile: LauncherProfile) -> LauncherRuntimeModel:
     gateway_should_run = bool(profile.enable_gateway)
     # 节点角色和网关角色都可能托管一个节点进程，但它们的节点身份不同：
     # - gateway/gateway_console: 运行本机内置 local-node
-    # - node: 运行用户配置的工作节点 ID
-    local_node_should_run = bool(profile.enable_local_node) and not bool(profile.dispatch_mode_enabled)
+    # - node: 运行用户配置的工作节点 ID（但需要用户手动安装，不由 launcher 自动管理）
+    # 因此 local_node_should_run 只在网关模式下为 true
+    local_node_should_run = bool(profile.enable_local_node) and bool(profile.enable_gateway) and not bool(profile.dispatch_mode_enabled)
     node_cache_should_run = profile.node_cache_policy != LauncherNodeCachePolicy.DISABLED
     if gateway_should_run and local_node_should_run:
         machine_role = LauncherMachineRole.GATEWAY_CONSOLE
