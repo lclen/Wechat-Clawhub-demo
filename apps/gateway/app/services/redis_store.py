@@ -88,6 +88,9 @@ class RedisStore:
     async def lpop(self, key: str) -> str | None:
         return await self._client.lpop(key)
 
+    async def blpop(self, key: str, timeout_seconds: int) -> tuple[str, str] | None:
+        return await self._client.blpop(key, timeout=timeout_seconds)
+
     async def delete(self, *keys: str) -> int:
         if not keys:
             return 0

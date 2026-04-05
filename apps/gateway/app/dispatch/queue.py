@@ -101,9 +101,14 @@ class DispatchQueue:
         )
         return task
 
-    async def pull_for_node(self, node_id: str) -> DispatchTask | None:
+    async def pull_for_node(self, node_id: str, wait_seconds: int = 0) -> DispatchTask | None:
         try:
-            task_id = await self._store.lpop(self._node_queue_key(node_id))
+            queue_key = self._node_queue_key(node_id)
+            if wait_seconds > 0:
+                blocking_result = await self._store.blpop(queue_key, timeout_seconds=wait_seconds)
+                task_id = blocking_result[1] if blocking_result else None
+            else:
+                task_id = await self._store.lpop(queue_key)
             if not task_id:
                 return None
             encoded = await self._store.get(self._task_key(task_id))

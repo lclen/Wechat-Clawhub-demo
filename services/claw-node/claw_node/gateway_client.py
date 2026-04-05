@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
+import websockets
+from websockets.legacy.client import Connect
 
 from claw_node.config import NodeSettings
 from claw_node.node_identity import NodeIdentity, build_node_identity
@@ -82,7 +86,11 @@ class GatewayClient:
 
     async def pull_task(self) -> dict[str, Any] | None:
         client = self._get_client()
-        response = await client.post(f"/api/nodes/{self._settings.node_id}/pull-task", json={})
+        response = await client.post(
+            f"/api/nodes/{self._settings.node_id}/pull-task",
+            params={"wait_seconds": self._settings.pull_wait_seconds},
+            json={},
+        )
         response.raise_for_status()
         data = response.json()
         return data.get("task")
@@ -139,6 +147,20 @@ class GatewayClient:
         response.raise_for_status()
         return response.json()
 
+    def task_stream_connection(self) -> Connect:
+        headers = self._build_gateway_headers()
+        return websockets.connect(
+            self._build_websocket_url(
+                f"/api/nodes/{self._settings.node_id}/ws",
+                {"wait_seconds": str(self._settings.pull_wait_seconds)},
+            ),
+            extra_headers=headers,
+            open_timeout=30,
+            ping_interval=20,
+            ping_timeout=20,
+            max_size=4_000_000,
+        )
+
     def _ensure_client(self) -> None:
         if not self._settings.gateway_base_url.strip():
             self._client = None
@@ -146,13 +168,7 @@ class GatewayClient:
         if not self._settings.node_token.strip() and not self._settings.local_direct_auth:
             self._client = None
             return
-        headers = {
-            "User-Agent": f"claw-node/{self._settings.node_version}",
-        }
-        if self._settings.node_token.strip():
-            headers["X-Node-Token"] = self._settings.node_token
-        if self._settings.pairing_trace_id.strip():
-            headers["X-Pairing-Trace-Id"] = self._settings.pairing_trace_id.strip()
+        headers = self._build_gateway_headers()
         self._client = httpx.AsyncClient(
             base_url=self._settings.gateway_base_url.rstrip("/"),
             timeout=httpx.Timeout(30.0),
@@ -173,3 +189,20 @@ class GatewayClient:
         if len(normalized) <= 12:
             return f"{normalized[:4]}...({len(normalized)})"
         return f"{normalized[:8]}...{normalized[-4:]}({len(normalized)})"
+
+    def _build_gateway_headers(self) -> dict[str, str]:
+        headers = {
+            "User-Agent": f"claw-node/{self._settings.node_version}",
+        }
+        if self._settings.node_token.strip():
+            headers["X-Node-Token"] = self._settings.node_token
+        if self._settings.pairing_trace_id.strip():
+            headers["X-Pairing-Trace-Id"] = self._settings.pairing_trace_id.strip()
+        return headers
+
+    def _build_websocket_url(self, path: str, query: Mapping[str, str] | None = None) -> str:
+        gateway_base_url = self._settings.gateway_base_url.rstrip("/")
+        parts = urlsplit(gateway_base_url)
+        scheme = "wss" if parts.scheme == "https" else "ws"
+        query_string = urlencode(query or {})
+        return urlunsplit((scheme, parts.netloc, path, query_string, ""))

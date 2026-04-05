@@ -123,6 +123,14 @@ export function persistWorkspace(workspace: WorkspaceTab): void {
   }
 }
 
+export function clearPersistedWorkspace(): void {
+  try {
+    localStorage.removeItem(WORKSPACE_STATE_KEY);
+  } catch {
+    // localStorage 不可用时静默失败
+  }
+}
+
 export function loadPersistedWorkspace(): WorkspaceTab | null {
   try {
     const value = localStorage.getItem(WORKSPACE_STATE_KEY);

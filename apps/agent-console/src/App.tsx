@@ -5,6 +5,8 @@ import {
   resolveWorkspaceOnTaskComplete,
   requiresRoleSwitchConfirmation,
   persistWorkspace,
+  clearPersistedWorkspace,
+  loadPersistedWorkspace,
   resolveRoleBadge,
   validateWorkerGatewayUrl,
   resolveTokenDisplayState,
@@ -101,10 +103,24 @@ type WorkerGatewayConnectionState =
   | "gateway_reachable_node_register_failed"
   | "gateway_reachable_node_connected";
 
+type AppUiStateCache = {
+  workspace: WorkspaceTab | null;
+  selected_session_id: string | null;
+  selected_node_id: string | null;
+};
+
+type AppSummaryStateCache = {
+  wechat_status: WeChatStatus | null;
+  node_list: NodeListResponse | null;
+  sessions: SessionRecord[];
+};
+
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
 const RETRY_POLL_MS = 1000; // backend unreachable — retry quickly
 const SETUP_DRAFT_KEY = "wechat-claw-hub.quick-setup.draft";
+const UI_STATE_CACHE_KEY = "wechat-claw-hub.ui-state";
+const SUMMARY_STATE_CACHE_KEY = "wechat-claw-hub.summary-state";
 const FILTERS: { key: SessionFilter; label: string }[] = [
   { key: "all", label: "全部" },
   { key: "processing", label: "处理中" },
@@ -189,7 +205,7 @@ function loadSetupDraft() {
       console?: ConsoleSetupConfig;
     };
     return {
-      role: parsed.role ?? null,
+      role: null,
       gateway: { ...DEFAULT_GATEWAY_SETUP, ...(parsed.gateway ?? {}) },
       worker: { ...DEFAULT_WORKER_SETUP, ...(parsed.worker ?? {}), node_token: "" },
       console: { ...DEFAULT_CONSOLE_SETUP, ...(parsed.console ?? {}) },
@@ -201,6 +217,57 @@ function loadSetupDraft() {
       worker: DEFAULT_WORKER_SETUP,
       console: DEFAULT_CONSOLE_SETUP,
     };
+  }
+}
+
+function clearQuickSetupCache() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(SETUP_DRAFT_KEY);
+  window.localStorage.removeItem(SUMMARY_STATE_CACHE_KEY);
+  clearPersistedWorkspace();
+  window.localStorage.removeItem(UI_STATE_CACHE_KEY);
+}
+
+function loadUiStateCache(): AppUiStateCache {
+  if (typeof window === "undefined") {
+    return { workspace: null, selected_session_id: null, selected_node_id: null };
+  }
+  try {
+    const raw = window.localStorage.getItem(UI_STATE_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) as Partial<AppUiStateCache> : {};
+    const workspace =
+      parsed.workspace === "quick_setup" || parsed.workspace === "sessions" || parsed.workspace === "connection"
+        ? parsed.workspace
+        : loadPersistedWorkspace();
+    return {
+      workspace,
+      selected_session_id: typeof parsed.selected_session_id === "string" ? parsed.selected_session_id : null,
+      selected_node_id: typeof parsed.selected_node_id === "string" ? parsed.selected_node_id : null,
+    };
+  } catch {
+    return {
+      workspace: loadPersistedWorkspace(),
+      selected_session_id: null,
+      selected_node_id: null,
+    };
+  }
+}
+
+function loadSummaryStateCache(): AppSummaryStateCache {
+  if (typeof window === "undefined") {
+    return { wechat_status: null, node_list: null, sessions: [] };
+  }
+  try {
+    const raw = window.localStorage.getItem(SUMMARY_STATE_CACHE_KEY);
+    if (!raw) return { wechat_status: null, node_list: null, sessions: [] };
+    const parsed = JSON.parse(raw) as Partial<AppSummaryStateCache>;
+    return {
+      wechat_status: parsed.wechat_status ?? null,
+      node_list: parsed.node_list ?? null,
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    };
+  } catch {
+    return { wechat_status: null, node_list: null, sessions: [] };
   }
 }
 
@@ -428,12 +495,14 @@ function resolveWorkerGatewayBaseUrl(
 
 export function App() {
   const initialDraft = loadSetupDraft();
-  const [workspace, setWorkspace] = useState<WorkspaceTab>("quick_setup");
+  const initialUiState = useMemo(() => loadUiStateCache(), []);
+  const initialSummaryState = useMemo(() => loadSummaryStateCache(), []);
+  const [workspace, setWorkspace] = useState<WorkspaceTab>(initialUiState.workspace ?? "quick_setup");
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [setupProfile, setSetupProfile] = useState<SetupProfileResponse | null>(null);
-  const [setupRole, setSetupRole] = useState<SetupRole | null>(initialDraft.role);
-  const [setupMode, setSetupMode] = useState<SetupMode>(initialDraft.role ? "config" : "role");
+  const [setupRole, setSetupRole] = useState<SetupRole | null>(null);
+  const [setupMode, setSetupMode] = useState<SetupMode>("role");
   const [gatewaySetup, setGatewaySetup] = useState<GatewaySetupConfig>(initialDraft.gateway);
   const [workerSetup, setWorkerSetup] = useState<WorkerNodeSetupConfig>(initialDraft.worker);
   const [consoleSetup, setConsoleSetup] = useState<ConsoleSetupConfig>(initialDraft.console);
@@ -462,25 +531,29 @@ export function App() {
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [modelCheck, setModelCheck] = useState<ModelCheck | null>(null);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
-  const [wechatStatus, setWechatStatus] = useState<WeChatStatus | null>(null);
-  const [nodes, setNodes] = useState<NodeRecord[]>([]);
-  const [nodeInventory, setNodeInventory] = useState<NodeInventoryRecord[]>([]);
-  const [nodeInventorySummary, setNodeInventorySummary] = useState<NodeInventorySummary>({ paired_total: 0, online_total: 0, offline_total: 0 });
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [wechatStatus, setWechatStatus] = useState<WeChatStatus | null>(initialSummaryState.wechat_status);
+  const [nodes, setNodes] = useState<NodeRecord[]>(initialSummaryState.node_list?.nodes ?? []);
+  const [nodeInventory, setNodeInventory] = useState<NodeInventoryRecord[]>(initialSummaryState.node_list?.inventory ?? []);
+  const [nodeInventorySummary, setNodeInventorySummary] = useState<NodeInventorySummary>(initialSummaryState.node_list?.summary ?? { paired_total: 0, online_total: 0, offline_total: 0 });
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialUiState.selected_node_id);
   const [selectedNodeDiagnostics, setSelectedNodeDiagnostics] = useState<NodeDiagnosticsRecord | null>(null);
   const [nodeMessages, setNodeMessages] = useState<NodeMessageItem[]>([]);
   const [nodeMessagesLoaded, setNodeMessagesLoaded] = useState(false);
-  const [sessions, setSessions] = useState<SessionRecord[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [activeSession, setActiveSession] = useState<SessionRecord | null>(null);
+  const [sessions, setSessions] = useState<SessionRecord[]>(initialSummaryState.sessions);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialUiState.selected_session_id);
+  const [activeSession, setActiveSession] = useState<SessionRecord | null>(
+    initialUiState.selected_session_id
+      ? initialSummaryState.sessions.find((item) => item.session_id === initialUiState.selected_session_id) ?? initialSummaryState.sessions[0] ?? null
+      : initialSummaryState.sessions[0] ?? null,
+  );
   const [messages, setMessages] = useState<MessageRecord[]>([]);
-  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [sessionsLoaded, setSessionsLoaded] = useState(initialSummaryState.sessions.length > 0);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messageCursor, setMessageCursor] = useState<number>(0);
   const [qr, setQr] = useState<QrStart | null>(null);
   const [qrImageSrc, setQrImageSrc] = useState("");
   const [pollState, setPollState] = useState<PollResponse | null>(null);
-  const [wechatBaseUrl, setWechatBaseUrl] = useState("https://ilinkai.weixin.qq.com");
+  const [wechatBaseUrl, setWechatBaseUrl] = useState(initialSummaryState.wechat_status?.base_url || "https://ilinkai.weixin.qq.com");
   const [manualToken, setManualToken] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("正在读取主网关状态。");
@@ -529,13 +602,43 @@ export function App() {
     window.localStorage.setItem(
       SETUP_DRAFT_KEY,
       JSON.stringify({
-        role: setupRole,
         gateway: gatewaySetup,
         worker: workerSetup,
         console: consoleSetup,
       }),
     );
-  }, [setupRole, gatewaySetup, workerSetup, consoleSetup]);
+  }, [gatewaySetup, workerSetup, consoleSetup]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        UI_STATE_CACHE_KEY,
+        JSON.stringify({
+          workspace,
+          selected_session_id: selectedSessionId,
+          selected_node_id: selectedNodeId,
+        } satisfies AppUiStateCache),
+      );
+    } catch {
+      // ui state cache is best-effort
+    }
+    persistWorkspace(workspace);
+  }, [selectedNodeId, selectedSessionId, workspace]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        SUMMARY_STATE_CACHE_KEY,
+        JSON.stringify({
+          wechat_status: wechatStatus,
+          node_list: { nodes, inventory: nodeInventory, summary: nodeInventorySummary },
+          sessions: sessions.slice(0, 50),
+        } satisfies AppSummaryStateCache),
+      );
+    } catch {
+      // summary cache is best-effort
+    }
+  }, [nodeInventory, nodeInventorySummary, nodes, sessions, wechatStatus]);
 
   useEffect(() => {
     if (!workerSetup.pairing_key.trim()) return;
@@ -625,13 +728,21 @@ export function App() {
     let timer = 0;
     const run = async () => {
       try {
-        const [status, logs] = await Promise.all([
-          requestJson<LocalNodeStatusResponse>("/local/node/status"),
-          requestJson<LocalNodeLogsResponse>("/local/node/logs"),
-        ]);
+        const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
         if (cancelled) return;
         setLocalNodeStatus(status);
-        setLocalNodeLogs(logs);
+        if (!localNodeModelDirty) {
+          setLocalNodeModelDraft({
+            model_provider: status.model_settings?.model_provider || "auto",
+            openai_base_url: status.model_settings?.openai_base_url || "",
+            openai_api_key: "",
+            openai_model: status.model_settings?.openai_model || "",
+            openai_enable_thinking: Boolean(status.model_settings?.openai_enable_thinking),
+            dify_base_url: status.model_settings?.dify_base_url || "",
+            dify_api_key: "",
+            restart_service: true,
+          });
+        }
       } catch {
         // keep local diagnostics polling best-effort
       } finally {
@@ -649,9 +760,9 @@ export function App() {
     let cancelled = false;
     let retryTimer = 0;
     const init = async () => {
+      let launcherSt: LauncherStatusResponse | null = null;
       try {
         // 先检查 launcher 状态，按角色决定是否需要启动 gateway
-        let launcherSt: LauncherStatusResponse | null = null;
         try {
           launcherSt = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
         } catch { /* launcher 不可用时跳过 */ }
@@ -668,9 +779,10 @@ export function App() {
               const localProfile = await requestJson<SetupProfileResponse>("/local/setup/profile");
               if (!cancelled) {
                 setSetupProfile(localProfile);
-                const initialWorkspace = resolveInitialWorkspace(localProfile);
+                const initialWorkspace = localProfile.setup_completed
+                  ? (initialUiState.workspace ?? resolveInitialWorkspace(localProfile))
+                  : "quick_setup";
                 setWorkspace(initialWorkspace);
-                persistWorkspace(initialWorkspace);
                 setSetupMode(localProfile.setup_completed ? "status" : "role");
               }
             } catch { /* 忽略 */ }
@@ -679,20 +791,17 @@ export function App() {
           }
         }
 
-        const [system, model, wechat, nodeList, sessionList, profile] = await Promise.all([
+        const [system, profile] = await Promise.all([
           requestJson<SystemStatus>("/api/system/status"),
-          requestJson<ModelStatus>("/api/models/builtin/status"),
-          requestJson<WeChatStatus>("/api/wechat/onboard/status"),
-          requestJson<NodeListResponse>("/api/nodes"),
-          requestJson<SessionsResponse>("/api/sessions"),
           requestJson<SetupProfileResponse>("/api/setup/profile"),
         ]);
         if (cancelled) return;
         const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
         setSetupProfile(profile);
-        const initialWorkspace = resolveInitialWorkspace(profile);
+        const initialWorkspace = profile.setup_completed
+          ? (initialUiState.workspace ?? resolveInitialWorkspace(profile))
+          : "quick_setup";
         setWorkspace(initialWorkspace);
-        persistWorkspace(initialWorkspace);
         setSetupTask(profile.last_task);
         setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
         setSetupMode(profile.setup_completed ? "status" : "role");
@@ -705,27 +814,45 @@ export function App() {
           dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
         }));
         setSystemStatus(system);
-        setModelStatus(model);
-        if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-        setWechatStatus(wechat);
-        syncNodeStateView(nodeList);
-        syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
-        setSessionsLoaded(true);
         setNotice(
           profile.recommended_workspace === "quick_setup"
             ? "检测到这是首次启动，先完成快速配置。"
             : system.redis_ok
-              ? (sessionList.sessions.length ? "主网关在线。默认进入会话观察台。" : "主网关在线。可以先在接入中心做模型检测。")
+              ? "主网关在线，正在加载微信、节点和会话概览…"
               : "主网关已启动，但 Redis 当前不可用。",
         );
+
+        void Promise.allSettled([
+          requestJson<ModelStatus>("/api/models/builtin/status").then((model) => {
+            if (cancelled) return;
+            setModelStatus(model);
+          }),
+          requestJson<WeChatStatus>("/api/wechat/onboard/status").then((wechat) => {
+            if (cancelled) return;
+            if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
+            setWechatStatus(wechat);
+          }),
+          requestJson<NodeListResponse>("/api/nodes").then((nodeList) => {
+            if (cancelled) return;
+            syncNodeStateView(nodeList);
+          }),
+          requestJson<SessionsResponse>("/api/sessions").then((sessionList) => {
+            if (cancelled) return;
+            syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
+            setSessionsLoaded(true);
+            setNotice(
+              profile.recommended_workspace === "quick_setup"
+                ? "检测到这是首次启动，先完成快速配置。"
+                : system.redis_ok
+                  ? (sessionList.sessions.length ? "主网关在线。默认进入会话观察台。" : "主网关在线。可以先在接入中心做模型检测。")
+                  : "主网关已启动，但 Redis 当前不可用。",
+            );
+          }),
+        ]);
       } catch (error) {
         if (!cancelled) {
           // 检查是否是节点角色（gateway 不在本机）
-          let isNodeRole = false;
-          try {
-            const st = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
-            isNodeRole = st.profile.enable_gateway === false;
-          } catch { /* launcher 不可用 */ }
+          const isNodeRole = launcherSt?.profile.enable_gateway === false;
           setNotice(isNodeRole ? "当前为节点角色，网关运行在远端机器上。" : `正在等待主网关启动…`);
           if (!isNodeRole) retryTimer = window.setTimeout(() => void init(), RETRY_POLL_MS);
         }
@@ -1607,15 +1734,11 @@ export function App() {
       setLauncherAvailable(false);
     }
   }
-  async function refreshLocalNodeDiagnostics() {
+  async function refreshLocalNodeStatus() {
     if (!launcherAvailable) return;
     try {
-      const [status, logs] = await Promise.all([
-        requestJson<LocalNodeStatusResponse>("/local/node/status"),
-        requestJson<LocalNodeLogsResponse>("/local/node/logs"),
-      ]);
+      const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
       setLocalNodeStatus(status);
-      setLocalNodeLogs(logs);
       if (!localNodeModelDirty) {
         setLocalNodeModelDraft({
           model_provider: status.model_settings?.model_provider || "auto",
@@ -1631,6 +1754,18 @@ export function App() {
     } catch {
       // local diagnostics are best-effort
     }
+  }
+  async function refreshLocalNodeLogs() {
+    if (!launcherAvailable) return;
+    try {
+      const logs = await requestJson<LocalNodeLogsResponse>("/local/node/logs");
+      setLocalNodeLogs(logs);
+    } catch {
+      // local logs are best-effort
+    }
+  }
+  async function refreshLocalNodeDiagnostics() {
+    await Promise.all([refreshLocalNodeStatus(), refreshLocalNodeLogs()]);
   }
   function updateLocalNodeModelDraft<K extends keyof LocalNodeModelConfigRequest>(key: K, value: LocalNodeModelConfigRequest[K]) {
     setLocalNodeModelDirty(true);
@@ -1658,7 +1793,7 @@ export function App() {
         restart_service: true,
       });
       await refreshLauncherStatus();
-      await refreshLocalNodeDiagnostics();
+      await refreshLocalNodeStatus();
       setNotice(result.detail || "本机节点模型配置已保存。");
     } catch (error) {
       setNotice(`保存本机节点模型配置失败：${(error as Error).message}`);
@@ -2017,7 +2152,7 @@ export function App() {
         );
       }
       // 清理前端本地缓存
-      window.localStorage.removeItem(SETUP_DRAFT_KEY);
+      clearQuickSetupCache();
       persistWorkspace("quick_setup");
       setSetupProfile(null);
       setSetupRole(null);
@@ -2662,7 +2797,7 @@ export function App() {
                       <div className="section-head">
                         <div><div className="section-kicker">当前角色</div><h3>{roleName(setupRole)}</h3></div>
                         <div className="inline-actions">
-                          <button type="button" className="ghost-button" onClick={() => { persistWorkspace("quick_setup"); window.localStorage.removeItem(SETUP_DRAFT_KEY); setSetupMode("role"); }}>重新选角色</button>
+                          <button type="button" className="ghost-button" onClick={() => { clearQuickSetupCache(); persistWorkspace("quick_setup"); setSetupRole(null); setSetupTask(null); setSetupMode("role"); }}>重新选角色</button>
                           {setupProfile?.setup_completed ? <button type="button" className="ghost-button" onClick={returnToSetupStatus}>返回状态总览</button> : null}
                           <button type="button" className="ghost-button" onClick={resetCurrentSetupDraft}>重置当前填写内容</button>
                         </div>

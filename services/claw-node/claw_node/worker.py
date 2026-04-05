@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import suppress
 from typing import Any
 
 import httpx
+import websockets
 
 from claw_node.config import NodeSettings
 from claw_node.diagnostics import NodeDiagnostics
@@ -43,7 +45,7 @@ class Worker:
             f"节点进程已启动，配置文件：{self._settings.resolved_env_file_path}",
         )
         logger.info(
-            "[worker] starting node_id=%s gateway=%s provider=%s model=%s thinking=%s concurrency=%s pull_interval_ms=%s heartbeat_s=%s hostname=%s lan_ip=%s advertised=%s",
+            "[worker] starting node_id=%s gateway=%s provider=%s model=%s thinking=%s concurrency=%s pull_interval_ms=%s pull_wait_s=%s task_stream=%s heartbeat_s=%s hostname=%s lan_ip=%s advertised=%s",
             self._settings.node_id,
             self._settings.gateway_base_url,
             self._settings.model_provider,
@@ -51,6 +53,8 @@ class Worker:
             self._settings.openai_enable_thinking,
             self._settings.max_concurrency,
             self._settings.pull_interval_ms,
+            self._settings.pull_wait_seconds,
+            self._settings.task_stream_enabled,
             self._settings.heartbeat_interval_seconds,
             self._gateway.identity.hostname,
             self._gateway.identity.lan_ip or "-",
@@ -157,16 +161,99 @@ class Worker:
 
     async def _poll_loop(self) -> None:
         while not self._shutdown.is_set():
+            if not await self._poll_once():
+                return
+
+    async def _poll_once(self) -> bool:
+        if self._semaphore.locked():
+            await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+            return True
+
+        try:
+            task = await self._gateway.pull_task()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 401:
+                detail = str(exc)
+                logger.warning("Pull task unauthorized for node '%s'; stopping loops.", self._settings.node_id)
+                self._last_error = detail
+                self._auth_failed = True
+                self._diagnostics.set_state(
+                    "auth_failed",
+                    detail,
+                    trace_id=self._settings.pairing_trace_id.strip(),
+                    level="error",
+                )
+                return False
+            logger.exception("Pull task failed: %s", exc)
+            self._last_error = str(exc)
+            await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+            return True
+        except Exception as exc:
+            logger.exception("Pull task failed: %s", exc)
+            self._last_error = str(exc)
+            await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+            return True
+
+        if not task:
+            await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+            return True
+
+        logger.info(
+            "[dispatch] pulled task_id=%s session=%s context_version=%s user=%s preview=%s",
+            task.get("task_id"),
+            task.get("session_id"),
+            task.get("context_version"),
+            task.get("user_id"),
+            self._preview_text(((task.get("message") or {}).get("content") or "")),
+        )
+        await self._semaphore.acquire()
+        worker_task = asyncio.create_task(self._handle_task(task))
+        self._active_tasks.add(worker_task)
+        worker_task.add_done_callback(self._on_task_done)
+        return True
+
+    async def _task_stream_loop(self) -> None:
+        while not self._shutdown.is_set():
             if self._semaphore.locked():
                 await asyncio.sleep(self._settings.pull_interval_ms / 1000)
                 continue
-
             try:
-                task = await self._gateway.pull_task()
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code == 401:
-                    detail = str(exc)
-                    logger.warning("Pull task unauthorized for node '%s'; stopping loops.", self._settings.node_id)
+                async with self._gateway.task_stream_connection() as websocket:
+                    logger.info(
+                        "[worker] task stream connected node_id=%s wait_seconds=%s",
+                        self._settings.node_id,
+                        self._settings.pull_wait_seconds,
+                    )
+                    while not self._shutdown.is_set():
+                        if self._semaphore.locked():
+                            await asyncio.sleep(self._settings.pull_interval_ms / 1000)
+                            continue
+                        await websocket.send(json.dumps({"type": "ready"}))
+                        raw_payload = await websocket.recv()
+                        payload = json.loads(raw_payload)
+                        payload_type = payload.get("type")
+                        if payload_type == "noop":
+                            continue
+                        if payload_type != "task" or not isinstance(payload.get("task"), dict):
+                            logger.warning("[worker] task stream received unexpected payload: %s", payload)
+                            continue
+                        task = payload["task"]
+                        logger.info(
+                            "[dispatch] streamed task_id=%s session=%s context_version=%s user=%s preview=%s",
+                            task.get("task_id"),
+                            task.get("session_id"),
+                            task.get("context_version"),
+                            task.get("user_id"),
+                            self._preview_text(((task.get("message") or {}).get("content") or "")),
+                        )
+                        await self._semaphore.acquire()
+                        worker_task = asyncio.create_task(self._handle_task(task))
+                        self._active_tasks.add(worker_task)
+                        worker_task.add_done_callback(self._on_task_done)
+            except websockets.exceptions.ConnectionClosedError as exc:
+                if exc.code == 4401:
+                    detail = exc.reason or "task stream unauthorized"
+                    logger.warning("Task stream unauthorized for node '%s'; stopping loops.", self._settings.node_id)
                     self._last_error = detail
                     self._auth_failed = True
                     self._diagnostics.set_state(
@@ -176,32 +263,14 @@ class Worker:
                         level="error",
                     )
                     return
-                logger.exception("Pull task failed: %s", exc)
-                self._last_error = str(exc)
-                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
-                continue
+                logger.warning("[worker] task stream closed node_id=%s code=%s reason=%s", self._settings.node_id, exc.code, exc.reason)
+                if not await self._poll_once():
+                    return
             except Exception as exc:
-                logger.exception("Pull task failed: %s", exc)
-                self._last_error = str(exc)
-                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
-                continue
-
-            if not task:
-                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
-                continue
-
-            logger.info(
-                "[dispatch] pulled task_id=%s session=%s context_version=%s user=%s preview=%s",
-                task.get("task_id"),
-                task.get("session_id"),
-                task.get("context_version"),
-                task.get("user_id"),
-                self._preview_text(((task.get("message") or {}).get("content") or "")),
-            )
-            await self._semaphore.acquire()
-            worker_task = asyncio.create_task(self._handle_task(task))
-            self._active_tasks.add(worker_task)
-            worker_task.add_done_callback(self._on_task_done)
+                logger.warning("[worker] task stream unavailable, falling back to HTTP polling: %s", exc)
+                if not await self._poll_once():
+                    return
+            await asyncio.sleep(self._settings.task_stream_reconnect_seconds)
 
     def _on_task_done(self, task: asyncio.Task) -> None:
         self._active_tasks.discard(task)
@@ -266,7 +335,9 @@ class Worker:
             trace_id=self._settings.pairing_trace_id.strip(),
         )
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
-        self._polling_task = asyncio.create_task(self._poll_loop(), name="poll-loop")
+        poll_loop = self._task_stream_loop if self._settings.task_stream_enabled else self._poll_loop
+        poll_task_name = "task-stream-loop" if self._settings.task_stream_enabled else "poll-loop"
+        self._polling_task = asyncio.create_task(poll_loop(), name=poll_task_name)
 
     async def _register_with_gateway(self) -> None:
         trace_id = self._settings.pairing_trace_id.strip()
