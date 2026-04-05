@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 
 from app.core.config import Settings
 from app.core.deps import (
@@ -263,6 +263,7 @@ async def get_node_diagnostics(
 async def pull_task(
     request: Request,
     node_id: str,
+    wait_seconds: int = Query(default=0, ge=0, le=30),
     store: RedisStore = Depends(get_redis_store),
     dispatch_queue: DispatchQueue = Depends(get_dispatch_queue),
     node_auth: NodeAuthService = Depends(get_node_auth),
@@ -270,10 +271,61 @@ async def pull_task(
     await ensure_redis_available(store)
     node_auth.verify_request(request, node_id)
     try:
-        task = await dispatch_queue.pull_for_node(node_id)
+        task = await dispatch_queue.pull_for_node(node_id, wait_seconds=wait_seconds)
         return PullTaskResponse(task=task)
     except DispatchQueueError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.websocket("/{node_id}/ws")
+async def stream_node_tasks(
+    websocket: WebSocket,
+    node_id: str,
+    wait_seconds: int = Query(default=15, ge=0, le=30),
+) -> None:
+    await websocket.accept()
+    try:
+        store: RedisStore = websocket.app.state.redis_store
+        dispatch_queue: DispatchQueue = websocket.app.state.dispatch_queue
+        node_auth: NodeAuthService = websocket.app.state.node_auth
+    except AttributeError:
+        await websocket.close(code=4500, reason="server_not_ready")
+        return
+
+    try:
+        node_auth.verify_websocket(websocket, node_id)
+    except HTTPException as exc:
+        await websocket.close(code=4401, reason=str(exc.detail))
+        return
+
+    try:
+        if not await store.ping():
+            await websocket.close(code=4503, reason="redis_unavailable")
+            return
+    except Exception:
+        await websocket.close(code=4503, reason="redis_unavailable")
+        return
+
+    try:
+        while True:
+            message = await websocket.receive_json()
+            if not isinstance(message, dict) or message.get("type") != "ready":
+                await websocket.close(code=4400, reason="invalid_node_stream_message")
+                return
+            task = await dispatch_queue.pull_for_node(node_id, wait_seconds=wait_seconds)
+            if task is None:
+                await websocket.send_json({"type": "noop"})
+                continue
+            await websocket.send_json(
+                {
+                    "type": "task",
+                    "task": task.model_dump(mode="json"),
+                }
+            )
+    except WebSocketDisconnect:
+        return
+    except DispatchQueueError:
+        await websocket.close(code=4503, reason="dispatch_unavailable")
 
 
 @router.post("/{node_id}/task-result", response_model=NodeOperationResponse)

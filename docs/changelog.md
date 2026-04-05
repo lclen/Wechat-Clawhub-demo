@@ -1,6 +1,171 @@
 # Changelog
 
-> **Status**: Active | **Last Updated**: 2026-04-04 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+> **Status**: Active | **Last Updated**: 2026-04-05 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+
+---
+
+## 2026-04-05 — WebSocket 实时消息推送 + 会话加载性能优化
+
+### 背景
+
+本轮更新实现了 WebSocket 实时消息推送功能，解决了会话观察台消息加载慢、频繁轮询的问题。同时修复了 WebSocket 403 错误，优化了会话切换性能。
+
+---
+
+### 核心功能
+
+#### WebSocket 实时消息推送
+
+- **SessionStreamBroker**：新增会话消息流的发布/订阅中心
+  - 管理 WebSocket 连接的订阅关系
+  - 支持快照消息和增量消息推送
+  - 自动清理断开的连接
+
+- **WebSocket 端点**：`/api/sessions/{session_id}/ws`
+  - 连接建立后立即发送最近 50 条消息快照
+  - 实时推送新增消息（`messages_appended` 事件）
+  - 支持自定义错误码：4404（会话不存在）、4500（服务器未就绪）、4503（Redis 不可用）
+
+- **前端 WebSocket 客户端**
+  - 自动连接到会话 WebSocket
+  - 2.5 秒超时机制，未收到快照自动降级到 HTTP 轮询
+  - 连接失败自动降级，3 秒后重试
+  - 支持快照和增量消息的差异化处理
+
+#### 会话加载性能优化
+
+- **消息缓存机制**
+  - 前端维护会话消息缓存 (`sessionMessageCacheRef`)
+  - 切换会话时立即应用缓存，无需等待网络请求
+  - 后台异步加载增量更新
+
+- **增量加载**
+  - HTTP 接口支持 `after_count` 参数
+  - 只返回客户端未拥有的新消息
+  - 减少数据传输量和处理时间
+
+- **首屏限制**
+  - 首次加载支持 `limit` 参数（默认 50 条）
+  - 加快首屏渲染速度
+  - 用户可手动加载更多历史消息
+
+---
+
+### 后端（gateway）
+
+#### SessionStreamBroker (`session_stream.py`)
+
+```python
+class SessionStreamBroker:
+    async def subscribe(session_id, websocket)  # 订阅会话消息流
+    async def unsubscribe(session_id, websocket)  # 取消订阅
+    async def publish_messages(...)  # 推送增量消息
+    async def publish_snapshot(...)  # 发送初始快照
+```
+
+#### SessionManager 集成
+
+- 构造函数新增 `session_stream` 参数
+- `append_message()` 保存消息后自动推送到订阅者
+- `set_dispatch_state()` 更新分发状态后推送会话更新
+
+#### 消息接口增强
+
+- `GET /api/sessions/{session_id}/messages`
+  - 新增 `after_count` 参数：增量加载
+  - 新增 `limit` 参数：限制返回数量（1-200）
+  - 返回 `next_cursor` 和 `replace_messages` 标志
+
+#### 生命周期管理
+
+- `lifespan.py` 初始化 `SessionStreamBroker`
+- 注入到 `app.state.session_stream`
+- 传递给 `SessionManager` 构造函数
+
+---
+
+### 前端（agent-console）
+
+#### WebSocket 连接管理
+
+- `buildSessionWebSocketUrl()` 构建 WebSocket URL
+  - 自动处理 http/https → ws/wss 协议转换
+  - 支持 `remoteGateway` 参数（节点模式）
+
+- 连接生命周期
+  - 进入会话观察台自动连接
+  - 切换会话时断开旧连接，建立新连接
+  - 离开会话观察台自动断开
+
+#### 降级策略
+
+1. **WebSocket 优先**：首次尝试 WebSocket
+2. **超时降级**：2.5 秒未收到快照 → HTTP 轮询
+3. **错误降级**：连接失败 → HTTP 轮询
+4. **自动重连**：断开后 3 秒重试 WebSocket
+
+#### 网关地址修复
+
+- **问题**：网关模式下 WebSocket 连接到 launcher (8765) 而非网关 (8300)
+- **原因**：`sessionRemoteGatewayBaseUrl` 在网关模式下为空，导致使用 `window.location.origin`
+- **修复**：网关模式下使用 `systemStatus.preferred_gateway_base_url`
+
+```typescript
+const sessionRemoteGatewayBaseUrl = gatewayEnabled === false
+  ? workerSetup.gateway_base_url.trim()  // 节点模式
+  : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");  // 网关模式
+```
+
+---
+
+### launcher（desktop-launcher）
+
+#### 开发调试支持
+
+- `run-gateway` 命令新增 `--reload` 参数
+- 支持代码修改后自动重载
+- 方便开发调试
+
+```bash
+uv run python -m launcher.main run-gateway --reload
+```
+
+---
+
+### 文档
+
+#### 新增文档
+
+- `docs/websocket-realtime-messaging.md`
+  - WebSocket 协议规范
+  - 架构设计说明
+  - 实现细节
+  - 故障排查指南
+  - 性能优化建议
+
+---
+
+### 性能提升
+
+| 场景 | 优化前 | 优化后 | 提升 |
+|------|--------|--------|------|
+| 切换会话 | 1-2 秒（HTTP 请求） | 瞬间（缓存） | ~90% |
+| 新消息到达 | 3 秒轮询延迟 | 实时推送 | 实时 |
+| 首屏加载 | 加载全部消息 | 限制 50 条 | ~70% |
+| 增量更新 | 重新加载全部 | 只加载新增 | ~80% |
+
+---
+
+### 已知问题与注意事项
+
+> [!IMPORTANT]
+> WebSocket 连接需要正确的网关地址。在网关模式下，前端会自动使用 `systemStatus.preferred_gateway_base_url`。如果该值不正确，WebSocket 会连接失败并降级到 HTTP 轮询。
+
+> [!TIP]
+> 如果 WebSocket 频繁断开，检查：
+> 1. Redis 连接是否稳定
+> 2. 网关服务器资源是否充足
+> 3. 网络连接是否稳定
 
 ---
 

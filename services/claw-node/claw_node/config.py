@@ -36,6 +36,9 @@ class NodeSettings(BaseSettings):
     openai_enable_thinking: bool = Field(alias="CLAW_OPENAI_ENABLE_THINKING", default=False)
     max_concurrency: int = Field(alias="CLAW_MAX_CONCURRENCY", default=1, ge=1, le=128)
     pull_interval_ms: int = Field(alias="CLAW_PULL_INTERVAL_MS", default=1500, ge=200, le=60000)
+    pull_wait_seconds: int = Field(alias="CLAW_PULL_WAIT_SECONDS", default=15, ge=0, le=30)
+    task_stream_enabled: bool = Field(alias="CLAW_TASK_STREAM_ENABLED", default=True)
+    task_stream_reconnect_seconds: int = Field(alias="CLAW_TASK_STREAM_RECONNECT_SECONDS", default=3, ge=1, le=30)
     heartbeat_interval_seconds: int = Field(
         alias="CLAW_HEARTBEAT_INTERVAL_SECONDS",
         default=5,

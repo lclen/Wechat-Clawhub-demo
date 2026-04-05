@@ -106,11 +106,16 @@ async def stream_session_messages(
     websocket: WebSocket,
     session_id: str,
 ) -> None:
-    store: RedisStore = websocket.app.state.redis_store
-    manager: SessionManager = websocket.app.state.session_manager
-    stream: SessionStreamBroker = websocket.app.state.session_stream
+    await websocket.accept()
 
-    # Check Redis availability before accepting connection
+    try:
+        store: RedisStore = websocket.app.state.redis_store
+        manager: SessionManager = websocket.app.state.session_manager
+        stream: SessionStreamBroker = websocket.app.state.session_stream
+    except AttributeError:
+        await websocket.close(code=4500, reason="server_not_ready")
+        return
+
     try:
         if not await store.ping():
             await websocket.close(code=4503, reason="redis_unavailable")
@@ -119,7 +124,6 @@ async def stream_session_messages(
         await websocket.close(code=4503, reason="redis_unavailable")
         return
 
-    await websocket.accept()
     try:
         session = await manager.get_session(session_id)
         messages, next_cursor, replace_messages = await manager.get_messages(

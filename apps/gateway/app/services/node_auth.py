@@ -6,7 +6,7 @@ import logging
 import socket
 from typing import TYPE_CHECKING
 
-from fastapi import HTTPException, Request, status
+from fastapi import HTTPException, Request, WebSocket, status
 
 from app.core.config import Settings
 
@@ -107,23 +107,123 @@ class NodeAuthService:
             detail="accepted",
         )
 
+    def verify_websocket(self, websocket: WebSocket, node_id: str) -> None:
+        trace_id = websocket.headers.get("X-Pairing-Trace-Id", "").strip()
+        client_host = self._client_host_from_scope_client(websocket.client)
+        path = websocket.url.path
+        provided = self._extract_token_from_headers(websocket.headers)
+
+        if self._is_local_node_direct_host(client_host, node_id):
+            logger.info(
+                "Node websocket auth bypassed for local node. node_id=%s client=%s path=%s",
+                node_id,
+                client_host,
+                path,
+            )
+            self._record_socket_auth_event(
+                node_id=node_id,
+                trace_id=trace_id,
+                decision="accepted_local_bypass",
+                client_host=client_host,
+                path=path,
+                expected_token_masked="<local-direct-auth>",
+                provided_token_masked=self._mask_token(provided),
+                detail="local node direct auth bypass",
+            )
+            return
+
+        expected = self._settings.node_tokens.get(node_id)
+        if not expected:
+            logger.warning(
+                "Node websocket auth rejected: token not configured. node_id=%s client=%s path=%s provided=%s",
+                node_id,
+                client_host,
+                path,
+                self._mask_token(provided),
+            )
+            self._record_socket_auth_event(
+                node_id=node_id,
+                trace_id=trace_id,
+                decision="rejected_missing_token",
+                client_host=client_host,
+                path=path,
+                expected_token_masked="<missing>",
+                provided_token_masked=self._mask_token(provided),
+                detail=f"Node token is not configured for '{node_id}'",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Node token is not configured for '{node_id}'",
+            )
+
+        if provided != expected:
+            logger.warning(
+                "Node websocket auth rejected: token mismatch. node_id=%s client=%s path=%s expected=%s provided=%s",
+                node_id,
+                client_host,
+                path,
+                self._mask_token(expected),
+                self._mask_token(provided),
+            )
+            self._record_socket_auth_event(
+                node_id=node_id,
+                trace_id=trace_id,
+                decision="rejected_mismatch",
+                client_host=client_host,
+                path=path,
+                expected_token_masked=self._mask_token(expected),
+                provided_token_masked=self._mask_token(provided),
+                detail="Invalid node token",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid node token",
+            )
+
+        logger.info(
+            "Node websocket auth accepted. node_id=%s client=%s path=%s token=%s",
+            node_id,
+            client_host,
+            path,
+            self._mask_token(provided),
+        )
+        self._record_socket_auth_event(
+            node_id=node_id,
+            trace_id=trace_id,
+            decision="accepted",
+            client_host=client_host,
+            path=path,
+            expected_token_masked=self._mask_token(expected),
+            provided_token_masked=self._mask_token(provided),
+            detail="accepted",
+        )
+
     def _extract_token(self, request: Request) -> str | None:
-        bearer = request.headers.get("Authorization", "")
+        return self._extract_token_from_headers(request.headers)
+
+    def _extract_token_from_headers(self, headers: dict[str, str] | object) -> str | None:
+        bearer = headers.get("Authorization", "")  # type: ignore[call-arg]
         if bearer.startswith("Bearer "):
             return bearer[7:].strip()
-        return request.headers.get("X-Node-Token")
+        return headers.get("X-Node-Token")  # type: ignore[call-arg]
 
     def _is_local_node_direct_request(self, request: Request, node_id: str) -> bool:
+        return self._is_local_node_direct_host(self._client_host(request), node_id)
+
+    def _is_local_node_direct_host(self, client_host: str, node_id: str) -> bool:
         if node_id != self._settings.local_node_id:
             return False
-        client = request.client
-        if client is None or not client.host:
+        if not client_host:
             return False
-        return client.host in _known_local_hosts()
+        return client_host in _known_local_hosts()
 
     def _client_host(self, request: Request) -> str:
         client = request.client
         return client.host if client and client.host else "-"
+
+    def _client_host_from_scope_client(self, client: object) -> str:
+        host = getattr(client, "host", "")
+        return host or "-"
 
     def _mask_token(self, token: str | None) -> str:
         if token is None:
@@ -154,6 +254,31 @@ class NodeAuthService:
             decision=decision,
             client_host=self._client_host(request),
             path=request.url.path,
+            expected_token_masked=expected_token_masked,
+            provided_token_masked=provided_token_masked,
+            detail=detail,
+        )
+
+    def _record_socket_auth_event(
+        self,
+        *,
+        node_id: str,
+        trace_id: str,
+        decision: str,
+        client_host: str,
+        path: str,
+        expected_token_masked: str,
+        provided_token_masked: str,
+        detail: str,
+    ) -> None:
+        if self._setup_service is None:
+            return
+        self._setup_service.record_auth_event(
+            node_id,
+            trace_id=trace_id,
+            decision=decision,
+            client_host=client_host,
+            path=path,
             expected_token_masked=expected_token_masked,
             provided_token_masked=provided_token_masked,
             detail=detail,

@@ -32,7 +32,7 @@ def run_gateway(port: int) -> None:
     gateway_root = repo_root / "apps" / "gateway"
     os.chdir(gateway_root)
     sys.path.insert(0, str(gateway_root))
-    uvicorn.run("app.main:app", host="0.0.0.0", port=port, log_level="info")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, log_level="info", reload=True)
 
 
 def run_node() -> None:
