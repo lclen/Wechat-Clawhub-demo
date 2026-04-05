@@ -48,15 +48,47 @@
 
 近期措施：
 
-- 节点 `pull-task` 改成长轮询
-- 控制台启动链路分层：最小状态、摘要状态、实时状态
-- 控制台隐藏面板停止无效轮询
-- 会话消息只保留一条实时拉取链路
+- ✅ **会话消息 WebSocket 推送**（已完成）
+  - 实现 `SessionStreamBroker` 和 `/api/sessions/{session_id}/ws`
+  - 支持快照消息和增量消息
+  - 自动降级到 HTTP 轮询
+  - 性能提升：切换会话从 1-2 秒降到瞬间，新消息实时到达
+
+- 🔄 **节点 `pull-task` 改成长轮询**（进行中）
+  - 当前：节点每秒轮询一次，99% 是空请求
+  - 目标：改为长轮询，有任务时立即返回，无任务时挂起 30 秒
+  - 预期：降低 90% 的无效请求
+
+- 🔄 **控制台启动链路分层**（进行中）
+  - 最小状态：launcher 状态、角色信息
+  - 摘要状态：网关、微信、节点摘要
+  - 实时状态：会话消息、节点诊断
+
+- ✅ **控制台隐藏面板停止无效轮询**（已完成）
+  - 只在对应工作区可见时才轮询
+  - 节点角色跳过所有 `/api/*` 轮询
+
+- ✅ **会话消息只保留一条实时拉取链路**（已完成）
+  - WebSocket 优先，HTTP 轮询降级
+  - 应用缓存瞬间回显，后台增量更新
+
+**下一步行动**：
+
+1. **节点长轮询实现**（最高优先级）
+   - 修改 `POST /api/nodes/{node_id}/pull-task` 支持 `timeout` 参数
+   - 节点端改为长轮询模式（30 秒超时）
+   - 网关端维护任务队列，有任务时立即唤醒等待的节点
+
+2. **控制台摘要轮询优化**
+   - 节点列表、微信状态从 3 秒轮询改为 10 秒轮询
+   - 系统状态从 3 秒轮询改为 30 秒轮询
+   - 为后续事件流化做准备
 
 当前状态：
 
-- 控制台状态分层已开始落地
-- 节点 `pull-task` 长轮询已是近期优先推进项
+- ✅ 控制台状态分层已开始落地
+- ✅ 会话消息 WebSocket 推送已完成
+- 🔄 节点 `pull-task` 长轮询是近期优先推进项
 
 ## 3.2 第二优先级：统一运行模型
 
@@ -90,45 +122,171 @@
 
 在完成长轮询后，下一步不是直接做 P2P，而是把节点到网关的分散请求进一步收束。
 
+**核心原则：不再堆新的轮询接口**
+
+当前节点与网关之间存在多个分散的 HTTP 接口：
+- `POST /api/nodes/{node_id}/heartbeat` - 心跳上报
+- `POST /api/nodes/{node_id}/pull-task` - 拉取任务
+- `POST /api/nodes/{node_id}/task-result` - 结果回传
+- `POST /api/nodes/{node_id}/task-failure` - 失败回传
+- `GET /api/nodes/{node_id}/diagnostics` - 诊断信息
+
+这些接口导致：
+- 节点需要维护多个轮询循环
+- 网关需要处理大量短连接
+- 状态同步延迟高
+- 排障时需要追踪多个接口的调用链
+
 建议演进方向：
 
-- 先保留现有鉴权模型
-- 在兼容现有接口前提下，引入统一的节点事件流连接
+**统一节点事件流连接**
 
-目标是把以下能力逐步收敛到更少的连接上：
+将所有节点到网关的通信统一到一条双向事件流：
 
-- register
-- heartbeat
-- task pull
-- task result
-- task failure
-- diagnostics event
+```
+节点 → 网关 (上行事件)
+├── register_event        # 注册/重连
+├── heartbeat_event       # 心跳
+├── task_result_event     # 任务结果
+├── task_failure_event    # 任务失败
+├── diagnostics_event     # 诊断信息
+└── channel_state_event   # 通道状态变化
 
-推荐形态：
+网关 → 节点 (下行事件)
+├── task_assigned_event   # 任务分配
+├── task_cancel_event     # 任务取消
+├── config_update_event   # 配置更新
+└── shutdown_event        # 优雅关闭
+```
 
-- WebSocket
-- 或 gRPC stream
+推荐技术选型：
+
+1. **WebSocket**（优先推荐）
+   - 浏览器原生支持，便于调试
+   - 双向通信，延迟低
+   - 可以复用现有的 WebSocket 基础设施（如 SessionStreamBroker）
+
+2. **gRPC Bidirectional Stream**（备选）
+   - 类型安全，自动生成代码
+   - 性能更好
+   - 但增加部署复杂度
+
+实施步骤：
+
+1. **第一阶段：建立事件流基础**
+   - 创建 `NodeStreamBroker`（类似 `SessionStreamBroker`）
+   - 实现 WebSocket 端点：`/api/nodes/{node_id}/stream`
+   - 节点连接后立即发送 `register_event`
+
+2. **第二阶段：迁移现有接口**
+   - `heartbeat` → `heartbeat_event`（周期性发送）
+   - `task-result` → `task_result_event`（任务完成时发送）
+   - `task-failure` → `task_failure_event`（任务失败时发送）
+   - 保留 HTTP 接口作为降级方案
+
+3. **第三阶段：增强事件能力**
+   - 添加 `diagnostics_event`（实时诊断信息）
+   - 添加 `channel_state_event`（通道忙闲状态）
+   - 网关主动推送 `task_assigned_event`（替代 pull-task）
+
+4. **第四阶段：移除旧接口**
+   - 确认事件流稳定后，逐步废弃 HTTP 轮询接口
+   - 只保留 `POST /api/nodes/register` 作为初始注册入口
+
+**重要约束**：
+
+- **禁止新增轮询接口**：任何新的节点到网关通信需求，必须通过事件流实现
+- **保持向后兼容**：迁移期间同时支持 HTTP 和事件流，逐步切换
+- **统一错误处理**：事件流断开时自动降级到 HTTP，重连后恢复事件流
 
 阶段目标：
 
 - 降低节点短轮询对网关的空耗
-- 让节点状态同步更及时
-- 降低“接口多、状态散”的排障成本
+- 让节点状态同步更及时（从秒级延迟降到毫秒级）
+- 降低”接口多、状态散”的排障成本
+- 为后续下放短期通道态到节点打好基础
 
 ## 4.2 阶段 B：控制台实时事件统一化
 
-控制台与网关之间已经有部分 WebSocket 能力，但仍需进一步收敛。
+控制台与网关之间已经有部分 WebSocket 能力（会话消息实时推送），但仍需进一步收敛。
+
+**当前状态**：
+
+已实现：
+- ✅ 会话消息 WebSocket 推送（`/api/sessions/{session_id}/ws`）
+- ✅ 快照消息和增量消息
+- ✅ 自动降级到 HTTP 轮询
+
+仍在轮询：
+- ❌ 会话列表（`GET /api/sessions`）
+- ❌ 节点列表（`GET /api/nodes`）
+- ❌ 节点诊断（`GET /api/nodes/{node_id}/diagnostics`）
+- ❌ 微信状态（`GET /api/wechat/onboard/status`）
+- ❌ 系统状态（`GET /api/system/status`）
 
 中期建议：
 
-- 会话消息继续走 WebSocket
-- 会话列表与接管事件改成统一事件流
-- 节点摘要和微信摘要从轮询逐步迁移为事件推送 + 兜底刷新
+**统一控制台事件流**
+
+创建单一的控制台事件流端点：`/api/console/stream`
+
+```
+网关 → 控制台 (推送事件)
+├── session_list_updated      # 会话列表变化
+├── session_message_appended  # 会话新消息（已实现，可迁移）
+├── session_state_changed     # 会话状态变化（接管、释放等）
+├── node_list_updated         # 节点列表变化
+├── node_state_changed        # 节点状态变化
+├── node_diagnostics_updated  # 节点诊断更新
+├── wechat_state_changed      # 微信状态变化
+└── system_alert              # 系统告警
+
+控制台 → 网关 (订阅请求)
+├── subscribe_sessions        # 订阅会话列表
+├── subscribe_session_messages # 订阅特定会话消息
+├── subscribe_nodes           # 订阅节点列表
+├── subscribe_wechat_status   # 订阅微信状态
+└── unsubscribe_*             # 取消订阅
+```
+
+实施策略：
+
+1. **渐进式迁移**
+   - 保留现有的会话消息 WebSocket（`/api/sessions/{session_id}/ws`）
+   - 新增统一事件流端点（`/api/console/stream`）
+   - 前端逐步从轮询迁移到事件订阅
+
+2. **智能降级**
+   - 事件流断开时自动降级到 HTTP 轮询
+   - 重连后恢复事件流，停止轮询
+   - 兜底刷新：每 30 秒主动拉取一次确保一致性
+
+3. **按需订阅**
+   - 只订阅当前可见工作区的数据
+   - 切换工作区时动态调整订阅
+   - 减少不必要的数据推送
+
+**优先级排序**：
+
+1. **高优先级**（频繁变化，实时性要求高）
+   - 会话消息（已完成）
+   - 节点状态变化
+   - 微信状态变化
+
+2. **中优先级**（变化较少，但影响用户体验）
+   - 会话列表更新
+   - 节点列表更新
+
+3. **低优先级**（变化很少，可以保留轮询）
+   - 系统状态
+   - 模型配置
 
 阶段目标：
 
-- 减少前端后台无效请求
+- 减少前端后台无效请求（从每秒数十个请求降到个位数）
 - 提升会话观察台与接入中心的实时一致性
+- 降低网关 CPU 和带宽消耗
+- 改善用户体验（状态变化即时反馈）
 
 ## 4.3 阶段 C：节点托管短期通道态
 
