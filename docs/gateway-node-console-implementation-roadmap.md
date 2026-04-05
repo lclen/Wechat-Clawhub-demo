@@ -124,6 +124,80 @@
 
 **核心原则：不再堆新的轮询接口**
 
+**当前状态**（2026-04-05 更新）：
+
+✅ **已完成**（commit 407dfe5）
+
+节点事件流已全面实现，统一了节点与网关之间的通信：
+
+1. **NodeStreamBroker** (`apps/gateway/app/services/node_stream.py`)
+   - 管理节点 WebSocket 连接
+   - 支持事件接收和任务推送
+   - 自动清理断开的连接
+
+2. **双向 WebSocket 协议** (`/api/nodes/{node_id}/ws`)
+   - **节点 → 网关事件**：
+     - ✅ `ready`: 节点请求任务
+     - ✅ `task_result`: 任务结果回传
+     - ✅ `task_failure`: 任务失败报告
+     - ✅ `heartbeat`: 心跳保活
+     - ✅ `diagnostics`: 诊断信息上报
+   - **网关 → 节点事件**：
+     - ✅ `task_assigned`: 分配任务
+     - ✅ `noop`: 无任务可分配
+     - ✅ `pong`: 心跳响应
+     - ✅ `ack`: 确认接收
+     - ✅ `error`: 错误响应
+
+3. **节点 Worker 重构** (`services/claw-node/claw_node/worker.py`)
+   - ✅ `_task_stream_loop()`: WebSocket 任务流循环
+   - ✅ `_task_stream_send_lock`: 线程安全的事件发送
+   - ✅ 优雅降级：WebSocket 失败时自动降级到 HTTP
+   - ✅ 任务结果优先通过 WebSocket 发送
+
+4. **保留的 HTTP 接口**（降级方案）
+   - `POST /api/nodes/{node_id}/heartbeat` - 心跳上报（降级）
+   - `POST /api/nodes/{node_id}/pull-task` - 拉取任务（降级）
+   - `POST /api/nodes/{node_id}/task-result` - 结果回传（降级）
+   - `POST /api/nodes/{node_id}/task-failure` - 失败回传（降级）
+   - `GET /api/nodes/{node_id}/diagnostics` - 诊断信息（仍使用 HTTP）
+
+**架构优势**：
+
+- ✅ 单一 WebSocket 连接处理所有通信
+- ✅ 实时任务分发（替代轮询）
+- ✅ 实时结果回传（减少延迟）
+- ✅ 线程安全的事件发送（`_task_stream_send_lock`）
+- ✅ 自动降级到 HTTP（确保可用性）
+- ✅ 认证机制完善（Bearer Token）
+
+**已知问题**：
+
+- ⚠️ 存在潜在的竞态条件（详见 `docs/code-review-407dfe5.md`）
+- ⚠️ 诊断事件被接收但未存储（标记为未来增强）
+
+**后续优化方向**：
+
+1. **修复竞态条件**
+   - 在 `_try_send_task_stream_event()` 中将检查和发送都放在锁内
+
+2. **实现诊断事件存储**
+   - 将 `diagnostics` 事件存储到 Redis 或数据库
+   - 支持历史诊断查询
+
+3. **增强事件能力**
+   - 添加 `config_update_event`（配置更新推送）
+   - 添加 `task_cancel_event`（任务取消通知）
+   - 添加 `shutdown_event`（优雅关闭通知）
+
+4. **移除旧接口**（长期）
+   - 确认事件流稳定后，逐步废弃 HTTP 轮询接口
+   - 只保留 `POST /api/nodes/register` 作为初始注册入口
+
+---
+
+### 原设计方案（已实现）
+
 当前节点与网关之间存在多个分散的 HTTP 接口：
 - `POST /api/nodes/{node_id}/heartbeat` - 心跳上报
 - `POST /api/nodes/{node_id}/pull-task` - 拉取任务
@@ -137,59 +211,57 @@
 - 状态同步延迟高
 - 排障时需要追踪多个接口的调用链
 
-建议演进方向：
-
-**统一节点事件流连接**
+**统一节点事件流连接**（已实现）
 
 将所有节点到网关的通信统一到一条双向事件流：
 
 ```
 节点 → 网关 (上行事件)
-├── register_event        # 注册/重连
-├── heartbeat_event       # 心跳
-├── task_result_event     # 任务结果
-├── task_failure_event    # 任务失败
-├── diagnostics_event     # 诊断信息
-└── channel_state_event   # 通道状态变化
+├── ready_event           # 请求任务（已实现）
+├── heartbeat_event       # 心跳（已实现）
+├── task_result_event     # 任务结果（已实现）
+├── task_failure_event    # 任务失败（已实现）
+├── diagnostics_event     # 诊断信息（已实现）
+└── channel_state_event   # 通道状态变化（未来）
 
 网关 → 节点 (下行事件)
-├── task_assigned_event   # 任务分配
-├── task_cancel_event     # 任务取消
-├── config_update_event   # 配置更新
-└── shutdown_event        # 优雅关闭
+├── task_assigned_event   # 任务分配（已实现）
+├── noop_event            # 无任务（已实现）
+├── pong_event            # 心跳响应（已实现）
+├── ack_event             # 确认接收（已实现）
+├── error_event           # 错误响应（已实现）
+├── task_cancel_event     # 任务取消（未来）
+├── config_update_event   # 配置更新（未来）
+└── shutdown_event        # 优雅关闭（未来）
 ```
 
 推荐技术选型：
 
-1. **WebSocket**（优先推荐）
+1. **WebSocket**（✅ 已采用）
    - 浏览器原生支持，便于调试
    - 双向通信，延迟低
-   - 可以复用现有的 WebSocket 基础设施（如 SessionStreamBroker）
-
-2. **gRPC Bidirectional Stream**（备选）
-   - 类型安全，自动生成代码
-   - 性能更好
-   - 但增加部署复杂度
+   - 复用现有的 WebSocket 基础设施
 
 实施步骤：
 
-1. **第一阶段：建立事件流基础**
+1. ✅ **第一阶段：建立事件流基础**
    - 创建 `NodeStreamBroker`（类似 `SessionStreamBroker`）
-   - 实现 WebSocket 端点：`/api/nodes/{node_id}/stream`
-   - 节点连接后立即发送 `register_event`
+   - 实现 WebSocket 端点：`/api/nodes/{node_id}/ws`
+   - 节点连接后发送 `ready` 事件请求任务
 
-2. **第二阶段：迁移现有接口**
-   - `heartbeat` → `heartbeat_event`（周期性发送）
-   - `task-result` → `task_result_event`（任务完成时发送）
-   - `task-failure` → `task_failure_event`（任务失败时发送）
+2. ✅ **第二阶段：迁移现有接口**
+   - `heartbeat` → `heartbeat` 事件（周期性发送）
+   - `task-result` → `task_result` 事件（任务完成时发送）
+   - `task-failure` → `task_failure` 事件（任务失败时发送）
    - 保留 HTTP 接口作为降级方案
 
-3. **第三阶段：增强事件能力**
-   - 添加 `diagnostics_event`（实时诊断信息）
+3. ⏳ **第三阶段：增强事件能力**（未来）
+   - 添加 `diagnostics_event` 存储（实时诊断信息）
    - 添加 `channel_state_event`（通道忙闲状态）
-   - 网关主动推送 `task_assigned_event`（替代 pull-task）
+   - 添加 `config_update_event`（配置更新推送）
+   - 添加 `task_cancel_event`（任务取消通知）
 
-4. **第四阶段：移除旧接口**
+4. ⏳ **第四阶段：移除旧接口**（长期）
    - 确认事件流稳定后，逐步废弃 HTTP 轮询接口
    - 只保留 `POST /api/nodes/register` 作为初始注册入口
 
@@ -208,21 +280,34 @@
 
 ## 4.2 阶段 B：控制台实时事件统一化
 
-控制台与网关之间已经有部分 WebSocket 能力（会话消息实时推送），但仍需进一步收敛。
+控制台与网关之间已经有部分 WebSocket 能力（会话消息实时推送、会话概览推送），但仍需进一步收敛。
 
-**当前状态**：
+**当前状态**（2026-04-05 更新）：
 
 已实现：
 - ✅ 会话消息 WebSocket 推送（`/api/sessions/{session_id}/ws`）
+- ✅ 会话概览 WebSocket 推送（`/api/sessions/overview/ws`）
 - ✅ 快照消息和增量消息
 - ✅ 自动降级到 HTTP 轮询
 
 仍在轮询：
-- ❌ 会话列表（`GET /api/sessions`）
 - ❌ 节点列表（`GET /api/nodes`）
 - ❌ 节点诊断（`GET /api/nodes/{node_id}/diagnostics`）
 - ❌ 微信状态（`GET /api/wechat/onboard/status`）
 - ❌ 系统状态（`GET /api/system/status`）
+
+**已完成功能**（commit 407dfe5）：
+
+1. **会话概览流**
+   - 端点：`/api/sessions/overview/ws`
+   - 推送所有会话的状态变更
+   - 替代会话列表轮询
+   - 前端已集成
+
+2. **SessionStreamBroker 扩展**
+   - `subscribe_overview()` / `unsubscribe_overview()`
+   - `publish_overview()` / `publish_overview_snapshot()`
+   - 支持会话列表实时推送
 
 中期建议：
 
@@ -232,9 +317,9 @@
 
 ```
 网关 → 控制台 (推送事件)
-├── session_list_updated      # 会话列表变化
-├── session_message_appended  # 会话新消息（已实现，可迁移）
-├── session_state_changed     # 会话状态变化（接管、释放等）
+├── session_list_updated      # 会话列表变化（已通过 /overview/ws 实现）
+├── session_message_appended  # 会话新消息（已通过 /{session_id}/ws 实现）
+├── session_state_changed     # 会话状态变化（已通过 /overview/ws 实现）
 ├── node_list_updated         # 节点列表变化
 ├── node_state_changed        # 节点状态变化
 ├── node_diagnostics_updated  # 节点诊断更新
@@ -242,8 +327,8 @@
 └── system_alert              # 系统告警
 
 控制台 → 网关 (订阅请求)
-├── subscribe_sessions        # 订阅会话列表
-├── subscribe_session_messages # 订阅特定会话消息
+├── subscribe_sessions        # 订阅会话列表（已实现）
+├── subscribe_session_messages # 订阅特定会话消息（已实现）
 ├── subscribe_nodes           # 订阅节点列表
 ├── subscribe_wechat_status   # 订阅微信状态
 └── unsubscribe_*             # 取消订阅
@@ -253,6 +338,7 @@
 
 1. **渐进式迁移**
    - 保留现有的会话消息 WebSocket（`/api/sessions/{session_id}/ws`）
+   - 保留现有的会话概览 WebSocket（`/api/sessions/overview/ws`）
    - 新增统一事件流端点（`/api/console/stream`）
    - 前端逐步从轮询迁移到事件订阅
 
@@ -269,17 +355,18 @@
 **优先级排序**：
 
 1. **高优先级**（频繁变化，实时性要求高）
-   - 会话消息（已完成）
-   - 节点状态变化
-   - 微信状态变化
+   - ✅ 会话消息（已完成）
+   - ✅ 会话列表更新（已完成）
+   - ❌ 节点状态变化
+   - ❌ 微信状态变化
 
 2. **中优先级**（变化较少，但影响用户体验）
-   - 会话列表更新
-   - 节点列表更新
+   - ❌ 节点列表更新
+   - ❌ 节点诊断更新
 
 3. **低优先级**（变化很少，可以保留轮询）
-   - 系统状态
-   - 模型配置
+   - ❌ 系统状态
+   - ❌ 模型配置
 
 阶段目标：
 
@@ -287,6 +374,8 @@
 - 提升会话观察台与接入中心的实时一致性
 - 降低网关 CPU 和带宽消耗
 - 改善用户体验（状态变化即时反馈）
+
+**当前进度**：会话相关事件流已完成（2/7），节点和系统事件流待实现。
 
 ## 4.3 阶段 C：节点托管短期通道态
 

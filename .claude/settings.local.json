@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run:*)",
+      "Bash(find d:wechat-claw-hubappsgateway -name *.env.example -o -name .env.template)"
+    ]
+  }
+}

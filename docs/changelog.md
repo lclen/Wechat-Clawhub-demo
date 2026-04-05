@@ -4,19 +4,68 @@
 
 ---
 
-## 2026-04-05 — WebSocket 实时消息推送 + 会话加载性能优化
+## 2026-04-05 — 节点事件流化 + 会话概览流 + WebSocket 实时消息推送
 
 ### 背景
 
-本轮更新实现了 WebSocket 实时消息推送功能，解决了会话观察台消息加载慢、频繁轮询的问题。同时修复了 WebSocket 403 错误，优化了会话切换性能。
+本轮更新（commit 407dfe5）实现了节点事件流化和会话概览流，统一了节点到网关的通信机制，遵循"禁止新增轮询接口"的架构原则。同时完善了 WebSocket 实时消息推送功能，实现了全面的事件驱动架构。
 
 ---
 
 ### 核心功能
 
-#### WebSocket 实时消息推送
+#### 1. 节点事件流（Node Event Stream）
 
-- **SessionStreamBroker**：新增会话消息流的发布/订阅中心
+**目标**：统一节点与网关之间的通信，将任务分发、结果回传、心跳保活等功能整合到单一 WebSocket 连接。
+
+- **NodeStreamBroker**：新增节点事件流管理中心
+  - 维护节点 WebSocket 连接映射
+  - 支持任务推送和事件接收
+  - 自动清理断开的连接
+
+- **双向 WebSocket 协议**：`/api/nodes/{node_id}/ws`
+  - **节点 → 网关事件**：
+    - `ready`: 节点请求任务
+    - `task_result`: 任务结果回传
+    - `task_failure`: 任务失败报告
+    - `heartbeat`: 心跳保活
+    - `diagnostics`: 诊断信息上报
+  - **网关 → 节点事件**：
+    - `task_assigned`: 分配任务
+    - `noop`: 无任务可分配
+    - `pong`: 心跳响应
+    - `ack`: 确认接收
+    - `error`: 错误响应
+
+- **节点 Worker 重构**
+  - 新增 `_task_stream_loop()` 替代轮询循环
+  - 使用 `_task_stream_send_lock` 保护 WebSocket 发送操作
+  - 优雅降级：WebSocket 失败时自动降级到 HTTP
+  - 任务结果优先通过 WebSocket 发送，失败时降级到 HTTP POST
+
+#### 2. 会话概览流（Session Overview Stream）
+
+**目标**：实时推送所有会话的状态变更，替代前端对会话列表的轮询。
+
+- **SessionStreamBroker 扩展**
+  - 新增 `_overview_connections` 管理概览订阅者
+  - `subscribe_overview()` / `unsubscribe_overview()` 订阅管理
+  - `publish_overview()` 推送会话列表更新
+  - `publish_overview_snapshot()` 发送初始快照
+
+- **WebSocket 端点**：`/api/sessions/overview/ws`
+  - 连接建立后立即发送所有会话快照
+  - 会话状态变更时实时推送更新
+  - 支持自定义错误码：4500（服务器未就绪）、4503（Redis 不可用）
+
+- **前端集成**
+  - 自动连接到概览 WebSocket
+  - 接收 `sessions_snapshot` 事件更新会话列表
+  - 连接失败自动降级到 HTTP 轮询
+
+#### 3. WebSocket 实时消息推送（已有功能完善）
+
+- **SessionStreamBroker**：会话消息流的发布/订阅中心
   - 管理 WebSocket 连接的订阅关系
   - 支持快照消息和增量消息推送
   - 自动清理断开的连接
@@ -32,35 +81,47 @@
   - 连接失败自动降级，3 秒后重试
   - 支持快照和增量消息的差异化处理
 
-#### 会话加载性能优化
-
-- **消息缓存机制**
-  - 前端维护会话消息缓存 (`sessionMessageCacheRef`)
-  - 切换会话时立即应用缓存，无需等待网络请求
-  - 后台异步加载增量更新
-
-- **增量加载**
-  - HTTP 接口支持 `after_count` 参数
-  - 只返回客户端未拥有的新消息
-  - 减少数据传输量和处理时间
-
-- **首屏限制**
-  - 首次加载支持 `limit` 参数（默认 50 条）
-  - 加快首屏渲染速度
-  - 用户可手动加载更多历史消息
-
 ---
 
 ### 后端（gateway）
 
-#### SessionStreamBroker (`session_stream.py`)
+#### NodeStreamBroker (`node_stream.py`)
+
+```python
+class NodeStreamBroker:
+    async def register_connection(node_id, websocket)  # 注册节点连接
+    async def unregister_connection(node_id)  # 注销节点连接
+    async def receive_event(websocket)  # 接收节点事件
+    def is_connected(node_id)  # 检查节点是否连接
+```
+
+#### 节点 WebSocket 端点 (`nodes.py`)
+
+- 路径：`/api/nodes/{node_id}/ws?wait_seconds=15`
+- 认证：`Authorization: Bearer <token>` 或 `X-Node-Token: <token>`
+- 事件处理：
+  - `ready` → 调用 `dispatch_queue.pull_for_node()` 分配任务
+  - `task_result` → 转换为 `TaskResultRequest` 并调用 `dispatch_queue.submit_result()`
+  - `task_failure` → 转换为 `TaskFailureRequest` 并调用 `dispatch_queue.submit_failure()`
+  - `heartbeat` → 返回 `pong`
+  - `diagnostics` → 返回 `ack`（未来将存储诊断信息）
+
+#### SessionStreamBroker 扩展 (`session_stream.py`)
 
 ```python
 class SessionStreamBroker:
+    # 原有方法
     async def subscribe(session_id, websocket)  # 订阅会话消息流
     async def unsubscribe(session_id, websocket)  # 取消订阅
     async def publish_messages(...)  # 推送增量消息
     async def publish_snapshot(...)  # 发送初始快照
+    
+    # 新增方法
+    async def subscribe_overview(websocket)  # 订阅会话概览
+    async def unsubscribe_overview(websocket)  # 取消订阅概览
+    async def publish_overview(sessions)  # 推送会话列表更新
+    async def publish_overview_snapshot(websocket, sessions)  # 发送概览快照
+    def has_overview_subscribers()  # 检查是否有概览订阅者
 ```
 
 #### SessionManager 集成
@@ -78,15 +139,53 @@ class SessionStreamBroker:
 
 #### 生命周期管理
 
-- `lifespan.py` 初始化 `SessionStreamBroker`
-- 注入到 `app.state.session_stream`
+- `lifespan.py` 初始化 `SessionStreamBroker` 和 `NodeStreamBroker`
+- 注入到 `app.state.session_stream` 和 `app.state.node_stream`
 - 传递给 `SessionManager` 构造函数
+
+---
+
+### 节点端（claw-node）
+
+#### Worker 重构 (`worker.py`)
+
+- **新增字段**：
+  - `_task_stream_websocket`: 当前 WebSocket 连接
+  - `_task_stream_send_lock`: 保护 WebSocket 发送操作的异步锁
+
+- **新增方法**：
+  - `_task_stream_loop()`: WebSocket 任务流循环
+  - `_send_task_stream_event()`: 发送事件到网关（带锁保护）
+  - `_try_send_task_stream_event()`: 尝试发送事件，失败时返回 False
+
+- **重构方法**：
+  - `_submit_task_result()`: 优先通过 WebSocket 发送，失败时降级到 HTTP
+  - `_submit_task_failure()`: 同上
+  - `_poll_once()`: 提取为独立方法，供降级时使用
+
+- **降级机制**：
+  - WebSocket 连接失败 → 调用 `_poll_once()` 进行 HTTP 轮询
+  - 认证失败（4401）→ 停止循环，设置 `_auth_failed` 标志
+  - 其他错误 → 重连延迟 `task_stream_reconnect_seconds`
+
+#### 线程安全
+
+```python
+async def _send_task_stream_event(self, event: dict[str, Any]) -> None:
+    websocket = self._task_stream_websocket
+    if websocket is None:
+        raise RuntimeError("Task stream websocket is not connected")
+    async with self._task_stream_send_lock:
+        await websocket.send(json.dumps(event))
+```
+
+避免多个 asyncio 任务同时写入 WebSocket 导致的数据混乱。
 
 ---
 
 ### 前端（agent-console）
 
-#### WebSocket 连接管理
+#### 会话消息 WebSocket 连接管理
 
 - `buildSessionWebSocketUrl()` 构建 WebSocket URL
   - 自动处理 http/https → ws/wss 协议转换
@@ -96,6 +195,14 @@ class SessionStreamBroker:
   - 进入会话观察台自动连接
   - 切换会话时断开旧连接，建立新连接
   - 离开会话观察台自动断开
+
+#### 会话概览 WebSocket 连接管理
+
+- `buildSessionOverviewWebSocketUrl()` 构建概览 WebSocket URL
+- 连接生命周期
+  - 进入会话列表页面自动连接
+  - 接收 `sessions_snapshot` 事件更新会话列表
+  - 离开页面自动断开
 
 #### 降级策略
 
@@ -137,11 +244,24 @@ uv run python -m launcher.main run-gateway --reload
 #### 新增文档
 
 - `docs/websocket-realtime-messaging.md`
-  - WebSocket 协议规范
+  - 会话消息流协议规范
+  - 节点事件流协议规范
+  - 会话概览流协议规范
   - 架构设计说明
   - 实现细节
   - 故障排查指南
   - 性能优化建议
+
+- `docs/code-review-407dfe5.md`
+  - 代码审查报告（commit 407dfe5）
+  - 潜在问题识别
+  - 改进建议
+  - 测试建议
+
+#### 更新文档
+
+- `docs/changelog.md` - 记录节点事件流化和会话概览流功能
+- `docs/gateway-node-console-implementation-roadmap.md` - 更新实施进度
 
 ---
 
@@ -153,6 +273,31 @@ uv run python -m launcher.main run-gateway --reload
 | 新消息到达 | 3 秒轮询延迟 | 实时推送 | 实时 |
 | 首屏加载 | 加载全部消息 | 限制 50 条 | ~70% |
 | 增量更新 | 重新加载全部 | 只加载新增 | ~80% |
+| 节点任务分发 | HTTP 轮询（15 秒） | WebSocket 实时 | 实时 |
+| 任务结果回传 | HTTP POST | WebSocket 优先 | 减少延迟 |
+| 会话列表更新 | HTTP 轮询（3 秒） | WebSocket 实时 | 实时 |
+
+---
+
+### 架构改进
+
+#### 事件驱动架构
+
+- **统一通信模式**：所有实时通信统一使用 WebSocket
+- **减少轮询**：遵循"禁止新增轮询接口"原则
+- **降级保障**：WebSocket 失败时自动降级到 HTTP，确保系统可用性
+
+#### 线程安全
+
+- 节点 Worker 使用 `_task_stream_send_lock` 保护 WebSocket 发送
+- SessionStreamBroker 使用 `_lock` 保护订阅者集合
+- 避免并发写入导致的数据混乱
+
+#### 资源管理
+
+- WebSocket 连接自动清理（`finally` 块）
+- 断开连接时自动注销订阅
+- 避免资源泄漏
 
 ---
 
@@ -166,6 +311,17 @@ uv run python -m launcher.main run-gateway --reload
 > 1. Redis 连接是否稳定
 > 2. 网关服务器资源是否充足
 > 3. 网络连接是否稳定
+
+> [!WARNING]
+> 节点 Worker 中存在潜在的竞态条件（详见 `docs/code-review-407dfe5.md`），建议在 `_try_send_task_stream_event()` 中将 WebSocket 检查和发送操作都放在锁内执行。
+
+---
+
+### 相关 Commit
+
+- `407dfe5` - feat: streamline runtime and event streams
+- `cddc714` - feat: add WebSocket real-time message streaming and optimize session loading
+- `6589af1` - Fix session message regression after stream changes
 
 ---
 
