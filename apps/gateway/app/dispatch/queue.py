@@ -11,6 +11,7 @@ from app.dispatch.scheduler import DispatchScheduler
 from app.models.dispatch import DispatchTask, TaskFailureRequest, TaskResultRequest
 from app.models.session import MessageRecord, QueueStatus, RoutingMode, SessionRecord, SessionStatus
 from app.services.outgoing_dispatcher import OutgoingDispatcher
+from app.services.node_stream import NodeStreamBroker
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager
 from app.services.transcript_writer import TranscriptWriter
@@ -36,6 +37,7 @@ class DispatchQueue:
         transcript_writer: TranscriptWriter,
         outgoing_dispatcher: OutgoingDispatcher,
         settings: Settings,
+        node_stream: NodeStreamBroker | None = None,
     ) -> None:
         self._store = store
         self._session_manager = session_manager
@@ -43,6 +45,7 @@ class DispatchQueue:
         self._transcript_writer = transcript_writer
         self._outgoing_dispatcher = outgoing_dispatcher
         self._settings = settings
+        self._node_stream = node_stream
 
     def _task_key(self, task_id: str) -> str:
         return f"wch:dispatch:task:{task_id}"
@@ -394,8 +397,15 @@ class DispatchQueue:
         )
         try:
             await self._store.set(self._task_key(task.task_id), task.model_dump_json())
-            await self._store.rpush(self._node_queue_key(task.node_id), task.task_id)
             await self._store.set(self._session_task_key(task.session_id), task.task_id)
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to enqueue dispatch task") from exc
+
+        if await self._try_push_task_immediately(task, session):
+            return task
+
+        try:
+            await self._store.rpush(self._node_queue_key(task.node_id), task.task_id)
         except RedisError as exc:
             raise DispatchQueueError("Failed to enqueue dispatch task") from exc
 
@@ -434,6 +444,64 @@ class DispatchQueue:
             retry_count,
         )
         return task
+
+    async def _try_push_task_immediately(self, task: DispatchTask, session: SessionRecord) -> bool:
+        if self._node_stream is None or not self._node_stream.is_connected(task.node_id):
+            return False
+
+        inflight_key = self._inflight_key(task.task_id)
+        try:
+            await self._store.setex(
+                inflight_key,
+                self._settings.dispatch_inflight_ttl_seconds,
+                task.node_id,
+            )
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to mark streamed dispatch task inflight") from exc
+
+        pushed = await self._node_stream.push_task(task.node_id, task)
+        if not pushed:
+            try:
+                await self._store.delete(inflight_key)
+            except RedisError as exc:
+                raise DispatchQueueError("Failed to rollback streamed dispatch task") from exc
+            return False
+
+        await self._session_manager.set_dispatch_state(
+            session_id=session.session_id,
+            assigned_node_id=task.node_id,
+            assigned_slot_id=task.slot_id,
+            active_task_id=task.task_id,
+            queue_status="inflight",
+            last_dispatch_at=task.created_at,
+            routing_mode=session.routing_mode,
+            slot_bound_at=session.slot_bound_at,
+            slot_expires_at=session.slot_expires_at,
+        )
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type="dispatch_pushed",
+            actor_type="system",
+            actor_id="gateway",
+            node_id=task.node_id,
+            payload={
+                "task_id": task.task_id,
+                "message_id": task.message.message_id,
+                "context_version": task.context_version,
+                "slot_id": task.slot_id,
+                "retry_count": task.retry_count,
+            },
+        )
+        logger.info(
+            "[dispatch] pushed task_id=%s session=%s node=%s slot=%s context_version=%s retry=%s",
+            task.task_id,
+            task.session_id,
+            task.node_id,
+            task.slot_id,
+            task.context_version,
+            task.retry_count,
+        )
+        return True
 
     async def _ensure_slot_assignment(
         self,

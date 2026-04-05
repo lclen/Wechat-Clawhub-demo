@@ -44,6 +44,7 @@ async def lifespan(app: FastAPI):
         transcript_writer,
         outgoing_dispatcher,
         settings,
+        node_stream=node_stream,
     )
     wechat_bot.attach_dispatch_queue(dispatch_queue)
     setup_service = SetupService(settings=settings, wechat_bot=wechat_bot)

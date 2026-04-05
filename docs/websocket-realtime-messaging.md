@@ -2,28 +2,67 @@
 
 ## 概述
 
-本文档描述 wechat-claw-hub 的 WebSocket 实时消息推送功能，用于在会话观察台实现消息的实时更新，替代传统的 HTTP 轮询方式。
+本文档描述 wechat-claw-hub 的 WebSocket 实时消息推送功能，包括：
+
+1. **会话消息流** - 在会话观察台实现消息的实时更新
+2. **会话概览流** - 实时推送会话列表状态变更
+3. **节点事件流** - 节点与网关之间的双向事件通信
+
+这些功能统一采用 WebSocket 协议，替代传统的 HTTP 轮询方式，遵循"禁止新增轮询接口"的架构原则。
 
 ## 架构设计
 
 ### 核心组件
 
+#### 1. 会话消息流
+
 1. **SessionStreamBroker** (`apps/gateway/app/services/session_stream.py`)
    - 会话消息流的发布/订阅中心
    - 管理 WebSocket 连接的订阅关系
-   - 负责向订阅者推送消息更新
+   - 负责向订阅者推送消息更新和会话概览
 
-2. **WebSocket 端点** (`apps/gateway/app/api/routes/sessions.py`)
+2. **会话消息 WebSocket 端点** (`apps/gateway/app/api/routes/sessions.py`)
    - 路径：`/api/sessions/{session_id}/ws`
-   - 处理 WebSocket 连接的建立、维护和关闭
+   - 处理单个会话的消息流
    - 发送初始快照和增量更新
 
-3. **前端 WebSocket 客户端** (`apps/agent-console/src/App.tsx`)
+3. **会话概览 WebSocket 端点** (`apps/gateway/app/api/routes/sessions.py`)
+   - 路径：`/api/sessions/overview/ws`
+   - 推送所有会话的状态变更
+   - 用于会话列表实时更新
+
+#### 2. 节点事件流
+
+1. **NodeStreamBroker** (`apps/gateway/app/services/node_stream.py`)
+   - 节点事件流的管理中心
+   - 维护节点 WebSocket 连接
+   - 支持任务推送和事件接收
+
+2. **节点事件 WebSocket 端点** (`apps/gateway/app/api/routes/nodes.py`)
+   - 路径：`/api/nodes/{node_id}/ws`
+   - 双向通信：任务分发 + 结果回传
+   - 支持多种事件类型（ready、task_result、task_failure、heartbeat、diagnostics）
+
+3. **节点 Worker** (`services/claw-node/claw_node/worker.py`)
+   - 维护与网关的 WebSocket 连接
+   - 发送事件到网关
+   - 优雅降级到 HTTP（WebSocket 不可用时）
+
+#### 3. 前端 WebSocket 客户端
+
+1. **会话消息客户端** (`apps/agent-console/src/App.tsx`)
    - 自动连接到会话 WebSocket
    - 处理快照和增量消息
    - 失败时自动降级到 HTTP 轮询
 
+2. **会话概览客户端** (`apps/agent-console/src/App.tsx`)
+   - 连接到概览 WebSocket
+   - 实时更新会话列表
+   - 替代原有的轮询机制
+
 ### 消息流向
+
+#### 会话消息流
 
 ```
 微信消息 → Gateway → SessionManager.append_message()
@@ -31,6 +70,31 @@
                     SessionStreamBroker.publish_messages()
                           ↓
                     WebSocket 订阅者 (前端)
+```
+
+#### 会话概览流
+
+```
+会话状态变更 → SessionManager
+                    ↓
+              SessionStreamBroker.publish_overview()
+                    ↓
+              WebSocket 订阅者 (前端会话列表)
+```
+
+#### 节点事件流
+
+```
+节点 → WebSocket → Gateway → DispatchQueue
+  ↑                              ↓
+  └──────── 任务分发 ←────────────┘
+
+事件类型：
+- ready: 节点请求任务
+- task_result: 任务结果回传
+- task_failure: 任务失败报告
+- heartbeat: 心跳保活
+- diagnostics: 诊断信息上报
 ```
 
 ## 协议规范
@@ -283,13 +347,16 @@ GET /api/sessions/{session_id}/messages?limit=50
 前端根据运行模式选择正确的网关地址：
 
 ```typescript
-const sessionRemoteGatewayBaseUrl = gatewayEnabled === false
-  ? workerSetup.gateway_base_url.trim()  // 节点模式：使用配置的远程网关
-  : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");  // 网关模式：使用系统推荐的网关地址
+const localGatewayManaged = launcherAvailable
+  ? launcherShouldRunGateway(launcherStatus)
+  : null;
+const sessionRemoteGatewayBaseUrl = localGatewayManaged === false
+  ? workerSetup.gateway_base_url.trim()  // 远端网关模式：使用配置的远程网关
+  : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");  // 本机网关模式：使用系统推荐的网关地址
 ```
 
-- **节点模式** (`gatewayEnabled === false`): 使用用户配置的远程网关地址
-- **网关模式** (`gatewayEnabled !== false`): 使用 `systemStatus.preferred_gateway_base_url`（如 `http://192.168.0.17:8300`）
+- **远端网关模式** (`localGatewayManaged === false`): 使用用户配置的远程网关地址
+- **本机网关模式** (`localGatewayManaged !== false`): 使用 `systemStatus.preferred_gateway_base_url`（如 `http://192.168.0.17:8300`）
 
 ## 故障排查
 
@@ -337,18 +404,423 @@ const sessionRemoteGatewayBaseUrl = gatewayEnabled === false
 
 ## 未来优化方向
 
-1. **心跳机制**：定期发送 ping/pong 保持连接活跃
+1. **心跳机制**：使用 WebSocket ping/pong 帧代替应用层心跳
 2. **断线重连**：更智能的重连策略，指数退避
 3. **消息确认**：客户端确认收到消息，服务器可以清理缓冲区
 4. **压缩传输**：对大量消息使用压缩算法
 5. **多路复用**：一个 WebSocket 连接订阅多个会话
-6. **服务端推送**：支持更多类型的实时事件（节点状态变化、系统通知等）
+6. **批量事件处理**：节点事件流支持批量发送以提高吞吐量
+
+---
+
+## 节点事件流协议
+
+### 概述
+
+节点事件流实现了节点与网关之间的双向 WebSocket 通信，统一了任务分发、结果回传、心跳保活等功能，遵循"禁止新增轮询接口"的架构原则。
+
+### 连接建立
+
+节点连接到：
+```
+ws://<gateway-host>:<gateway-port>/api/nodes/<node_id>/ws?wait_seconds=15
+```
+
+**认证**：
+- 使用 `Authorization: Bearer <node_token>` 头部认证
+- 或使用 `X-Node-Token: <node_token>` 头部认证
+
+**错误码**：
+- `4401`: 认证失败 (`unauthorized`)
+- `4500`: 服务器未就绪 (`server_not_ready`)
+- `4503`: Redis 不可用或调度队列错误 (`redis_unavailable` / `dispatch_unavailable`)
+
+### 事件类型
+
+#### 1. ready 事件（节点 → 网关）
+
+节点请求任务：
+
+```json
+{
+  "type": "ready"
+}
+```
+
+**网关响应**：
+
+有任务时：
+```json
+{
+  "type": "task_assigned",
+  "task": {
+    "task_id": "task_123",
+    "session_id": "wechat:user@im.wechat",
+    "message": {...},
+    "recent_messages": [...],
+    "context_version": 5
+  }
+}
+```
+
+无任务时：
+```json
+{
+  "type": "noop"
+}
+```
+
+#### 2. task_result 事件（节点 → 网关）
+
+任务结果回传：
+
+```json
+{
+  "type": "task_result",
+  "task_id": "task_123",
+  "session_id": "wechat:user@im.wechat",
+  "context_version": 5,
+  "content": "这是 AI 的回复内容",
+  "usage": {
+    "prompt_tokens": 150,
+    "completion_tokens": 80,
+    "total_tokens": 230
+  },
+  "metadata": {
+    "model": "claude-3-5-sonnet-20241022",
+    "reasoning_tokens": "0"
+  }
+}
+```
+
+**网关响应**：
+- 成功：无响应（静默接受）
+- 任务不存在：`{"type": "error", "task_id": "task_123", "reason": "task_not_found"}`
+- 调度错误：`{"type": "error", "task_id": "task_123", "reason": "dispatch_error"}`
+
+#### 3. task_failure 事件（节点 → 网关）
+
+任务失败报告：
+
+```json
+{
+  "type": "task_failure",
+  "task_id": "task_123",
+  "session_id": "wechat:user@im.wechat",
+  "context_version": 5,
+  "error_code": "InferenceError",
+  "error_message": "推理后端连接超时",
+  "retryable": true,
+  "metadata": {
+    "attempt": "1"
+  }
+}
+```
+
+**网关响应**：同 task_result
+
+#### 4. heartbeat 事件（节点 → 网关）
+
+心跳保活：
+
+```json
+{
+  "type": "heartbeat"
+}
+```
+
+**网关响应**：
+```json
+{
+  "type": "pong"
+}
+```
+
+#### 5. diagnostics 事件（节点 → 网关）
+
+诊断信息上报：
+
+```json
+{
+  "type": "diagnostics",
+  "diagnostics": {
+    "state": "connected",
+    "message": "节点运行正常",
+    "level": "info",
+    "timestamp": "2026-04-05T10:30:00Z"
+  }
+}
+```
+
+**网关响应**：
+```json
+{
+  "type": "ack"
+}
+```
+
+**注意**：当前版本诊断事件被接收但未存储，标记为未来增强功能。
+
+### 降级机制
+
+节点 Worker 实现了优雅的降级策略：
+
+1. **WebSocket 优先**：默认使用 WebSocket 连接（`task_stream_enabled=true`）
+2. **自动降级**：WebSocket 连接失败时自动降级到 HTTP 轮询
+3. **事件发送降级**：
+   - 尝试通过 WebSocket 发送事件
+   - 失败时自动降级到 HTTP POST 接口
+   - 确保任务结果不丢失
+
+```python
+async def _submit_task_result(self, ...):
+    event = {"type": "task_result", ...}
+    if await self._try_send_task_stream_event(event):
+        return  # WebSocket 发送成功
+    # 降级到 HTTP
+    await self._gateway.submit_result(...)
+```
+
+### 线程安全
+
+节点 Worker 使用 `_task_stream_send_lock` 保护 WebSocket 发送操作：
+
+```python
+async def _send_task_stream_event(self, event: dict[str, Any]) -> None:
+    websocket = self._task_stream_websocket
+    if websocket is None:
+        raise RuntimeError("Task stream websocket is not connected")
+    async with self._task_stream_send_lock:
+        await websocket.send(json.dumps(event))
+```
+
+这避免了多个 asyncio 任务同时写入 WebSocket 导致的数据混乱。
+
+### 实现细节
+
+#### 网关端（NodeStreamBroker）
+
+```python
+class NodeStreamBroker:
+    def __init__(self):
+        self._connections: dict[str, WebSocket] = {}
+    
+    async def register_connection(self, node_id: str, websocket: WebSocket):
+        """注册节点连接"""
+        self._connections[node_id] = websocket
+    
+    async def unregister_connection(self, node_id: str):
+        """注销节点连接"""
+        self._connections.pop(node_id, None)
+    
+    async def receive_event(self, websocket: WebSocket) -> dict | None:
+        """接收节点事件"""
+        try:
+            message = await websocket.receive_text()
+            return json.loads(message)
+        except Exception:
+            return None
+```
+
+#### 节点端（Worker）
+
+```python
+async def _task_stream_loop(self):
+    while not self._shutdown.is_set():
+        try:
+            async with self._gateway.task_stream_connection() as websocket:
+                self._task_stream_websocket = websocket
+                while not self._shutdown.is_set():
+                    # 发送 ready 事件请求任务
+                    await self._send_task_stream_event({"type": "ready"})
+                    
+                    # 接收任务或 noop
+                    raw_payload = await websocket.recv()
+                    payload = json.loads(raw_payload)
+                    
+                    if payload.get("type") == "task_assigned":
+                        task = payload["task"]
+                        # 处理任务...
+        except websockets.exceptions.ConnectionClosedError as exc:
+            if exc.code == 4401:
+                # 认证失败，停止循环
+                return
+            # 其他错误，降级到 HTTP 轮询
+            if not await self._poll_once():
+                return
+        finally:
+            self._task_stream_websocket = None
+```
+
+---
+
+## 会话概览流协议
+
+### 概述
+
+会话概览流用于实时推送所有会话的状态变更，替代前端对会话列表的轮询。
+
+### 连接建立
+
+前端连接到：
+```
+ws://<gateway-host>:<gateway-port>/api/sessions/overview/ws
+```
+
+### 消息格式
+
+#### 快照消息（sessions_snapshot）
+
+连接建立后，服务器立即发送所有会话的快照：
+
+```json
+{
+  "type": "sessions_snapshot",
+  "sessions": [
+    {
+      "session_id": "wechat:user1@im.wechat",
+      "message_count": 27,
+      "assigned_node_id": "agent-1",
+      "last_message_at": "2026-04-05T10:30:00Z",
+      ...
+    },
+    {
+      "session_id": "wechat:user2@im.wechat",
+      "message_count": 15,
+      "assigned_node_id": "agent-2",
+      ...
+    }
+  ]
+}
+```
+
+#### 增量更新（sessions_snapshot）
+
+当任何会话状态变更时，服务器推送完整的会话列表：
+
+```json
+{
+  "type": "sessions_snapshot",
+  "sessions": [...]
+}
+```
+
+**注意**：当前实现推送完整列表，未来可优化为增量更新。
+
+### 实现细节
+
+#### SessionStreamBroker 扩展
+
+```python
+class SessionStreamBroker:
+    def __init__(self):
+        self._connections: dict[str, set[WebSocket]] = {}
+        self._overview_connections: set[WebSocket] = set()  # 概览订阅者
+    
+    async def subscribe_overview(self, websocket: WebSocket):
+        """订阅会话概览"""
+        async with self._lock:
+            self._overview_connections.add(websocket)
+    
+    async def unsubscribe_overview(self, websocket: WebSocket):
+        """取消订阅会话概览"""
+        async with self._lock:
+            self._overview_connections.discard(websocket)
+    
+    async def publish_overview(self, sessions: list[SessionRecord]):
+        """推送会话概览更新"""
+        payload = {
+            "type": "sessions_snapshot",
+            "sessions": [s.model_dump(mode="json") for s in sessions],
+        }
+        async with self._lock:
+            subscribers = list(self._overview_connections)
+        for websocket in subscribers:
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                await self.unsubscribe_overview(websocket)
+```
+
+#### WebSocket 端点
+
+```python
+@router.websocket("/overview/ws")
+async def stream_session_overview(websocket: WebSocket):
+    await websocket.accept()
+    
+    # 检查依赖
+    store = websocket.app.state.redis_store
+    manager = websocket.app.state.session_manager
+    stream = websocket.app.state.session_stream
+    
+    # 检查 Redis
+    if not await store.ping():
+        await websocket.close(code=4503, reason="redis_unavailable")
+        return
+    
+    try:
+        # 发送初始快照
+        sessions = await manager.list_sessions()
+        await stream.publish_overview_snapshot(websocket=websocket, sessions=sessions)
+        
+        # 订阅并保持连接
+        await stream.subscribe_overview(websocket)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await stream.unsubscribe_overview(websocket)
+```
+
+#### 前端实现
+
+```typescript
+function buildSessionOverviewWebSocketUrl(remoteGateway?: string | null) {
+  const baseUrl = remoteGateway?.trim() || window.location.origin;
+  const url = new URL(baseUrl);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  url.pathname = "/api/sessions/overview/ws";
+  return url.toString();
+}
+
+const connectOverviewSocket = () => {
+  const wsUrl = buildSessionOverviewWebSocketUrl(remoteGateway);
+  overviewSocket = new WebSocket(wsUrl);
+  
+  overviewSocket.onmessage = (event) => {
+    const payload = JSON.parse(event.data);
+    if (payload.type === "sessions_snapshot") {
+      setSessions(payload.sessions);
+    }
+  };
+  
+  overviewSocket.onerror = () => {
+    // 降级到 HTTP 轮询
+    scheduleSessionListPolling();
+  };
+};
+```
+
+---
 
 ## 相关文件
 
+### 会话消息流
 - `apps/gateway/app/services/session_stream.py` - 消息流 broker
 - `apps/gateway/app/api/routes/sessions.py` - WebSocket 端点
 - `apps/gateway/app/services/session_manager.py` - 会话管理器
 - `apps/gateway/app/core/lifespan.py` - 服务生命周期
 - `apps/agent-console/src/App.tsx` - 前端 WebSocket 客户端
+
+### 节点事件流
+- `apps/gateway/app/services/node_stream.py` - 节点事件流 broker
+- `apps/gateway/app/api/routes/nodes.py` - 节点 WebSocket 端点
+- `services/claw-node/claw_node/worker.py` - 节点 Worker 实现
+- `services/claw-node/claw_node/gateway_client.py` - 网关客户端
+
+### 文档
+- `docs/changelog.md` - 变更日志
+- `docs/gateway-node-console-implementation-roadmap.md` - 实施路线图
 - `apps/gateway/app/models/session.py` - 会话数据模型
