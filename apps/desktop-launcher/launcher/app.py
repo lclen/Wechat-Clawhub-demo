@@ -5,7 +5,7 @@ import asyncio
 import inspect
 import json
 import zipfile
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -405,7 +405,7 @@ def create_app() -> FastAPI:
         profile = app.state.profile
         layout = build_layout(profile)
         ensure_layout(layout)
-        install_dir = app.state.manager._local_node_install_dir(layout)  # type: ignore[attr-defined]
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
         service_name = app.state.manager._local_node_service_name(profile)  # type: ignore[attr-defined]
         config_path = install_dir / "config" / "node.env"
         diagnostics_path = install_dir / "diagnostics" / "node-status.json"
@@ -421,22 +421,39 @@ def create_app() -> FastAPI:
         last_register_error = str(diagnostics.get("last_error", "") or "").strip()
         last_register_at_raw = diagnostics.get("last_register_at")
         detail = status.detail
-        if not runtime_state:
-            (
-                runtime_state,
-                detail,
-                last_register_result,
-                last_register_error,
-                last_register_at_raw,
-            ) = await _infer_local_node_runtime_status(
-                gateway_port=profile.gateway_port,
-                gateway_base_url=profile.gateway_base_url,
-                node_id=app.state.manager._resolved_local_node_id(profile),  # type: ignore[attr-defined]
-                node_kind=node_kind or "local",
-                service_state=status.state,
-                model_settings=model_settings,
-                current_detail=status.detail,
-            )
+        (
+            inferred_runtime_state,
+            inferred_detail,
+            inferred_register_result,
+            inferred_register_error,
+            inferred_register_at_raw,
+        ) = await _infer_local_node_runtime_status(
+            gateway_port=profile.gateway_port,
+            gateway_base_url=profile.gateway_base_url,
+            node_id=app.state.manager._resolved_local_node_id(profile),  # type: ignore[attr-defined]
+            node_kind=node_kind or "local",
+            service_state=status.state,
+            model_settings=model_settings,
+            current_detail=status.detail,
+        )
+        diagnostics_runtime_state = str(diagnostics.get("current_state", "") or "").strip()
+        diagnostics_last_heartbeat_at = _parse_optional_datetime(diagnostics.get("last_heartbeat_at"))
+        if (
+            inferred_runtime_state == "gateway_unreachable"
+            and diagnostics_runtime_state == "connected"
+            and isinstance(diagnostics_last_heartbeat_at, datetime)
+            and (datetime.now(UTC) - diagnostics_last_heartbeat_at.astimezone(UTC)).total_seconds() <= 30
+        ):
+            inferred_runtime_state = diagnostics_runtime_state
+            inferred_detail = "本机内置节点已注册到当前目标网关，并处于在线状态。"
+            inferred_register_result = str(diagnostics.get("last_register_result", "") or "succeeded").strip() or "succeeded"
+            inferred_register_error = str(diagnostics.get("last_error", "") or "").strip()
+            inferred_register_at_raw = diagnostics.get("last_heartbeat_at") or diagnostics.get("last_register_at")
+        runtime_state = inferred_runtime_state or runtime_state
+        detail = inferred_detail or detail
+        last_register_result = inferred_register_result or last_register_result
+        last_register_error = inferred_register_error or last_register_error
+        last_register_at_raw = inferred_register_at_raw or last_register_at_raw
         return LocalNodeStatusResponse(
             service_name=service_name,
             state=status.state,
@@ -459,7 +476,7 @@ def create_app() -> FastAPI:
     async def local_node_logs() -> LocalNodeLogsResponse:
         profile = app.state.profile
         layout = build_layout(profile)
-        install_dir = app.state.manager._local_node_install_dir(layout)  # type: ignore[attr-defined]
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
         service_name = app.state.manager._local_node_service_name(profile)  # type: ignore[attr-defined]
         event_log_path = install_dir / "diagnostics" / "node-events.jsonl"
         wrapper_log_path = install_dir / "logs" / f"{service_name}.wrapper.log"
@@ -580,7 +597,7 @@ def create_app() -> FastAPI:
         profile = app.state.profile
         layout = build_layout(profile)
         ensure_layout(layout)
-        install_dir = app.state.manager._local_node_install_dir(layout)  # type: ignore[attr-defined]
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
         config_path = install_dir / "config" / "node.env"
         if not config_path.exists():
             raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
@@ -597,7 +614,7 @@ def create_app() -> FastAPI:
         profile = app.state.profile
         layout = build_layout(profile)
         ensure_layout(layout)
-        install_dir = app.state.manager._local_node_install_dir(layout)  # type: ignore[attr-defined]
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
         export_dir = Path(layout.log_dir) / "exports"
         export_dir.mkdir(parents=True, exist_ok=True)
         export_path = export_dir / f"local-node-diagnostics-{profile.local_node_id}.zip"

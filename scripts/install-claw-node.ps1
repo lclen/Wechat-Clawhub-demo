@@ -76,6 +76,28 @@ function Test-ServiceInstalled([string]$Name) {
     $null = & sc.exe query $Name 2>$null
     return $LASTEXITCODE -eq 0
 }
+function Get-ServiceExecutablePath([string]$Name) {
+    if (-not (Test-ServiceInstalled $Name)) {
+        return ""
+    }
+    try {
+        $service = Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction Stop
+        $pathName = [string]$service.PathName
+        if ([string]::IsNullOrWhiteSpace($pathName)) {
+            return ""
+        }
+        if ($pathName.StartsWith('"')) {
+            $endIndex = $pathName.IndexOf('"', 1)
+            if ($endIndex -gt 1) {
+                return $pathName.Substring(1, $endIndex - 1)
+            }
+        }
+        return ($pathName -split '\s+', 2)[0]
+    }
+    catch {
+        return ""
+    }
+}
 function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
     if (-not (Test-ServiceInstalled $Name)) {
         return
@@ -402,11 +424,18 @@ else {
 # even when reusing the bundle, to ensure fixes are applied on reinstall.
 $NodeSourceInBundle = Join-Path $StagingDir "claw-node\claw_node"
 $NodeSourceInRepo = Join-Path $RepoRoot "services\claw-node\claw_node"
+$ProjectPyprojectInRepo = Join-Path $RepoRoot "services\claw-node\pyproject.toml"
+$ProjectPyprojectInBundle = Join-Path $StagingDir "claw-node\pyproject.toml"
+$RepoOverlayApplied = $false
 if ((Test-Path $NodeSourceInBundle) -and (Test-Path $NodeSourceInRepo)) {
     foreach ($pyFile in Get-ChildItem $NodeSourceInRepo -Filter "*.py") {
         $dest = Join-Path $NodeSourceInBundle $pyFile.Name
         Copy-Item -Force $pyFile.FullName $dest
     }
+    if (Test-Path $ProjectPyprojectInRepo) {
+        Copy-Item -Force $ProjectPyprojectInRepo $ProjectPyprojectInBundle
+    }
+    $RepoOverlayApplied = $true
     Write-Step "Updated Python source files in bundle from repo"
 }
 
@@ -440,6 +469,9 @@ $RequiresDependencyInstall = -not (
     (Test-Path $PythonExe) -and
     (Test-Path $PipExe)
 )
+if ($RepoOverlayApplied) {
+    $RequiresDependencyInstall = $true
+}
 if ($RequiresDependencyInstall) {
     Write-Step "Installing or updating node Python dependencies"
     & $PythonExe @PipArgs install --upgrade pip
@@ -552,6 +584,16 @@ if (-not (Test-Path $ServiceExeSource)) {
 
 Copy-Item -LiteralPath $ServiceExeSource -Destination $ServiceExeTarget -Force
 Write-Utf8NoBomFile -Path $ServiceXmlTarget -Content $Rendered
+
+$ExistingServiceExecutablePath = Get-ServiceExecutablePath $ServiceName
+if (-not [string]::IsNullOrWhiteSpace($ExistingServiceExecutablePath)) {
+    $resolvedExisting = [System.IO.Path]::GetFullPath($ExistingServiceExecutablePath)
+    $resolvedTarget = [System.IO.Path]::GetFullPath($ServiceExeTarget)
+    if ($resolvedExisting -ne $resolvedTarget) {
+        Write-Step "Existing service path differs from requested install dir; reinstalling service"
+        Remove-ServiceIfInstalled -Name $ServiceName -ExecutablePath $ExistingServiceExecutablePath
+    }
+}
 
 Push-Location $InstallDir
 try {

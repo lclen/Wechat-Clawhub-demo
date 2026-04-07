@@ -6,7 +6,18 @@ from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSock
 
 from app.core.deps import ensure_redis_available, get_dispatch_queue, get_redis_store, get_session_manager
 from app.dispatch.queue import DispatchQueue, DispatchQueueError
-from app.models.session import SessionDetailResponse, SessionListResponse, SessionMessagesResponse, SessionSwitchRequest, SessionSwitchResponse
+from app.models.session import (
+    SessionClaimRequest,
+    SessionClaimResponse,
+    SessionDetailResponse,
+    SessionListResponse,
+    SessionMessagesResponse,
+    SessionReleaseRequest,
+    SessionReleaseResponse,
+    SessionStatus,
+    SessionSwitchRequest,
+    SessionSwitchResponse,
+)
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionCursorError, SessionManager, SessionManagerError, SessionNotFoundError
 from app.services.session_stream import SessionStreamBroker
@@ -211,3 +222,95 @@ async def switch_session_node(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except (SessionManagerError, DispatchQueueError) as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/{session_id}/claim", response_model=SessionClaimResponse)
+async def claim_session(
+    session_id: str,
+    payload: SessionClaimRequest,
+    store: RedisStore = Depends(get_redis_store),
+    manager: SessionManager = Depends(get_session_manager),
+    dispatch_queue: DispatchQueue = Depends(get_dispatch_queue),
+) -> SessionClaimResponse:
+    """
+    员工认领会话。
+
+    - 将会话状态从 bot_active 或 handoff_pending 改为 human_active
+    - 设置 claimed_by 字段
+    - 取消正在进行的 AI 任务
+    """
+    await ensure_redis_available(store)
+    try:
+        session = await manager.get_session(session_id)
+
+        # 如果有正在进行的任务，先取消
+        if session.active_task_id:
+            session = await dispatch_queue._abandon_active_task(
+                session,
+                requested_by=payload.employee_id,
+                reason="employee_claimed",
+            )
+
+        # 更新会话状态
+        updated_session = await manager.update_session_status(
+            session_id=session_id,
+            new_status=SessionStatus.HUMAN_ACTIVE,
+            claimed_by=payload.employee_id,
+            handoff_ticket_id=payload.handoff_ticket_id,
+            reason=payload.reason or "employee_claimed",
+        )
+
+        return SessionClaimResponse(
+            ok=True,
+            session=updated_session,
+            detail=f"会话已被 {payload.employee_id} 认领",
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except SessionManagerError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except DispatchQueueError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/{session_id}/release", response_model=SessionReleaseResponse)
+async def release_session(
+    session_id: str,
+    payload: SessionReleaseRequest,
+    store: RedisStore = Depends(get_redis_store),
+    manager: SessionManager = Depends(get_session_manager),
+) -> SessionReleaseResponse:
+    """
+    员工释放会话。
+
+    - 将会话状态从 human_active 改回 bot_active
+    - 清空 claimed_by 字段
+    """
+    await ensure_redis_available(store)
+    try:
+        session = await manager.get_session(session_id)
+
+        # 验证当前状态
+        if session.status != SessionStatus.HUMAN_ACTIVE:
+            raise SessionManagerError(
+                f"Cannot release session in status: {session.status}"
+            )
+
+        # 更新会话状态
+        updated_session = await manager.update_session_status(
+            session_id=session_id,
+            new_status=SessionStatus.BOT_ACTIVE,
+            claimed_by=None,
+            reason=payload.reason or "employee_released",
+        )
+
+        return SessionReleaseResponse(
+            ok=True,
+            session=updated_session,
+            detail="会话已释放，AI 将恢复处理",
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except SessionManagerError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+

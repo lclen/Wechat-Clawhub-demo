@@ -109,3 +109,26 @@ class SessionSwitchResponse(BaseModel):
     ok: bool = True
     session: SessionRecord
     detail: str = ""
+
+
+class SessionClaimRequest(BaseModel):
+    employee_id: str = Field(min_length=1, max_length=128)
+    reason: str | None = Field(default=None, max_length=256)
+    handoff_ticket_id: str | None = Field(default=None, max_length=128)
+
+
+class SessionClaimResponse(BaseModel):
+    ok: bool = True
+    session: SessionRecord
+    detail: str = ""
+
+
+class SessionReleaseRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=256)
+
+
+class SessionReleaseResponse(BaseModel):
+    ok: bool = True
+    session: SessionRecord
+    detail: str = ""
+

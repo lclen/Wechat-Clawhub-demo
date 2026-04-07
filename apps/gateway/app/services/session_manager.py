@@ -452,3 +452,127 @@ class SessionManager:
 
     def _utcnow(self) -> datetime:
         return datetime.now(UTC)
+
+    async def update_session_status(
+        self,
+        *,
+        session_id: str,
+        new_status: SessionStatus,
+        claimed_by: str | None = None,
+        handoff_ticket_id: str | None = None,
+        reason: str = "",
+    ) -> SessionRecord:
+        """
+        更新会话状态。
+
+        Args:
+            session_id: 会话 ID
+            new_status: 新状态
+            claimed_by: 认领者（仅用于 human_active 状态）
+            handoff_ticket_id: 转接工单 ID（可选）
+            reason: 状态转换原因
+
+        Returns:
+            更新后的会话记录
+
+        Raises:
+            SessionManagerError: 状态转换非法或更新失败
+        """
+        session = await self.get_session(session_id)
+
+        # 验证状态转换
+        if not self._is_valid_status_transition(session.status, new_status):
+            raise SessionManagerError(
+                f"Invalid status transition: {session.status} -> {new_status}"
+            )
+
+        # 构建更新的元数据
+        now = self._utcnow()
+        meta = self._build_session_meta(
+            session,
+            assigned_node_id=session.assigned_node_id,
+            assigned_slot_id=session.assigned_slot_id,
+            active_task_id=session.active_task_id,
+            queue_status=session.queue_status,
+            last_dispatch_at=session.last_dispatch_at,
+            updated_at=now,
+            routing_mode=session.routing_mode,
+            slot_bound_at=session.slot_bound_at,
+            slot_expires_at=session.slot_expires_at,
+        )
+
+        # 更新状态相关字段
+        meta["status"] = new_status.value
+        meta["claimed_by"] = claimed_by or ""
+        if handoff_ticket_id is not None:
+            meta["handoff_ticket_id"] = handoff_ticket_id
+
+        # 写入 Redis
+        try:
+            await self._store.hset_many(self._session_meta_key(session_id), meta)
+        except RedisError as exc:
+            raise SessionManagerError("Failed to update session status") from exc
+
+        # 记录审计日志
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="session_status_changed",
+            actor_type="system",
+            actor_id="gateway",
+            payload={
+                "from_status": session.status.value,
+                "to_status": new_status.value,
+                "claimed_by": claimed_by or "",
+                "handoff_ticket_id": handoff_ticket_id or "",
+                "reason": reason,
+            },
+        )
+
+        # 解析并持久化
+        parsed = self._parse_session(meta, session.context_summary)
+        self._user_data_store.persist_session(parsed)
+        await self._publish_overview_if_needed()
+
+        return parsed
+
+    def _is_valid_status_transition(
+        self,
+        from_status: SessionStatus,
+        to_status: SessionStatus,
+    ) -> bool:
+        """
+        验证状态转换是否合法。
+
+        合法的状态转换：
+        - bot_active -> handoff_pending (用户请求转人工)
+        - bot_active -> human_active (员工直接接管)
+        - handoff_pending -> human_active (员工认领)
+        - handoff_pending -> bot_active (取消转接)
+        - human_active -> bot_active (员工释放)
+        - any -> closing (关闭会话)
+        """
+        # 相同状态视为合法（幂等操作）
+        if from_status == to_status:
+            return True
+
+        # 定义合法的状态转换
+        valid_transitions = {
+            SessionStatus.BOT_ACTIVE: {
+                SessionStatus.HANDOFF_PENDING,
+                SessionStatus.HUMAN_ACTIVE,
+                SessionStatus.CLOSING,
+            },
+            SessionStatus.HANDOFF_PENDING: {
+                SessionStatus.HUMAN_ACTIVE,
+                SessionStatus.BOT_ACTIVE,
+                SessionStatus.CLOSING,
+            },
+            SessionStatus.HUMAN_ACTIVE: {
+                SessionStatus.BOT_ACTIVE,
+                SessionStatus.CLOSING,
+            },
+            SessionStatus.CLOSING: set(),  # closing 是终态
+        }
+
+        return to_status in valid_transitions.get(from_status, set())
+

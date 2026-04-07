@@ -18,7 +18,7 @@ from launcher.models import (
     LauncherProfile,
     derive_runtime_model,
 )
-from launcher.network import launcher_cors_origins, preferred_gateway_base_url
+from launcher.network import launcher_cors_origins, local_gateway_base_url, preferred_gateway_base_url
 from launcher.profile_store import LauncherWorkdirLayout
 from launcher.redis_runtime import write_redis_config
 from launcher.runtime import resource_root
@@ -178,10 +178,10 @@ class ProcessManager:
     def start_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         # 本机节点由网关内置托管，使用 local direct auth 直接回连当前网关。
         current = self.local_node_service_status(profile, layout)
-        if current.state == ComponentState.RUNNING:
+        node_spec = self._resolved_local_node_spec(profile)
+        if current.state == ComponentState.RUNNING and not self._local_node_service_requires_repair(profile, layout, node_spec):
             self._statuses["local-node"] = current
             return
-        node_spec = self._resolved_local_node_spec(profile)
         if node_spec["node_kind"] == "remote" and not self._read_existing_local_node_config(layout):
             self._statuses["local-node"] = LauncherComponentStatus(
                 name="local-node",
@@ -341,7 +341,7 @@ class ProcessManager:
             )
         service_state = status.get("state", "").lower()
         component_state = ComponentState.RUNNING if service_state == "running" else ComponentState.STOPPED if service_state == "stopped" else ComponentState.DEGRADED
-        diagnostics = self._read_local_node_diagnostics(layout)
+        diagnostics = self._read_local_node_diagnostics(profile, layout)
         runtime_state = str(diagnostics.get("current_state", "") or "").strip()
         runtime_detail = self._describe_local_node_runtime(runtime_state, diagnostics)
         if component_state == ComponentState.RUNNING and not runtime_detail:
@@ -374,7 +374,7 @@ class ProcessManager:
         return {
             "node_id": "local-node",
             "node_kind": "local",
-            "gateway_base_url": preferred_gateway_base_url(profile.gateway_port),
+            "gateway_base_url": local_gateway_base_url(profile.gateway_port),
             "local_direct_auth": True,
             "discovery_enabled": False,
         }
@@ -382,8 +382,23 @@ class ProcessManager:
     def _local_node_install_dir(self, layout: LauncherWorkdirLayout) -> Path:
         return Path(layout.runtime_dir) / "local-node-service"
 
+    def local_node_runtime_install_dir(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> Path:
+        service = self._query_windows_service(self._local_node_service_name(profile))
+        path_name = str((service or {}).get("path_name", "") or "").strip()
+        executable_path = self._extract_windows_service_executable_path(path_name)
+        if executable_path is not None:
+            return executable_path.parent
+        return self._local_node_install_dir(layout)
+
     def _read_existing_local_node_config(self, layout: LauncherWorkdirLayout) -> dict[str, str]:
         config_path = self._local_node_install_dir(layout) / "config" / "node.env"
+        return self._read_env_file(config_path)
+
+    def _read_local_node_runtime_config(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> dict[str, str]:
+        config_path = self.local_node_runtime_install_dir(profile, layout) / "config" / "node.env"
+        return self._read_env_file(config_path)
+
+    def _read_env_file(self, config_path: Path) -> dict[str, str]:
         if not config_path.exists():
             return {}
         values: dict[str, str] = {}
@@ -395,14 +410,41 @@ class ProcessManager:
             values[key.strip()] = value.strip()
         return values
 
+    def _local_node_service_requires_repair(
+        self,
+        profile: LauncherProfile,
+        layout: LauncherWorkdirLayout,
+        node_spec: dict[str, Any],
+    ) -> bool:
+        runtime_install_dir = self.local_node_runtime_install_dir(profile, layout)
+        desired_install_dir = self._local_node_install_dir(layout)
+        if runtime_install_dir != desired_install_dir:
+            return True
+        diagnostics = self._read_local_node_diagnostics(profile, layout)
+        runtime_state = str(diagnostics.get("current_state", "") or "").strip().lower()
+        runtime_config = self._read_local_node_runtime_config(profile, layout)
+        expected_node_id = str(node_spec.get("node_id", "") or "").strip()
+        expected_gateway_base_url = str(node_spec.get("gateway_base_url", "") or "").strip()
+        if str(runtime_config.get("CLAW_NODE_ID", "") or "").strip() != expected_node_id:
+            return True
+        if node_spec.get("local_direct_auth"):
+            if str(runtime_config.get("CLAW_GATEWAY_BASE_URL", "") or "").strip() != expected_gateway_base_url:
+                return True
+            if runtime_state in {"waiting_pair", "needs_repair"}:
+                return True
+        return False
+
     def _local_node_wrapper_log_path(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> Path:
-        install_dir = self._local_node_install_dir(layout)
+        install_dir = self.local_node_runtime_install_dir(profile, layout)
         return install_dir / "logs" / f"{self._local_node_service_name(profile)}.wrapper.log"
 
     def _stop_local_node_service(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         target_services = {self._local_node_service_name(profile), *self._list_managed_node_services()}
-        install_dir = self._local_node_install_dir(layout)
         for service_name in target_services:
+            service = self._query_windows_service(service_name)
+            install_dir = self._extract_windows_service_install_dir(str((service or {}).get("path_name", "") or ""))
+            if install_dir is None:
+                install_dir = self._local_node_install_dir(layout)
             exe_path = install_dir / f"{service_name}.exe"
             if exe_path.exists():
                 subprocess.run([str(exe_path), "stop"], capture_output=True, text=True, check=False)  # noqa: S603
@@ -411,7 +453,16 @@ class ProcessManager:
 
     def _query_windows_service(self, service_name: str) -> dict[str, Any] | None:
         result = subprocess.run(  # noqa: S603
-            ["sc.exe", "queryex", service_name],
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    f"$svc = Get-CimInstance Win32_Service -Filter \"Name='{service_name}'\"; "
+                    "if ($null -eq $svc) { exit 1 }; "
+                    "$svc | Select-Object Name,State,Status,ProcessId,PathName | ConvertTo-Json -Compress"
+                ),
+            ],
             capture_output=True,
             text=True,
             check=False,
@@ -420,11 +471,14 @@ class ProcessManager:
         )
         if result.returncode != 0:
             return None
-        state_match = re.search(r"STATE\s*:\s*\d+\s+([A-Z_]+)", result.stdout)
-        pid_match = re.search(r"PID\s*:\s*(\d+)", result.stdout)
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return None
         return {
-            "state": state_match.group(1) if state_match else "UNKNOWN",
-            "pid": int(pid_match.group(1)) if pid_match else None,
+            "state": str(payload.get("State", "UNKNOWN") or "UNKNOWN"),
+            "pid": int(payload["ProcessId"]) if payload.get("ProcessId") is not None else None,
+            "path_name": str(payload.get("PathName", "") or ""),
         }
 
     def _run_sync_command(self, command: list[str], *, cwd: Path, log_path: Path) -> None:
@@ -456,6 +510,19 @@ class ProcessManager:
                 )
             return
         current = self._statuses["gateway"]
+        command_line = str(conflict.get("command_line") or "").lower()
+        if "launcher.main" in command_line and "run-gateway" in command_line:
+            self._statuses["gateway"] = current.model_copy(
+                update={
+                    "state": ComponentState.RUNNING,
+                    "pid": conflict.get("pid"),
+                    "detail": f"{preferred_gateway_base_url(profile.gateway_port)}（复用现有 Gateway 实例）",
+                    "error_code": "adopted_existing_instance",
+                    "log_path": str(Path(layout.log_dir) / "gateway.log"),
+                    "started_at": current.started_at or datetime.now(UTC),
+                }
+            )
+            return
         if current.state == ComponentState.RUNNING and current.pid == conflict.get("pid"):
             return
         self._statuses["gateway"] = current.model_copy(
@@ -644,14 +711,36 @@ class ProcessManager:
         detail += " 请先停止它，再用桌面启动器拉起当前主网关。"
         return detail
 
-    def _read_local_node_diagnostics(self, layout: LauncherWorkdirLayout) -> dict[str, Any]:
-        diagnostics_path = self._local_node_install_dir(layout) / "diagnostics" / "node-status.json"
+    def _read_local_node_diagnostics(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> dict[str, Any]:
+        diagnostics_path = self.local_node_runtime_install_dir(profile, layout) / "diagnostics" / "node-status.json"
         if not diagnostics_path.exists():
             return {}
         try:
             return json.loads(diagnostics_path.read_text(encoding="utf-8"))
         except Exception:
             return {}
+
+    def _extract_windows_service_executable_path(self, path_name: str) -> Path | None:
+        raw = path_name.strip()
+        if not raw:
+            return None
+        if raw.startswith('"'):
+            end_index = raw.find('"', 1)
+            candidate = raw[1:end_index] if end_index > 1 else ""
+        else:
+            candidate = raw.split(" ", 1)[0]
+        if not candidate:
+            return None
+        executable_path = Path(candidate)
+        if not executable_path.is_absolute():
+            return None
+        return executable_path
+
+    def _extract_windows_service_install_dir(self, path_name: str) -> Path | None:
+        executable_path = self._extract_windows_service_executable_path(path_name)
+        if executable_path is None:
+            return None
+        return executable_path.parent
 
     def _describe_local_node_runtime(self, runtime_state: str, diagnostics: dict[str, Any]) -> str:
         detail = str(diagnostics.get("detail", "") or "").strip()

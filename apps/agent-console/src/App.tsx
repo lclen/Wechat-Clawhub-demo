@@ -126,6 +126,8 @@ const IDLE_POLL_MS = 3200;
 const SUMMARY_FALLBACK_POLL_MS = 10000; // summary WebSocket 降级时的 HTTP 轮询间隔（10 秒）
 const RETRY_POLL_MS = 1000; // backend unreachable — retry quickly
 const SUMMARY_RETRY_POLL_MS = 3000;
+const WS_RECONNECT_BASE_MS = 1500;
+const WS_RECONNECT_MAX_MS = 15000;
 const SETUP_DRAFT_KEY = "wechat-claw-hub.quick-setup.draft";
 const UI_STATE_CACHE_KEY = "wechat-claw-hub.ui-state";
 const SUMMARY_STATE_CACHE_KEY = "wechat-claw-hub.summary-state";
@@ -599,6 +601,28 @@ function resolveWorkerGatewayBaseUrl(
   return resolvePreferredGatewayBaseUrl(profile, system);
 }
 
+function shouldUseOriginLocalGateway(launcherAvailable: boolean, localGatewayManaged: boolean | null) {
+  if (localGatewayManaged === true) return true;
+  if (localGatewayManaged === false) return false;
+  try {
+    const origin = new URL(window.location.origin);
+    const isLocalControlOrigin =
+      (origin.hostname === "127.0.0.1" || origin.hostname === "localhost")
+      && origin.port === "8765";
+    if (isLocalControlOrigin && !launcherAvailable) {
+      return false;
+    }
+  } catch {
+    // fall through to optimistic default
+  }
+  return true;
+}
+
+function getReconnectDelay(attempt: number) {
+  const safeAttempt = Math.max(0, attempt);
+  return Math.min(WS_RECONNECT_MAX_MS, WS_RECONNECT_BASE_MS * (2 ** safeAttempt));
+}
+
 export function App() {
   const initialDraft = loadSetupDraft();
   const initialUiState = useMemo(() => loadUiStateCache(), []);
@@ -670,12 +694,13 @@ export function App() {
   const shouldAutoFollowMessagesRef = useRef(true);
   const previousMessageSessionIdRef = useRef<string | null>(null);
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
+  const nodeDiagnosticsCacheRef = useRef<Map<string, NodeDiagnosticsRecord>>(new Map());
   const effectiveRole = resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []);
   const currentRoleIsWorker = isWorkerRole(effectiveRole);
   const currentRoleIsConsole = isConsoleRole(effectiveRole);
   const runtimeMachineRole = launcherMachineRoleValue(launcherStatus);
   const localGatewayManaged = launcherAvailable ? launcherShouldRunGateway(launcherStatus) : null;
-  const shouldUseLocalGatewayApi = localGatewayManaged !== false;
+  const shouldUseLocalGatewayApi = shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
   const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
   const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
   const sessionRemoteGatewayBaseUrl = currentRoleIsWorker
@@ -737,6 +762,40 @@ export function App() {
       syncNodeStateView,
     });
     return summary;
+  }
+
+  function syncSetupProfileState(
+    profile: SetupProfileResponse,
+    preferredGatewayBaseUrl: string,
+    options?: { syncLastTask?: boolean; system?: SystemStatus | null },
+  ) {
+    setSetupProfile(profile);
+    if (options?.syncLastTask) {
+      setSetupTask(profile.last_task);
+    }
+    setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
+    setGatewaySetup(profile.gateway);
+    setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
+    setWorkerSetup((current) => ({
+      ...current,
+      node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
+      gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, options?.system ?? systemStatus),
+      dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
+      dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+      node_token: "",
+    }));
+  }
+
+  function upsertSessionInView(nextSession: SessionRecord) {
+    setSessions((current) => {
+      const exists = current.some((item) => item.session_id === nextSession.session_id);
+      const next = exists
+        ? current.map((item) => (item.session_id === nextSession.session_id ? nextSession : item))
+        : [nextSession, ...current];
+      return next;
+    });
+    setSelectedSessionId((current) => current ?? nextSession.session_id);
+    setActiveSession((current) => (current?.session_id === nextSession.session_id ? nextSession : current));
   }
 
   useEffect(() => {
@@ -967,28 +1026,14 @@ export function App() {
           profile.recommended_workspace === "quick_setup"
             ? "检测到这是首次启动，先完成快速配置。"
             : summary.system.redis_ok
-              ? "主网关在线，正在加载微信、节点和会话概览…"
+              ? "主网关在线。微信、节点和会话概览会通过实时流持续更新。"
               : "主网关已启动，但 Redis 当前不可用。",
         );
 
-        void Promise.allSettled([
-          requestJson<ModelStatus>("/api/models/builtin/status").then((model) => {
-            if (cancelled) return;
-            setModelStatus(model);
-          }),
-          requestJson<SessionsResponse>("/api/sessions").then((sessionList) => {
-            if (cancelled) return;
-            syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
-            setSessionsLoaded(true);
-            setNotice(
-              profile.recommended_workspace === "quick_setup"
-                ? "检测到这是首次启动，先完成快速配置。"
-                : summary.system.redis_ok
-                  ? (sessionList.sessions.length ? "主网关在线。默认进入会话观察台。" : "主网关在线。可以先在接入中心做模型检测。")
-                  : "主网关已启动，但 Redis 当前不可用。",
-            );
-          }),
-        ]);
+        void requestJson<ModelStatus>("/api/models/builtin/status").then((model) => {
+          if (cancelled) return;
+          setModelStatus(model);
+        });
       } catch (error) {
         if (!cancelled) {
           const runtimeRole = launcherMachineRoleValue(launcherSt);
@@ -1084,6 +1129,29 @@ export function App() {
     setMessagesLoaded(entry.loaded);
   }
 
+  function getNodeDiagnosticsCache(nodeId: string | null) {
+    if (!nodeId) return null;
+    return nodeDiagnosticsCacheRef.current.get(nodeId) ?? null;
+  }
+
+  function syncNodeDiagnosticsCache(nodeId: string, diagnostics: NodeDiagnosticsRecord) {
+    nodeDiagnosticsCacheRef.current.set(nodeId, diagnostics);
+    return diagnostics;
+  }
+
+  function applyNodeDiagnosticsEntry(nodeId: string, diagnostics: NodeDiagnosticsRecord | null) {
+    if (selectedNodeId !== nodeId) return;
+    setSelectedNodeDiagnostics(diagnostics);
+  }
+
+  function clearNodeDiagnosticsCache(nodeId?: string | null) {
+    if (!nodeId) {
+      nodeDiagnosticsCacheRef.current.clear();
+      return;
+    }
+    nodeDiagnosticsCacheRef.current.delete(nodeId);
+  }
+
   function buildSessionWebSocketUrl(sessionId: string, remoteGateway?: string | null) {
     const baseUrl = remoteGateway?.trim() || window.location.origin;
     const url = new URL(baseUrl);
@@ -1128,17 +1196,14 @@ export function App() {
     let cancelled = false;
     let reconnectTimer = 0;
     let socket: WebSocket | null = null;
+    let reconnectAttempt = 0;
     const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
-    if (localGatewayManaged === false && !usesRemoteGateway) {
+    if (!shouldUseLocalGatewayApi && !usesRemoteGateway) {
       setGatewaySummaryStreamActive(false);
       return;
     }
     if (usesRemoteGateway && !remoteGateway) {
-      setGatewaySummaryStreamActive(false);
-      return;
-    }
-    if (!usesRemoteGateway && localGatewayManaged === null) {
       setGatewaySummaryStreamActive(false);
       return;
     }
@@ -1149,9 +1214,14 @@ export function App() {
         socket = new WebSocket(buildGatewaySummaryWebSocketUrl(remoteGateway));
       } catch {
         setGatewaySummaryStreamActive(false);
-        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
         return;
       }
+
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
 
       socket.onmessage = (event) => {
         if (cancelled) return;
@@ -1163,6 +1233,7 @@ export function App() {
         }
         if (payload.type !== "gateway_summary") return;
         setGatewaySummaryStreamActive(true);
+        reconnectAttempt = 0;
         applyGatewaySummaryToState(payload.summary, {
           setSystemStatus,
           setWechatStatus,
@@ -1205,7 +1276,8 @@ export function App() {
       socket.onclose = () => {
         if (cancelled) return;
         setGatewaySummaryStreamActive(false);
-        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
       };
     };
 
@@ -1220,7 +1292,7 @@ export function App() {
         // ignore teardown close errors
       }
     };
-  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId]);
+  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1334,19 +1406,64 @@ export function App() {
     const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     if (usesRemoteGateway && !remoteGateway) return;
+    if (!usesRemoteGateway && !shouldUseLocalGatewayApi) return;
 
     let cancelled = false;
     let reconnectTimer = 0;
+    let httpTimer = 0;
     let socket: WebSocket | null = null;
+    let socketReady = false;
+    let reconnectAttempt = 0;
+    const hasInitialSessions = sessionsLoaded;
+
+    const applyOverview = (allSessions: SessionRecord[]) => {
+      const nextSessions = currentRoleIsWorker
+        ? allSessions.filter((session) => session.assigned_node_id === sessionRemoteNodeId)
+        : allSessions;
+      syncSessions(nextSessions, setSessions, setSelectedSessionId, setActiveSession);
+      setSessionsLoaded(true);
+    };
+
+    const scheduleHttpPolling = (delay: number) => {
+      window.clearTimeout(httpTimer);
+      if (cancelled) return;
+      httpTimer = window.setTimeout(() => {
+        if (!socketReady) {
+          void loadOverview();
+        }
+      }, delay);
+    };
+
+    const loadOverview = async () => {
+      try {
+        const response = await requestJson<SessionsResponse>(
+          usesRemoteGateway ? `${remoteGateway}/api/sessions` : "/api/sessions",
+        );
+        if (cancelled) return;
+        applyOverview(response.sessions);
+        scheduleHttpPolling(IDLE_POLL_MS);
+      } catch {
+        if (cancelled) return;
+        scheduleHttpPolling(RETRY_POLL_MS);
+      }
+    };
 
     const connect = () => {
       if (cancelled) return;
       try {
         socket = new WebSocket(buildSessionOverviewWebSocketUrl(remoteGateway));
       } catch {
-        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
         return;
       }
+
+      socket.onopen = () => {
+        if (cancelled) return;
+        socketReady = true;
+        reconnectAttempt = 0;
+        window.clearTimeout(httpTimer);
+      };
 
       socket.onmessage = (event) => {
         if (cancelled) return;
@@ -1357,16 +1474,15 @@ export function App() {
           return;
         }
         if (payload.type !== "sessions_snapshot" || !Array.isArray(payload.sessions)) return;
-        const nextSessions = currentRoleIsWorker
-          ? payload.sessions.filter((session) => session.assigned_node_id === sessionRemoteNodeId)
-          : payload.sessions;
-        syncSessions(nextSessions, setSessions, setSelectedSessionId, setActiveSession);
-        setSessionsLoaded(true);
+        applyOverview(payload.sessions);
       };
 
       socket.onclose = () => {
         if (cancelled) return;
-        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        socketReady = false;
+        scheduleHttpPolling(hasInitialSessions ? IDLE_POLL_MS : RETRY_POLL_MS);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
       };
 
       socket.onerror = () => {
@@ -1379,16 +1495,20 @@ export function App() {
     };
 
     connect();
+    if (!hasInitialSessions) {
+      scheduleHttpPolling(RETRY_POLL_MS);
+    }
     return () => {
       cancelled = true;
       window.clearTimeout(reconnectTimer);
+      window.clearTimeout(httpTimer);
       try {
         socket?.close();
       } catch {
         // ignore teardown close errors
       }
     };
-  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, workspace]);
+  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi, sessionsLoaded, workspace]);
 
   useEffect(() => {
     shouldAutoFollowMessagesRef.current = true;
@@ -1419,12 +1539,14 @@ export function App() {
     const remoteGateway = sessionRemoteGatewayBaseUrl;
     const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus));
     if (usesRemoteGateway && !remoteGateway) return;
+    if (!usesRemoteGateway && !shouldUseLocalGatewayApi) return;
 
     let cancelled = false;
     let httpTimer = 0;
     let reconnectTimer = 0;
     let socket: WebSocket | null = null;
     let socketReady = false;
+    let reconnectAttempt = 0;
     const sessionId = selectedSessionId;
 
     // 立即应用缓存（如果存在），避免 UI 闪烁
@@ -1485,8 +1607,15 @@ export function App() {
         socket = new WebSocket(wsUrl);
       } catch {
         scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+        reconnectTimer = window.setTimeout(() => {
+          connectSessionSocket();
+        }, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
         return;
       }
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
       snapshotTimeout = window.setTimeout(() => {
         if (cancelled || receivedPayload) return;
         try {
@@ -1511,6 +1640,7 @@ export function App() {
         window.clearTimeout(snapshotTimeout);
         stopHttpPolling();
         socketReady = true;
+        reconnectAttempt = 0;
         const entry = syncSessionMessageCache(
           sessionId,
           {
@@ -1537,7 +1667,8 @@ export function App() {
         scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded || receivedSnapshot));
         reconnectTimer = window.setTimeout(() => {
           connectSessionSocket();
-        }, 3000);
+        }, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
       };
     };
 
@@ -1562,7 +1693,7 @@ export function App() {
       }
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [currentRoleIsConsole, currentRoleIsWorker, launcherStatus, localGatewayManaged, selectedSessionId, sessionRemoteGatewayBaseUrl, workspace]);
+  }, [currentRoleIsConsole, currentRoleIsWorker, launcherStatus, localGatewayManaged, selectedSessionId, sessionRemoteGatewayBaseUrl, shouldUseLocalGatewayApi, workspace]);
 
   useEffect(() => {
     if (workspace !== "connection" || !selectedNodeId) {
@@ -1572,11 +1703,21 @@ export function App() {
     const useRemoteGateway = currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus);
     const remoteGateway = useRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     if (useRemoteGateway && !remoteGateway) return;
+    if (!useRemoteGateway && !shouldUseLocalGatewayApi) return;
     if (!useRemoteGateway && !launcherShouldRunGateway(launcherStatus)) return;
     let cancelled = false;
     let timer = 0;
     let reconnectTimer = 0;
     let socket: WebSocket | null = null;
+    let reconnectAttempt = 0;
+    const nodeId = selectedNodeId;
+
+    const cached = getNodeDiagnosticsCache(nodeId);
+    if (cached) {
+      applyNodeDiagnosticsEntry(nodeId, cached);
+    } else {
+      setSelectedNodeDiagnostics(null);
+    }
 
     const scheduleHttpFallback = () => {
       window.clearTimeout(timer);
@@ -1584,12 +1725,16 @@ export function App() {
         try {
           const detail = await requestJson<NodeDiagnosticsResponse>(
             useRemoteGateway
-              ? `${remoteGateway}/api/nodes/${encodeURIComponent(selectedNodeId)}/diagnostics`
-              : `/api/nodes/${encodeURIComponent(selectedNodeId)}/diagnostics`,
+              ? `${remoteGateway}/api/nodes/${encodeURIComponent(nodeId)}/diagnostics`
+              : `/api/nodes/${encodeURIComponent(nodeId)}/diagnostics`,
           );
-          if (!cancelled) setSelectedNodeDiagnostics(detail.diagnostics);
+          if (cancelled || selectedNodeId !== nodeId) return;
+          const entry = syncNodeDiagnosticsCache(nodeId, detail.diagnostics);
+          applyNodeDiagnosticsEntry(nodeId, entry);
         } catch {
-          if (!cancelled) setSelectedNodeDiagnostics(null);
+          if (!cancelled && !cached) {
+            applyNodeDiagnosticsEntry(nodeId, null);
+          }
         }
       }, 200);
     };
@@ -1597,12 +1742,17 @@ export function App() {
     const connect = () => {
       if (cancelled) return;
       try {
-        socket = new WebSocket(buildNodeDiagnosticsWebSocketUrl(selectedNodeId, remoteGateway));
+        socket = new WebSocket(buildNodeDiagnosticsWebSocketUrl(nodeId, remoteGateway));
       } catch {
         scheduleHttpFallback();
-        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
         return;
       }
+
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
 
       socket.onmessage = (event) => {
         if (cancelled) return;
@@ -1612,8 +1762,10 @@ export function App() {
         } catch {
           return;
         }
-        if (payload.type !== "diagnostics_snapshot" || payload.node_id !== selectedNodeId) return;
-        setSelectedNodeDiagnostics(payload.diagnostics);
+        if (payload.type !== "diagnostics_snapshot" || payload.node_id !== nodeId) return;
+        const entry = syncNodeDiagnosticsCache(nodeId, payload.diagnostics);
+        reconnectAttempt = 0;
+        applyNodeDiagnosticsEntry(nodeId, entry);
       };
 
       socket.onerror = () => {
@@ -1627,7 +1779,8 @@ export function App() {
 
       socket.onclose = () => {
         if (cancelled) return;
-        reconnectTimer = window.setTimeout(connect, RETRY_POLL_MS);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
       };
     };
 
@@ -1642,7 +1795,7 @@ export function App() {
         // ignore teardown close errors
       }
     };
-  }, [currentRoleIsConsole, launcherStatus, selectedNodeId, sessionRemoteGatewayBaseUrl, workspace]);
+  }, [currentRoleIsConsole, launcherStatus, selectedNodeId, sessionRemoteGatewayBaseUrl, shouldUseLocalGatewayApi, workspace]);
 
   useEffect(() => {
     if (!setupTask || (setupTask.status !== "pending" && setupTask.status !== "running")) return;
@@ -1760,7 +1913,7 @@ export function App() {
       (needsLocalNode && !running.has("local-node"));
     if (!shouldStart) return;
     try {
-      await withBusy(
+      const status = await withBusy(
         "launcher-start",
         () => requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
           method: "POST",
@@ -1770,7 +1923,7 @@ export function App() {
           })),
         }),
       );
-      await refreshLauncherStatus();
+      applyLauncherStatusState(status);
       setNotice(`已为${roleName(role)}预启动本地组件，便于立即配置网关与节点。`);
     } catch (error) {
       const failure = error as Error & { code?: string };
@@ -1781,7 +1934,7 @@ export function App() {
     if (!launcherAvailable) return;
     const targetMachineRole = setupRoleToLauncherMachineRole(role);
     try {
-      await withBusy("launcher-start", () =>
+      const status = await withBusy("launcher-start", () =>
         requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
           method: "POST",
           body: JSON.stringify(buildLauncherStartPayload(launcherStatus, targetMachineRole, {
@@ -1790,7 +1943,7 @@ export function App() {
           })),
         }),
       );
-      await refreshLauncherStatus();
+      applyLauncherStatusState(status);
       setNotice(`已按${roleName(role)}收敛本地运行模型。`);
     } catch (error) {
       const failure = error as Error & { code?: string };
@@ -1846,50 +1999,30 @@ export function App() {
       ? await requestJson<SetupProfileResponse>("/api/setup/profile")
       : await requestJson<SetupProfileResponse>("/local/setup/profile");
     const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, systemStatus);
-    setSetupProfile(profile);
-    setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
-    setGatewaySetup(profile.gateway);
-    setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
-    setWorkerSetup((current) => ({
-      ...current,
-      node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
-      gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
-      dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-      dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
-      node_token: "",
-    }));
+    syncSetupProfileState(profile, preferredGatewayBaseUrl, { system: systemStatus });
   }
   async function refreshQuickSetupStatus() {
     try {
       if (!shouldUseLocalGatewayApi) {
-        const profile = await requestJson<SetupProfileResponse>("/local/setup/profile");
         const remoteGateway = sessionRemoteGatewayBaseUrl.trim();
-        const remoteWechat = currentRoleIsConsole && remoteGateway
-          ? await requestJson<WeChatStatus>(`${remoteGateway}/api/wechat/onboard/status`).catch(() => null)
-          : null;
-        const remoteNodeList = remoteGateway
-          ? await requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null)
-          : null;
-        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, systemStatus);
-        setSetupProfile(profile);
-        setSetupTask(profile.last_task);
-        setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
-        setGatewaySetup(profile.gateway);
-        setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
-        setWorkerSetup((current) => ({
-          ...current,
-          node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
-          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
-          dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-          dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
-          node_token: "",
-        }));
-        if (remoteWechat) {
-          setWechatStatus(remoteWechat);
-          if (remoteWechat.base_url) setWechatBaseUrl(remoteWechat.base_url);
-        }
-        if (remoteNodeList) {
-          syncNodeStateView(remoteNodeList);
+        const [profile, remoteSummary] = await Promise.all([
+          requestJson<SetupProfileResponse>("/local/setup/profile"),
+          remoteGateway
+            ? requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, remoteSummary?.system ?? systemStatus);
+        syncSetupProfileState(profile, preferredGatewayBaseUrl, {
+          syncLastTask: true,
+          system: remoteSummary?.system ?? systemStatus,
+        });
+        if (remoteSummary) {
+          applyGatewaySummaryToState(remoteSummary, {
+            setSystemStatus,
+            setWechatStatus,
+            setWechatBaseUrl,
+            syncNodeStateView,
+          });
         }
         if (launcherAvailable) {
           await refreshLauncherStatus();
@@ -1905,28 +2038,13 @@ export function App() {
       }
       const [profile, summary, model] = await Promise.all([
         requestJson<SetupProfileResponse>("/api/setup/profile"),
-        requestJson<GatewaySummaryResponse>("/api/system/summary"),
+        refreshGatewaySummarySnapshot(),
         requestJson<ModelStatus>("/api/models/builtin/status"),
       ]);
-      const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, summary.system);
-      setSetupProfile(profile);
-      setSetupTask(profile.last_task);
-      setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
-      setGatewaySetup(profile.gateway);
-      setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
-      setWorkerSetup((current) => ({
-        ...current,
-        node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
-        gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, summary.system),
-        dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-        dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
-        node_token: "",
-      }));
-      applyGatewaySummaryToState(summary, {
-        setSystemStatus,
-        setWechatStatus,
-        setWechatBaseUrl,
-        syncNodeStateView,
+      const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, summary?.system ?? systemStatus);
+      syncSetupProfileState(profile, preferredGatewayBaseUrl, {
+        syncLastTask: true,
+        system: summary?.system ?? systemStatus,
       });
       setModelStatus(model);
       if (launcherAvailable) {
@@ -1939,8 +2057,7 @@ export function App() {
   }
   async function refreshSystemStatus() {
     if (!shouldUseLocalGatewayApi) return;
-    const system = await requestJson<SystemStatus>("/api/system/status");
-    setSystemStatus(system);
+    return (await refreshGatewaySummarySnapshot())?.system ?? null;
   }
   async function refreshSessionDetail(sessionId: string) {
     const remoteGateway = sessionRemoteGatewayBaseUrl;
@@ -2118,16 +2235,19 @@ export function App() {
   function updateNodeState(next: NodeListResponse) {
     syncNodeStateView(next);
   }
+  function applyLauncherStatusState(status: LauncherStatusResponse) {
+    setLauncherStatus(status);
+    setLauncherAvailable(true);
+    setWorkerSetup((current) => ({
+      ...current,
+      node_id: resolveWorkerNodeId(current.node_id, status.profile),
+      gateway_base_url: status.profile.gateway_base_url?.trim() || current.gateway_base_url,
+    }));
+  }
   async function refreshLauncherStatus() {
     try {
       const status = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
-      setLauncherStatus(status);
-      setLauncherAvailable(true);
-      setWorkerSetup((current) => ({
-        ...current,
-        node_id: resolveWorkerNodeId(current.node_id, status.profile),
-        gateway_base_url: status.profile.gateway_base_url?.trim() || current.gateway_base_url,
-      }));
+      applyLauncherStatusState(status);
     } catch {
       setLauncherAvailable(false);
     }
@@ -2230,10 +2350,11 @@ export function App() {
     setSetupTask(result.task);
   }
   async function toggleLauncherDispatchMode(enabled: boolean) {
-    await requestJson<LauncherStatusResponse>("/local/bootstrap/dispatch-mode", {
+    const status = await requestJson<LauncherStatusResponse>("/local/bootstrap/dispatch-mode", {
       method: "POST",
       body: JSON.stringify({ enabled }),
     });
+    applyLauncherStatusState(status);
   }
   async function applyDispatchMode(enabled: boolean) {
     try {
@@ -2245,7 +2366,7 @@ export function App() {
       });
       await Promise.all([
         refreshSetupProfile(),
-        refreshSystemStatus(),
+        refreshGatewaySummarySnapshot(),
         refreshLauncherStatus(),
       ]);
       setNotice(enabled ? "已开启分发模式：当前主机只负责分发，不再由本机节点处理消息。" : "已关闭分发模式：本机节点可重新参与调度。");
@@ -2257,8 +2378,8 @@ export function App() {
   async function installLauncherRedis(target: "host" | "node-cache", source: LauncherRedisSource) {
     try {
       setNotice(`正在下载 ${target === "host" ? "主机" : "节点缓存"} Redis，会自动尝试镜像源和官方源，请稍候（约 1-3 分钟）...`);
-      await withBusy(`launcher-install-${target}`, () => requestJson<LauncherStatusResponse>("/local/bootstrap/install-redis", { method: "POST", body: JSON.stringify({ target, source }) }));
-      await refreshLauncherStatus();
+      const status = await withBusy(`launcher-install-${target}`, () => requestJson<LauncherStatusResponse>("/local/bootstrap/install-redis", { method: "POST", body: JSON.stringify({ target, source }) }));
+      applyLauncherStatusState(status);
       setNotice(target === "host" ? "主机 Redis 已准备完成。" : "节点缓存 Redis 已准备完成。");
     } catch (error) {
       setNotice(`安装 Redis 失败：${(error as Error).message}`);
@@ -2268,7 +2389,7 @@ export function App() {
     try {
       const defaultMachineRole = effectiveRole ? setupRoleToLauncherMachineRole(effectiveRole) : (launcherMachineRoleValue(launcherStatus) || "gateway_console");
       const enableNodeCacheRedis = overrides?.enableNodeCacheRedis ?? (launcherStatus?.profile.node_cache_policy !== "disabled");
-      await withBusy(
+      const status = await withBusy(
         "launcher-start",
         () => requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
           method: "POST",
@@ -2279,7 +2400,7 @@ export function App() {
           })),
         }),
       );
-      await refreshLauncherStatus();
+      applyLauncherStatusState(status);
       setNotice(defaultMachineRole === "node" ? "节点服务启动命令已下发。" : "本地运行模型启动命令已下发。");
     } catch (error) {
       const failure = error as Error & { code?: string };
@@ -2288,8 +2409,8 @@ export function App() {
   }
   async function stopLauncherStack(component?: string) {
     try {
-      await withBusy("launcher-stop", () => requestJson<LauncherStatusResponse>("/local/bootstrap/stop", { method: "POST", body: JSON.stringify({ component: component || null }) }));
-      await refreshLauncherStatus();
+      const status = await withBusy("launcher-stop", () => requestJson<LauncherStatusResponse>("/local/bootstrap/stop", { method: "POST", body: JSON.stringify({ component: component || null }) }));
+      applyLauncherStatusState(status);
       setNotice(component ? `${component} 已停止。` : "已停止所有本地组件。");
     } catch (error) {
       setNotice(`停止组件失败：${(error as Error).message}`);
@@ -2297,8 +2418,8 @@ export function App() {
   }
   async function toggleLauncherNodeCache(enabled: boolean) {
     try {
-      await withBusy("launcher-node-cache-toggle", () => requestJson<LauncherStatusResponse>("/local/bootstrap/node-cache/toggle", { method: "POST", body: JSON.stringify({ enabled }) }));
-      await refreshLauncherStatus();
+      const status = await withBusy("launcher-node-cache-toggle", () => requestJson<LauncherStatusResponse>("/local/bootstrap/node-cache/toggle", { method: "POST", body: JSON.stringify({ enabled }) }));
+      applyLauncherStatusState(status);
       setNotice(enabled ? "已启用节点本地缓存 Redis。" : "已关闭节点本地缓存 Redis。");
     } catch (error) {
       setNotice(`更新节点缓存策略失败：${(error as Error).message}`);
@@ -2321,11 +2442,8 @@ export function App() {
           body: JSON.stringify({ reason: "console_manual_switch" }),
         }),
       );
-      setActiveSession(result.session);
+      upsertSessionInView(result.session);
       await Promise.all([
-        requestJson<SessionsResponse>("/api/sessions").then((sessionList) => {
-          syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
-        }),
         refreshSessionDetail(sessionId),
         refreshGatewaySummarySnapshot(),
       ]);
@@ -2474,6 +2592,7 @@ export function App() {
         `delete-node-${node.node_id}`,
         () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}`, { method: "DELETE" }),
       );
+      clearNodeDiagnosticsCache(node.node_id);
       await refreshGatewaySummarySnapshot();
       setNotice(result.detail || `已删除节点 ${node.node_id}。`);
       if (workerSetup.node_id.trim() === node.node_id) {
@@ -2491,6 +2610,7 @@ export function App() {
         `disconnect-node-${node.node_id}`,
         () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" }),
       );
+      clearNodeDiagnosticsCache(node.node_id);
       await refreshGatewaySummarySnapshot();
       setNotice(result.detail || `已断开节点 ${node.node_id}。`);
     } catch (error) {
@@ -2545,6 +2665,7 @@ export function App() {
         );
         setSetupTask(result.task);
         setWorkerSetup((current) => ({ ...current, node_token: "" }));
+        clearNodeDiagnosticsCache(workerSetup.node_id.trim());
         stoppedActions.push("已清空节点配置");
       }
       // 重置后端内存状态（仅网关角色需要）
@@ -2555,6 +2676,7 @@ export function App() {
       }
       // 清理前端本地缓存
       clearQuickSetupCache();
+      clearNodeDiagnosticsCache();
       persistWorkspace("quick_setup");
       setSetupProfile(null);
       setSetupRole(null);

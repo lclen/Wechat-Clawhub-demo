@@ -44,6 +44,10 @@ def preferred_gateway_base_url(port: int) -> str:
     return f"http://{host}:{port}"
 
 
+def local_gateway_base_url(port: int) -> str:
+    return f"http://{LOOPBACK_HOST}:{port}"
+
+
 def launcher_cors_origins(port: int) -> list[str]:
     origins = {
         f"http://127.0.0.1:{port}",
