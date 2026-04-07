@@ -1,6 +1,38 @@
 # Changelog
 
-> **Status**: Active | **Last Updated**: 2026-04-05 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+> **Status**: Active | **Last Updated**: 2026-04-07 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+
+---
+
+## 2026-04-07 — Dify 用户级上下文隔离
+
+### 背景
+
+后续计划将通道空闲判断逐步下放到节点侧。要做到“用户超过 10 分钟不说话，节点释放自身空闲通道”而又不丢上下文，前提是 Dify 对话上下文必须先稳定绑定到真实微信用户，而不是继续依赖更松散的会话键拼接。
+
+### 本次调整
+
+- `services/claw-node/claw_node/dify_client.py`
+  - 将节点本地 `conversation_id` 缓存键从 `session_id:user_id` 收敛为直接使用 `user_id`
+  - 保持请求体中 `user` 字段继续直接传递微信 `user_id`
+  - 不改变现有 `conversation_id` 回填逻辑，仍支持从 recent messages 元数据中恢复
+
+- `services/claw-node/tests/test_dify_client.py`
+  - 新增测试验证 `conversation_key` 与微信 `user_id` 一致
+  - 验证 `user` 字段保持为微信用户 ID
+  - 验证 recent messages 中已有 `conversation_id` 时仍能连续复用
+
+### 收益
+
+- Dify 上下文隔离粒度与真实微信用户一致
+- 为后续“节点侧空闲通道自动释放”提供更稳定的上下文基础
+- 节点在重新分配槽位时，不需要再把 Dify 会话绑定到旧的槽位或复合会话键
+
+### 后续计划
+
+1. 持久化最新 `dify_conversation_id`，避免节点重启后仅依赖内存缓存
+2. 在节点侧引入每个槽位的 `last_active_at`，支持 10 分钟空闲释放
+3. 在前端连接中心明确展示各个 claw 的空闲通道数
 
 ---
 

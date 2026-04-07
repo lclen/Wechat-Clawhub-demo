@@ -282,6 +282,59 @@
   3. `image_item` / `video_item` / `file_item` 是否仍携带顶层 `aeskey`
   4. 日志里是否出现 `cdn_upload success` 但没有 `send_uploaded_media success`
 
+## 3.5 Dify 上下文按微信用户隔离（2026-04-07）
+
+目标：
+
+- 让 Dify 对话上下文稳定绑定到“微信用户”维度
+- 为后续“节点侧通道空闲释放”和“随机分配到任意空闲节点”打基础
+- 降低节点切换时因为会话键不一致导致的上下文漂移
+
+背景判断：
+
+- 当前网关的 `session_id` 实际上已经是 `wechat:{user_id}` 形式
+- Dify 请求体里的 `user` 字段也已经直接传递微信 `user_id`
+- 但节点本地 `conversation_id` 缓存键此前仍使用 `session_id:user_id`
+- 这种做法虽然能工作，但不够直接，也不利于把“用户级上下文隔离”作为后续统一约束
+
+本次收口：
+
+- 节点侧 `DifyClient` 改为直接使用 `user_id` 作为本地 `conversation_id` 缓存键
+- 约束含义变为：
+  - 同一个微信用户在同一个节点上的 Dify 会话缓存唯一
+  - 上下文隔离优先按真实微信用户，而不是按拼接后的会话键
+- 已补充测试，确保：
+  - `conversation_key` 与 `user_id` 一致
+  - `user` 字段仍直接传给 Dify
+  - 旧消息里带回的 `conversation_id` 仍能继续复用
+
+代码落点：
+
+- `services/claw-node/claw_node/dify_client.py`
+- `services/claw-node/tests/test_dify_client.py`
+
+当前收益：
+
+- Dify 上下文语义更清晰，后续做多节点调度时更容易保持一致
+- 节点侧实现“通道 10 分钟空闲自动释放”时，可以更放心地把 Dify 会话视为用户级上下文，而不是槽位级上下文
+
+下一步最值得做的事情：
+
+1. **持久化 Dify conversation_id**（高优先级）
+   - 当前 `conversation_id` 仍主要依赖节点内存缓存和最近消息元数据回填
+   - 若节点重启，虽然还能从 recent messages 尝试恢复，但恢复路径不够显式
+   - 建议把最新 `dify_conversation_id` 稳定写入消息元数据或节点本地缓存，作为明确真值来源
+
+2. **节点侧通道空闲释放**（高优先级）
+   - 节点维护每个槽位的 `last_active_at`
+   - 在无 in-flight 任务且超过 10 分钟无用户活跃时，节点主动上报 `channel_released`
+   - 网关只做轻量校验并更新 Redis 槽位真值
+
+3. **前端实时展示空闲通道数**（中优先级）
+   - 复用已有 `channel_capacity` / `channel_in_use`
+   - 在节点卡片显示 `空闲 = capacity - in_use`
+   - 不新增接口，继续复用现有 `summary/ws`
+
 ## 4. 中期演进路线
 
 ## 4.1 阶段 A：节点事件流化

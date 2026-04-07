@@ -128,7 +128,14 @@ class DifyClient:
         }
 
     def _conversation_key(self, *, session_id: str, user_id: str) -> str:
-        return f"{session_id}:{user_id}"
+        del session_id
+        return self._dify_user_id(user_id)
+
+    def _dify_user_id(self, user_id: str) -> str:
+        normalized = str(user_id).strip()
+        if not normalized:
+            raise ValueError("Dify user_id must not be empty")
+        return normalized
 
     def _resolve_conversation_id(self, conversation_key: str, recent_messages: list[dict[str, Any]]) -> str:
         cached = self._conversation_ids.get(conversation_key, "").strip()

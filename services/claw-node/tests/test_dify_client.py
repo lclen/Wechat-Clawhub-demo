@@ -10,6 +10,24 @@ from claw_node.dify_client import DifyClient
 
 
 class DifyClientTests(unittest.IsolatedAsyncioTestCase):
+    def test_conversation_key_uses_user_id_for_context_isolation(self) -> None:
+        settings = NodeSettings(
+            CLAW_MODEL_PROVIDER="dify",
+            CLAW_DIFY_BASE_URL="http://127.0.0.1:3000/v1",
+            CLAW_DIFY_API_KEY="secret",
+        )
+        client = DifyClient(settings)
+        try:
+            self.assertEqual(
+                client._conversation_key(
+                    session_id="wechat:o9cq801txMYfPe4My5Ks_wBfUBLo@im.wechat",
+                    user_id="o9cq801txMYfPe4My5Ks_wBfUBLo@im.wechat",
+                ),
+                "o9cq801txMYfPe4My5Ks_wBfUBLo@im.wechat",
+            )
+        finally:
+            self.addAsyncCleanup(client.close)
+
     async def test_ask_uses_conversation_id_and_remote_files(self) -> None:
         captured: list[dict[str, object]] = []
 
@@ -63,6 +81,7 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer, "ok")
         self.assertEqual(usage["usage"]["total_tokens"], 10)
         self.assertEqual(captured[0]["conversation_id"], "conv-1")
+        self.assertEqual(captured[0]["user"], "user-1")
         self.assertEqual(
             captured[0]["files"],
             [{"type": "image", "transfer_method": "remote_url", "url": "https://example.com/a.png"}],
@@ -77,6 +96,7 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
             recent_messages=[],
         )
         self.assertEqual(captured[1]["conversation_id"], "conv-1")
+        self.assertEqual(client._conversation_ids["user-1"], "conv-1")
 
     async def test_ask_falls_back_to_streaming_for_agent_chat_app(self) -> None:
         requests_seen: list[str] = []
