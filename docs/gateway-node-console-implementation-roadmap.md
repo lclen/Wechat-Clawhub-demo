@@ -212,6 +212,76 @@
    - 支持历史诊断查询和分析
    - 添加诊断事件聚合和告警
 
+## 3.4 微信图片消息兼容修复（2026-04-07）
+
+目标：
+
+- 修复微信会话中“图片已过期 / 已被清理”的问题
+- 保持 Markdown 图片自动识别与图片消息发送能力
+- 将协议兼容行为固化，避免后续再次回退到“HTTP 200 但微信端无法预览”的半成功状态
+
+问题现象：
+
+- 网关日志里 `getuploadurl`、CDN 上传、`sendmessage` 都返回 `200 OK`
+- 但微信客户端点击图片后提示“图片已过期”或无法预览
+- 这说明问题不在“消息是否发出去”，而在“发出去的媒体引用是否被微信客户端接受”
+
+根因结论：
+
+- 问题不是 Markdown 解析本身，也不是远程 URL 下载本身
+- 真正的差异在于 **微信 iLink/OpenClaw 协议兼容细节**
+- 网关此前沿用了本项目自身版本号 `0.1.0` 去构造：
+  - `base_info.channel_version`
+  - `iLink-App-ClientVersion`
+- 同时图片消息里的 `media.aes_key` 使用了 `base64(raw 16 bytes)` 形态，和当前已验证可用的 `OpenAkita` 实现不一致
+- 最终导致上游虽然接受了上传与发送请求，但微信客户端侧无法稳定识别图片媒体引用
+
+修复措施：
+
+- 将微信协议兼容版本固定对齐到 `OpenAkita` 默认兼容版本 `2.1.6`
+- `iLink-App-ClientVersion` 改为基于 `2.1.6` 编码，而不是基于本项目版本号编码
+- 图片/视频/文件消息补充顶层 `aeskey`
+- `media.aes_key` 改为与 `OpenAkita` 一致的 `base64(hex-string)` 编码方式
+- 保持 `no_need_thumb=true` 的官方兼容模式，不再依赖缩略图上传
+
+代码落点：
+
+- `apps/gateway/app/access/wechat_bot.py`
+- `apps/gateway/tests/test_wechat_bot.py`
+
+成功日志判据：
+
+- `logs/gateway.log` 中出现以下组合，可判定微信发图链路完整成功：
+  - `wechat-bot: image_thumbnail disabled ... reason=official_no_need_thumb_mode`
+  - `wechat-bot: getuploadurl success ...`
+  - `wechat-bot: cdn_upload success ... has_download_param=true`
+  - `wechat-bot: send_uploaded_media payload ... item_type=image ...`
+  - `wechat-bot: send_uploaded_media success ...`
+  - `HTTP Request: POST https://ilinkai.weixin.qq.com/ilink/bot/sendmessage "HTTP/1.1 200 OK"`
+
+本次实测结果（2026-04-07）：
+
+- 典型成功日志时间点：`2026-04-07 21:55:35` 到 `2026-04-07 21:55:37`
+- 关键特征：
+  - `getuploadurl success ... has_upload_full_url=true`
+  - `cdn_upload success ... has_download_param=true`
+  - `send_uploaded_media payload ... aes_key=...(44)`  
+    说明当前已切换到 `base64(hex-string)` 兼容形态，而不是之前的较短 raw-key base64 形态
+  - `send_uploaded_media success ... mime=image/jpeg`
+- 微信端最终已恢复正常图片预览
+
+后续约束：
+
+- 不要再把微信协议字段直接绑定到项目自身 `app_version`
+- 若后续需要升级协议兼容版本，应优先参考：
+  - `D:/openakita/src/openakita/channels/adapters/wechat.py`
+  - `D:/package/src/messaging/send.ts`
+- 若再次出现“图片已过期”，先检查：
+  1. `channel_version` 是否仍为 OpenClaw 兼容版本
+  2. `media.aes_key` 是否仍为 `base64(hex-string)`
+  3. `image_item` / `video_item` / `file_item` 是否仍携带顶层 `aeskey`
+  4. 日志里是否出现 `cdn_upload success` 但没有 `send_uploaded_media success`
+
 ## 4. 中期演进路线
 
 ## 4.1 阶段 A：节点事件流化

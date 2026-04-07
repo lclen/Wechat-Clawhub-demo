@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
+from urllib.parse import unquote
 
 import httpx
 
@@ -31,13 +32,16 @@ if TYPE_CHECKING:
     from app.dispatch.queue import DispatchQueue
 
 logger = logging.getLogger(__name__)
+uvicorn_logger = logging.getLogger("uvicorn.error")
 
 WECHAT_CONFIG_KEY = "wch:config:wechat"
 DEFAULT_WECHAT_BASE_URL = "https://ilinkai.weixin.qq.com"
 DEFAULT_WECHAT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
+WECHAT_OPENCLAW_COMPAT_VERSION = os.environ.get("WECHAT_OPENCLAW_COMPAT_VERSION", "2.1.6")
 DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000
 DEFAULT_API_TIMEOUT_MS = 15_000
 DEFAULT_CONFIG_TIMEOUT_MS = 10_000
+WECHAT_ILINK_APP_ID = os.environ.get("WECHAT_ILINK_APP_ID", "bot")
 CONFIG_CACHE_TTL_S = 86_400
 CONFIG_CACHE_INITIAL_RETRY_S = 2.0
 CONFIG_CACHE_MAX_RETRY_S = 3_600.0
@@ -60,7 +64,8 @@ SEND_MIN_INTERVAL_SECONDS = 2.5
 TYPING_REFRESH_INTERVAL_SECONDS = 4.0
 TYPING_STALE_THRESHOLD_SECONDS = 1_800
 SWITCH_COMMANDS = {"切换节点", "/switch"}
-MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+(?:\s+\"[^\"]*\")?)\)")
+MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((.*?)\)", re.DOTALL)
+STANDALONE_URL_RE = re.compile(r"^\s*(https?://\S+)\s*$", re.IGNORECASE)
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 MARKDOWN_ITALIC_RE = re.compile(r"\*(.+?)\*")
@@ -74,6 +79,14 @@ class OutboundMarkdownSegment:
     text: str = ""
     url: str = ""
     alt: str = ""
+
+
+IMAGE_URL_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+def _emit_wechat_debug(message: str, *args: object) -> None:
+    logger.warning(message, *args)
+    uvicorn_logger.warning(message, *args)
 
 
 def _encrypt_aes_ecb(plaintext: bytes, key: bytes) -> bytes:
@@ -110,17 +123,80 @@ def _guess_extension(content_type: str | None, url: str) -> str:
     return ".bin"
 
 
+def _guess_remote_filename(url: str, content_type: str | None) -> str:
+    filename = unquote(url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1])
+    if filename and "." in filename:
+        return filename
+    return f"wechat{_guess_extension(content_type, url)}"
+
+
 def _extract_markdown_image_url(raw_url: str) -> str:
-    return raw_url.split(" ", 1)[0].strip()
+    candidate = raw_url.strip()
+    titled_match = re.match(r'^(.*?)(?:\s+"[^"]*")\s*$', candidate, re.DOTALL)
+    if titled_match:
+        candidate = titled_match.group(1).strip()
+    return candidate
+
+
+def _build_wechat_client_version(version: str) -> int:
+    parts = [int(part) if part.isdigit() else 0 for part in version.split(".")]
+    major = parts[0] if len(parts) > 0 else 0
+    minor = parts[1] if len(parts) > 1 else 0
+    patch = parts[2] if len(parts) > 2 else 0
+    return ((major & 0xFF) << 16) | ((minor & 0xFF) << 8) | (patch & 0xFF)
+
+
+WECHAT_ILINK_APP_CLIENT_VERSION = _build_wechat_client_version(WECHAT_OPENCLAW_COMPAT_VERSION)
+
+
+def _looks_like_image_url(url: str) -> bool:
+    normalized = url.split("?", 1)[0].split("#", 1)[0].lower()
+    return normalized.endswith(IMAGE_URL_EXTENSIONS)
+
+
+def _mask_media_ref(value: str, *, keep: int = 16) -> str:
+    trimmed = str(value or "").strip()
+    if not trimmed:
+        return ""
+    if len(trimmed) <= keep:
+        return trimmed
+    return f"{trimmed[:keep]}...({len(trimmed)})"
+
+
+def _encode_wechat_media_aes_key(aeskey_hex: str) -> str:
+    """Match OpenAkita's outbound media encoding by default.
+
+    OpenAkita sends base64(hex-string) in `media.aes_key` and also includes the
+    raw hex string in the item body as `aeskey`. Keep this as the default
+    compatibility mode because that path is validated in production.
+    """
+    return base64.b64encode(aeskey_hex.encode()).decode()
+
+
+def _split_text_segment_with_standalone_urls(text: str) -> list[OutboundMarkdownSegment]:
+    parts: list[OutboundMarkdownSegment] = []
+    pending_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        match = STANDALONE_URL_RE.match(line)
+        if match and _looks_like_image_url(match.group(1).strip()):
+            if pending_lines:
+                parts.append(OutboundMarkdownSegment(kind="text", text="".join(pending_lines)))
+                pending_lines = []
+            parts.append(OutboundMarkdownSegment(kind="image", url=match.group(1).strip()))
+            continue
+        pending_lines.append(line)
+    if pending_lines:
+        parts.append(OutboundMarkdownSegment(kind="text", text="".join(pending_lines)))
+    return parts
 
 
 def parse_markdown_segments(content: str) -> list[OutboundMarkdownSegment]:
-    segments: list[OutboundMarkdownSegment] = []
+    base_segments: list[OutboundMarkdownSegment] = []
     cursor = 0
     for match in MARKDOWN_IMAGE_RE.finditer(content):
         if match.start() > cursor:
-            segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:match.start()]))
-        segments.append(
+            base_segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:match.start()]))
+        base_segments.append(
             OutboundMarkdownSegment(
                 kind="image",
                 url=_extract_markdown_image_url(match.group(2)),
@@ -129,7 +205,14 @@ def parse_markdown_segments(content: str) -> list[OutboundMarkdownSegment]:
         )
         cursor = match.end()
     if cursor < len(content):
-        segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:]))
+        base_segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:]))
+
+    segments: list[OutboundMarkdownSegment] = []
+    for segment in base_segments:
+        if segment.kind != "text":
+            segments.append(segment)
+            continue
+        segments.extend(_split_text_segment_with_standalone_urls(segment.text))
     return [segment for segment in segments if segment.text.strip() or segment.url]
 
 
@@ -308,6 +391,12 @@ class WeChatBotService:
         if not self._config.token:
             raise RuntimeError("WeChat token is not configured")
         segments = parse_markdown_segments(content)
+        _emit_wechat_debug(
+            "wechat-bot: send_markdown user_id=%s segment_count=%d image_count=%d",
+            user_id,
+            len(segments),
+            sum(1 for segment in segments if segment.kind == "image"),
+        )
         image_segments = [segment for segment in segments if segment.kind == "image"]
         if not image_segments:
             client_id = await self.send_text(user_id=user_id, text=content, context_token=context_token)
@@ -322,10 +411,21 @@ class WeChatBotService:
             plain_text = _markdown_to_plaintext("".join(pending_text_parts))
             pending_text_parts = []
             if plain_text:
+                _emit_wechat_debug(
+                    "wechat-bot: send_markdown text_chunk user_id=%s text_len=%d",
+                    user_id,
+                    len(plain_text),
+                )
                 text_client_id = await self.send_text(user_id=user_id, text=plain_text, context_token=context_token)
                 if text_client_id:
                     client_ids.append(text_client_id)
             try:
+                _emit_wechat_debug(
+                    "wechat-bot: send_markdown image_chunk user_id=%s image_url=%s alt=%s",
+                    user_id,
+                    segment.url,
+                    segment.alt,
+                )
                 image_client_id = await self.send_image_url(
                     user_id=user_id,
                     image_url=segment.url,
@@ -337,6 +437,12 @@ class WeChatBotService:
                 logger.exception("wechat-bot: markdown image send failed for %s", segment.url)
                 fallback_text = "\n".join(part for part in [segment.alt, segment.url] if part).strip()
                 if fallback_text:
+                    _emit_wechat_debug(
+                        "wechat-bot: send_markdown image_fallback_text user_id=%s fallback_len=%d image_url=%s",
+                        user_id,
+                        len(fallback_text),
+                        segment.url,
+                    )
                     fallback_client_id = await self.send_text(
                         user_id=user_id,
                         text=fallback_text,
@@ -347,6 +453,11 @@ class WeChatBotService:
 
         trailing_plain_text = _markdown_to_plaintext("".join(pending_text_parts))
         if trailing_plain_text:
+            _emit_wechat_debug(
+                "wechat-bot: send_markdown trailing_text user_id=%s text_len=%d",
+                user_id,
+                len(trailing_plain_text),
+            )
             trailing_client_id = await self.send_text(
                 user_id=user_id,
                 text=trailing_plain_text,
@@ -360,19 +471,42 @@ class WeChatBotService:
         if not self._config.token:
             raise RuntimeError("WeChat token is not configured")
         ctx = self._context_tokens.get(user_id) or context_token or ""
-        image_bytes, content_type = await self._download_remote_image(image_url)
+        _emit_wechat_debug("wechat-bot: send_image_url start user_id=%s image_url=%s", user_id, image_url)
+        image_bytes, content_type = await self._download_remote_asset(image_url)
+        _emit_wechat_debug(
+            "wechat-bot: send_image_url downloaded user_id=%s image_url=%s bytes=%d content_type=%s",
+            user_id,
+            image_url,
+            len(image_bytes),
+            content_type,
+        )
+        if content_type.startswith("image/"):
+            _emit_wechat_debug(
+                "wechat-bot: image_thumbnail disabled user_id=%s image_url=%s reason=official_no_need_thumb_mode",
+                user_id,
+                image_url,
+            )
         uploaded = await self._cdn_upload_bytes(
             image_bytes=image_bytes,
             to_user_id=user_id,
             mime=content_type,
             source_url=image_url,
         )
-        return await self._send_uploaded_media(
+        client_id = await self._send_uploaded_media(
             user_id=user_id,
             uploaded=uploaded,
             mime=content_type,
             context_token=ctx,
+            source_name=_guess_remote_filename(image_url, content_type),
         )
+        _emit_wechat_debug(
+            "wechat-bot: send_image_url success user_id=%s image_url=%s client_id=%s routed_as=%s",
+            user_id,
+            image_url,
+            client_id,
+            "image" if content_type.startswith("image/") else ("video" if content_type.startswith("video/") else "file"),
+        )
+        return client_id
 
     async def send_typing(self, *, user_id: str, context_token: str | None = None) -> None:
         if context_token:
@@ -618,23 +752,31 @@ class WeChatBotService:
     async def _api_post(self, endpoint: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+        request_body = dict(body)
+        request_body.setdefault("base_info", {"channel_version": WECHAT_OPENCLAW_COMPAT_VERSION})
         response = await self._http.post(
             f"{self._config.base_url}/{endpoint}",
             headers=self._build_headers(),
-            json=body,
+            json=request_body,
             timeout=timeout_s,
         )
         response.raise_for_status()
         return response.json()
 
-    async def _download_remote_image(self, image_url: str) -> tuple[bytes, str]:
+    async def _download_remote_asset(self, image_url: str) -> tuple[bytes, str]:
         if self._http is None or self._http.is_closed:
             self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+        _emit_wechat_debug("wechat-bot: remote_image_download start image_url=%s", image_url)
         response = await self._http.get(image_url, timeout=30.0, follow_redirects=True)
         response.raise_for_status()
-        content_type = response.headers.get("content-type", "application/octet-stream")
-        if not content_type.startswith("image/"):
-            raise RuntimeError(f"Remote asset is not an image: {content_type}")
+        content_type = response.headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
+        _emit_wechat_debug(
+            "wechat-bot: remote_image_download success image_url=%s status=%s bytes=%d content_type=%s",
+            image_url,
+            response.status_code,
+            len(response.content),
+            content_type,
+        )
         return response.content, content_type
 
     async def _cdn_upload_bytes(
@@ -644,6 +786,7 @@ class WeChatBotService:
         to_user_id: str,
         mime: str,
         source_url: str,
+        thumb_bytes: bytes | None = None,
     ) -> dict[str, Any]:
         rawsize = len(image_bytes)
         rawfilemd5 = hashlib.md5(image_bytes).hexdigest()
@@ -651,52 +794,142 @@ class WeChatBotService:
         filekey = os.urandom(16).hex()
         aeskey = os.urandom(16)
         media_type = UPLOAD_IMAGE if mime.startswith("image/") else (UPLOAD_VIDEO if mime.startswith("video/") else UPLOAD_FILE)
+        thumb_rawsize = len(thumb_bytes) if thumb_bytes else 0
+        thumb_rawfilemd5 = hashlib.md5(thumb_bytes).hexdigest() if thumb_bytes else ""
+        thumb_filesize = _aes_ecb_padded_size(thumb_rawsize) if thumb_bytes else 0
+        request_payload = {
+            "filekey": filekey,
+            "media_type": media_type,
+            "to_user_id": to_user_id,
+            "rawsize": rawsize,
+            "rawfilemd5": rawfilemd5,
+            "filesize": filesize,
+            "no_need_thumb": not bool(thumb_bytes),
+            "aeskey": aeskey.hex(),
+        }
+        if thumb_bytes:
+            request_payload.update(
+                {
+                    "thumb_rawsize": thumb_rawsize,
+                    "thumb_rawfilemd5": thumb_rawfilemd5,
+                    "thumb_filesize": thumb_filesize,
+                }
+            )
         upload_resp = await self._api_post(
             "ilink/bot/getuploadurl",
-            {
-                "filekey": filekey,
-                "media_type": media_type,
-                "to_user_id": to_user_id,
-                "rawsize": rawsize,
-                "rawfilemd5": rawfilemd5,
-                "filesize": filesize,
-                "no_need_thumb": True,
-                "aeskey": aeskey.hex(),
-            },
+            request_payload,
             timeout_s=DEFAULT_API_TIMEOUT_MS / 1000,
         )
-        upload_param = upload_resp.get("upload_param")
-        if not upload_param:
-            raise RuntimeError("WeChat getuploadurl returned no upload_param")
+        upload_full_url = str(upload_resp.get("upload_full_url") or "").strip()
+        upload_param = str(upload_resp.get("upload_param") or "").strip()
+        thumb_upload_param = str(upload_resp.get("thumb_upload_param") or "").strip()
+        _emit_wechat_debug(
+            "wechat-bot: getuploadurl success to_user_id=%s media_type=%s rawsize=%d has_upload_full_url=%s has_upload_param=%s has_thumb_upload_param=%s",
+            to_user_id,
+            media_type,
+            rawsize,
+            str(bool(upload_full_url)).lower(),
+            str(bool(upload_param)).lower(),
+            str(bool(thumb_upload_param)).lower(),
+        )
+        if not upload_full_url and not upload_param:
+            raise RuntimeError("WeChat getuploadurl returned neither upload_full_url nor upload_param")
         ciphertext = _encrypt_aes_ecb(image_bytes, aeskey)
-        cdn_url = (
+        cdn_url = upload_full_url or (
             f"{DEFAULT_WECHAT_CDN_BASE_URL}/upload"
             f"?encrypted_query_param={quote(upload_param, safe='')}"
             f"&filekey={quote(filekey, safe='')}"
         )
         headers = {
-            "Content-Type": mime,
+            "Content-Type": "application/octet-stream",
             "Content-Length": str(len(ciphertext)),
         }
         last_error: Exception | None = None
+        download_param = ""
+        thumb_download_param = ""
         for attempt in range(1, UPLOAD_MAX_RETRIES + 1):
             try:
                 if self._http is None or self._http.is_closed:
                     self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
-                response = await self._http.put(cdn_url, content=ciphertext, headers=headers, timeout=30.0)
+                _emit_wechat_debug(
+                    "wechat-bot: cdn_upload attempt=%d source_url=%s method=POST target=%s ciphertext_bytes=%d",
+                    attempt,
+                    source_url,
+                    cdn_url,
+                    len(ciphertext),
+                )
+                response = await self._http.post(cdn_url, content=ciphertext, headers=headers, timeout=30.0)
                 response.raise_for_status()
+                download_param = response.headers.get("x-encrypted-param", "").strip()
+                if not download_param:
+                    raise RuntimeError("WeChat CDN upload response missing x-encrypted-param")
+                if thumb_bytes and thumb_upload_param:
+                    thumb_ciphertext = _encrypt_aes_ecb(thumb_bytes, aeskey)
+                    thumb_cdn_url = (
+                        f"{DEFAULT_WECHAT_CDN_BASE_URL}/upload"
+                        f"?encrypted_query_param={quote(thumb_upload_param, safe='')}"
+                        f"&filekey={quote(filekey, safe='')}"
+                    )
+                    _emit_wechat_debug(
+                        "wechat-bot: cdn_thumb_upload attempt=%d source_url=%s method=POST target=%s ciphertext_bytes=%d",
+                        attempt,
+                        source_url,
+                        thumb_cdn_url,
+                        len(thumb_ciphertext),
+                    )
+                    thumb_response = await self._http.post(
+                        thumb_cdn_url,
+                        content=thumb_ciphertext,
+                        headers={
+                            "Content-Type": "application/octet-stream",
+                            "Content-Length": str(len(thumb_ciphertext)),
+                        },
+                        timeout=30.0,
+                    )
+                    thumb_response.raise_for_status()
+                    thumb_download_param = thumb_response.headers.get("x-encrypted-param", "").strip()
+                    if not thumb_download_param:
+                        raise RuntimeError("WeChat CDN thumb upload response missing x-encrypted-param")
+                    _emit_wechat_debug(
+                        "wechat-bot: cdn_thumb_upload success source_url=%s attempt=%d status=%s has_thumb_download_param=%s",
+                        source_url,
+                        attempt,
+                        thumb_response.status_code,
+                        str(bool(thumb_download_param)).lower(),
+                    )
+                elif thumb_bytes:
+                    _emit_wechat_debug(
+                        "wechat-bot: cdn_thumb_upload skipped source_url=%s reason=missing_thumb_upload_param",
+                        source_url,
+                    )
+                _emit_wechat_debug(
+                    "wechat-bot: cdn_upload success source_url=%s attempt=%d status=%s has_download_param=%s",
+                    source_url,
+                    attempt,
+                    response.status_code,
+                    str(bool(download_param)).lower(),
+                )
                 break
             except Exception as exc:
                 last_error = exc
+                _emit_wechat_debug(
+                    "wechat-bot: cdn_upload failed source_url=%s attempt=%d error=%s",
+                    source_url,
+                    attempt,
+                    exc,
+                )
                 if attempt >= UPLOAD_MAX_RETRIES:
                     raise RuntimeError(f"WeChat CDN upload failed for {source_url}: {exc}") from exc
                 await asyncio.sleep(float(attempt))
         return {
             "aeskey": aeskey.hex(),
-            "download_param": upload_param,
+            "download_param": download_param,
             "filesize_cipher": len(ciphertext),
             "filesize_raw": rawsize,
             "filekey": filekey,
+            "thumb_download_param": thumb_download_param,
+            "thumb_filesize_cipher": thumb_filesize,
+            "thumb_filesize_raw": thumb_rawsize,
         }
 
     async def _send_uploaded_media(
@@ -706,22 +939,39 @@ class WeChatBotService:
         uploaded: dict[str, Any],
         mime: str,
         context_token: str,
+        source_name: str = "",
+        thumb_width: int = 0,
+        thumb_height: int = 0,
     ) -> str:
         await self._rate_limit_wait(user_id)
         aeskey_hex = str(uploaded["aeskey"])
         media_ref = {
             "encrypt_query_param": uploaded["download_param"],
-            "aes_key": base64.b64encode(aeskey_hex.encode()).decode(),
+            "aes_key": _encode_wechat_media_aes_key(aeskey_hex),
             "encrypt_type": 1,
         }
         if mime.startswith("image/"):
+            thumb_download_param = str(uploaded.get("thumb_download_param") or "").strip()
+            image_item = {
+                "aeskey": aeskey_hex,
+                "media": media_ref,
+                "mid_size": uploaded["filesize_cipher"],
+            }
+            if thumb_download_param:
+                image_item["thumb_media"] = {
+                    "encrypt_query_param": thumb_download_param,
+                    "aes_key": _encode_wechat_media_aes_key(aeskey_hex),
+                    "encrypt_type": 1,
+                }
+                if uploaded.get("thumb_filesize_cipher"):
+                    image_item["thumb_size"] = uploaded["thumb_filesize_cipher"]
+                if thumb_width:
+                    image_item["thumb_width"] = thumb_width
+                if thumb_height:
+                    image_item["thumb_height"] = thumb_height
             item = {
                 "type": ITEM_IMAGE,
-                "image_item": {
-                    "aeskey": aeskey_hex,
-                    "media": media_ref,
-                    "mid_size": uploaded["filesize_cipher"],
-                },
+                "image_item": image_item,
             }
         elif mime.startswith("video/"):
             item = {
@@ -738,11 +988,21 @@ class WeChatBotService:
                 "file_item": {
                     "aeskey": aeskey_hex,
                     "media": media_ref,
-                    "file_name": f"wechat{_guess_extension(mime, '')}",
+                    "file_name": source_name or f"wechat{_guess_extension(mime, '')}",
                     "len": str(uploaded["filesize_raw"]),
                 },
             }
         client_id = f"wechat-claw-hub-{uuid.uuid4().hex[:12]}"
+        item_type = "image" if mime.startswith("image/") else ("video" if mime.startswith("video/") else "file")
+        _emit_wechat_debug(
+            "wechat-bot: send_uploaded_media start user_id=%s mime=%s client_id=%s filekey=%s raw_bytes=%s cipher_bytes=%s",
+            user_id,
+            mime,
+            client_id,
+            uploaded.get("filekey", ""),
+            uploaded["filesize_raw"],
+            uploaded["filesize_cipher"],
+        )
         payload = {
             "msg": {
                 "from_user_id": "",
@@ -754,9 +1014,41 @@ class WeChatBotService:
                 "context_token": context_token or None,
             }
         }
+        _emit_wechat_debug(
+            "wechat-bot: send_uploaded_media payload user_id=%s client_id=%s item_type=%s has_context=%s encrypt_type=%s "
+            "encrypt_query_param=%s aes_key=%s source_name=%s size_field=%s has_thumb_media=%s thumb_param=%s thumb_size=%s thumb_width=%s thumb_height=%s",
+            user_id,
+            client_id,
+            item_type,
+            str(bool(context_token)).lower(),
+            media_ref["encrypt_type"],
+            _mask_media_ref(str(media_ref.get("encrypt_query_param", ""))),
+            _mask_media_ref(str(media_ref.get("aes_key", ""))),
+            source_name or "",
+            (
+                item["image_item"]["mid_size"]
+                if item_type == "image"
+                else item["video_item"]["video_size"]
+                if item_type == "video"
+                else item["file_item"]["len"]
+            ),
+            str("thumb_media" in (item.get("image_item") or {})).lower(),
+            _mask_media_ref(
+                str((((item.get("image_item") or {}).get("thumb_media") or {}).get("encrypt_query_param", "")))
+            ),
+            (item.get("image_item") or {}).get("thumb_size", ""),
+            (item.get("image_item") or {}).get("thumb_width", ""),
+            (item.get("image_item") or {}).get("thumb_height", ""),
+        )
         response = await self._api_post("ilink/bot/sendmessage", payload, timeout_s=DEFAULT_API_TIMEOUT_MS / 1000)
         self._ensure_api_ok(response, action="sendmessage(media)")
         self._sent_messages += 1
+        _emit_wechat_debug(
+            "wechat-bot: send_uploaded_media success user_id=%s mime=%s client_id=%s",
+            user_id,
+            mime,
+            client_id,
+        )
         return client_id
 
     async def _typing_loop(self, user_id: str) -> None:
@@ -822,6 +1114,8 @@ class WeChatBotService:
         uin_b64 = base64.b64encode(str(random_uin).encode()).decode()
         return {
             "Content-Type": "application/json",
+            "iLink-App-Id": WECHAT_ILINK_APP_ID,
+            "iLink-App-ClientVersion": str(WECHAT_ILINK_APP_CLIENT_VERSION),
             "AuthorizationType": "ilink_bot_token",
             "Authorization": f"Bearer {self._config.token}",
             "X-WECHAT-UIN": uin_b64,

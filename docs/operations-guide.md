@@ -1,6 +1,6 @@
 # 运维操作手册
 
-> **Status**: Active | **Last Updated**: 2026-04-04 | **Purpose**: 日常启动、排障、重置操作的快速参考
+> **Status**: Active | **Last Updated**: 2026-04-07 | **Purpose**: 日常启动、排障、重置操作的快速参考
 
 ## Table of Contents
 
@@ -153,6 +153,44 @@ $pids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinu
 ### 重新配置失败
 
 **节点端**：`/api/setup/node/reset-credentials` 502。已修复，节点端使用 `/local/node/reset-credentials`。如果仍然失败，手动清空 `config/node.env` 中的相关字段。
+
+### 微信图片消息显示“图片已过期”
+
+**现象**：
+
+- 网关侧日志显示 `getuploadurl`、CDN 上传、`sendmessage` 都成功
+- 但微信客户端点击图片后仍提示“图片已过期”或无法预览
+
+**当前已确认可用的协议约束**：
+
+- `base_info.channel_version` 必须对齐 OpenClaw 兼容版本，当前固定为 `2.1.6`
+- `iLink-App-ClientVersion` 必须基于同一个兼容版本编码
+- 图片消息 `image_item` 需要携带顶层 `aeskey`
+- `media.aes_key` 需要使用 `base64(hex-string)` 兼容编码
+- 缩略图默认关闭，走 `no_need_thumb=true`
+
+**排查顺序**：
+
+1. 查看 `logs/gateway.log`，确认是否出现：
+   - `wechat-bot: image_thumbnail disabled ... reason=official_no_need_thumb_mode`
+   - `wechat-bot: getuploadurl success ...`
+   - `wechat-bot: cdn_upload success ... has_download_param=true`
+   - `wechat-bot: send_uploaded_media success ...`
+2. 检查 `send_uploaded_media payload` 日志中的 `aes_key` 长度特征：
+   - 当前兼容模式通常会显示更长的掩码，例如 `...(44)`
+   - 如果回退成较短形态，通常说明 `aes_key` 又被改回了 raw-key base64
+3. 检查 `apps/gateway/app/access/wechat_bot.py` 是否仍保留以下兼容逻辑：
+   - `WECHAT_OPENCLAW_COMPAT_VERSION = "2.1.6"`
+   - `_encode_wechat_media_aes_key()`
+   - `image_item["aeskey"] = aeskey_hex`
+4. 若日志显示 `cdn_upload success` 但缺少 `send_uploaded_media success`，优先检查 `sendmessage` 请求和返回体
+
+**本次修复后的成功样例**：
+
+- `2026-04-07 21:55:35` `getuploadurl success ... has_upload_full_url=true`
+- `2026-04-07 21:55:36` `cdn_upload success ... has_download_param=true`
+- `2026-04-07 21:55:37` `send_uploaded_media payload ... aes_key=...(44)`
+- `2026-04-07 21:55:37` `send_uploaded_media success ... mime=image/jpeg`
 
 ---
 
