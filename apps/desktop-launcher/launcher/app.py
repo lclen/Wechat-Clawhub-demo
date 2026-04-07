@@ -50,6 +50,7 @@ def create_app() -> FastAPI:
     app.state.repo_root = repo_root
     app.state.dist_dir = repo_root / "apps" / "agent-console" / "dist"
     app.state.state_path = default_state_path()
+    app.state.local_node_apply_task = None
 
     async def restore_runtime_services() -> None:
         """Auto-restore services based on profile configuration."""
@@ -409,10 +410,12 @@ def create_app() -> FastAPI:
         service_name = app.state.manager._local_node_service_name(profile)  # type: ignore[attr-defined]
         config_path = install_dir / "config" / "node.env"
         diagnostics_path = install_dir / "diagnostics" / "node-status.json"
+        apply_state_path = _local_node_apply_state_path(install_dir)
         diagnostics: dict[str, object] = {}
         if diagnostics_path.exists():
             with contextlib.suppress(Exception):
                 diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+        apply_state = _read_local_node_apply_state(apply_state_path)
         model_settings = _read_local_node_model_config(config_path)
         node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
         status = app.state.manager.local_node_service_status(profile, layout)
@@ -437,6 +440,10 @@ def create_app() -> FastAPI:
             current_detail=status.detail,
         )
         diagnostics_runtime_state = str(diagnostics.get("current_state", "") or "").strip()
+        configured_model_provider = str(diagnostics.get("configured_model_provider", "") or "").strip() or (model_settings.model_provider or "auto")
+        active_model_provider = str(diagnostics.get("effective_model_provider", "") or "").strip() or configured_model_provider
+        inference_ready = bool(diagnostics.get("inference_ready", False))
+        inference_detail = str(diagnostics.get("inference_detail", "") or "").strip()
         diagnostics_last_heartbeat_at = _parse_optional_datetime(diagnostics.get("last_heartbeat_at"))
         if (
             inferred_runtime_state == "gateway_unreachable"
@@ -449,6 +456,12 @@ def create_app() -> FastAPI:
             inferred_register_result = str(diagnostics.get("last_register_result", "") or "succeeded").strip() or "succeeded"
             inferred_register_error = str(diagnostics.get("last_error", "") or "").strip()
             inferred_register_at_raw = diagnostics.get("last_heartbeat_at") or diagnostics.get("last_register_at")
+        if diagnostics_runtime_state == "needs_repair" and not inference_ready:
+            inferred_runtime_state = "needs_repair"
+            inferred_detail = inference_detail or str(diagnostics.get("detail", "") or "").strip() or "当前推理后端尚未准备好。"
+            inferred_register_result = str(diagnostics.get("last_register_result", "") or "blocked_by_inference").strip() or "blocked_by_inference"
+            inferred_register_error = inference_detail or str(diagnostics.get("last_error", "") or "").strip()
+            inferred_register_at_raw = diagnostics.get("last_register_at")
         runtime_state = inferred_runtime_state or runtime_state
         detail = inferred_detail or detail
         last_register_result = inferred_register_result or last_register_result
@@ -468,6 +481,13 @@ def create_app() -> FastAPI:
             last_register_result=last_register_result,
             last_register_error=last_register_error,
             last_register_at=_parse_optional_datetime(last_register_at_raw),
+            config_apply_state=str(apply_state.get("config_apply_state", "idle") or "idle"),
+            last_apply_error=str(apply_state.get("last_apply_error", "") or ""),
+            last_apply_at=_parse_optional_datetime(apply_state.get("last_apply_at")),
+            configured_model_provider=configured_model_provider,
+            active_model_provider=active_model_provider,
+            inference_ready=inference_ready,
+            inference_detail=inference_detail,
             diagnostics=diagnostics,
             model_settings=model_settings,
         )
@@ -496,7 +516,19 @@ def create_app() -> FastAPI:
         profile = app.state.profile
         layout = build_layout(profile)
         ensure_layout(layout)
-        app.state.manager.restart_local_node(profile, layout)
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
+        apply_state_path = _local_node_apply_state_path(install_dir)
+        _write_local_node_apply_state(apply_state_path, config_apply_state="restarting")
+        try:
+            app.state.manager.restart_local_node(profile, layout)
+        except Exception as exc:
+            _write_local_node_apply_state(
+                apply_state_path,
+                config_apply_state="failed",
+                last_apply_error=str(exc),
+            )
+            raise
+        _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
         status = await local_node_status()
         return LocalNodeActionResponse(detail="本机节点服务已执行重装/重启。", status=status)
 
@@ -572,9 +604,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=422, detail="install_dir is required")
         keys_to_clear = {"CLAW_NODE_TOKEN", "CLAW_NODE_ID", "CLAW_GATEWAY_BASE_URL", "CLAW_PAIRING_KEY", "CLAW_PAIRING_TRACE_ID"}
         candidates = [
-            Path(install_dir) / "bundle" / "claw-node" / ".env",
             Path(install_dir) / "config" / "node.env",
-            Path(install_dir) / ".env",
         ]
         cleared: list[str] = []
         for env_path in candidates:
@@ -599,13 +629,37 @@ def create_app() -> FastAPI:
         ensure_layout(layout)
         install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
         config_path = install_dir / "config" / "node.env"
+        apply_state_path = _local_node_apply_state_path(install_dir)
         if not config_path.exists():
             raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
-        _update_local_node_model_config(config_path, payload)
+        _validate_local_node_model_config(payload)
+        current_apply_task = getattr(app.state, "local_node_apply_task", None)
+        if payload.restart_service and current_apply_task is not None and not current_apply_task.done():
+            raise HTTPException(status_code=409, detail="当前已有一条本机节点配置应用任务正在执行，请等待当前重启完成后再试。")
+        _write_local_node_apply_state(apply_state_path, config_apply_state="saving")
+        try:
+            _update_local_node_model_config(config_path, payload)
+        except Exception as exc:
+            _write_local_node_apply_state(
+                apply_state_path,
+                config_apply_state="failed",
+                last_apply_error=str(exc),
+            )
+            raise
         detail = "本机节点模型配置已保存。"
         if payload.restart_service:
-            app.state.manager.restart_local_node(profile, layout)
-            detail = "本机节点模型配置已保存，并已重装/重启服务。"
+            _write_local_node_apply_state(apply_state_path, config_apply_state="restarting")
+            app.state.local_node_apply_task = asyncio.create_task(
+                _apply_local_node_model_config_in_background(
+                    app.state.manager,
+                    profile.model_copy(deep=True),
+                    layout,
+                    apply_state_path,
+                )
+            )
+            detail = "本机节点模型配置已保存，正在重启本机节点服务。"
+        else:
+            _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
         status = await local_node_status()
         return LocalNodeActionResponse(detail=detail, status=status)
 
@@ -669,18 +723,6 @@ def create_app() -> FastAPI:
         except Exception as exc:
             logger.error(f"Unexpected error proxying to {target}: {exc}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Proxy error: {exc}") from exc
-
-        # After a successful gateway config save, sync model config to local node.
-        if (
-            request.method == "POST"
-            and path in ("setup/gateway/save", "setup/gateway-console/run")
-            and response.status_code in (200, 201)
-        ):
-            with contextlib.suppress(Exception):
-                layout = build_layout(profile)
-                node_env_path = app.state.manager._local_node_install_dir(layout) / "config" / "node.env"  # type: ignore[attr-defined]
-                if node_env_path.exists():
-                    _sync_local_node_model_from_gateway(node_env_path, profile.gateway_port)
 
         if not response.content:
             return JSONResponse(status_code=response.status_code, content={})
@@ -792,60 +834,109 @@ def _read_env_file(path: Path) -> dict[str, str]:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        values[key.strip()] = value
+        values[key.strip()] = _unescape_env_value(value)
     return values
 
 
-def _sync_local_node_model_from_gateway(node_env_path: Path, gateway_port: int) -> None:
-    """Read model config from gateway .env and write it into the local node's node.env.
+def _local_node_apply_state_path(install_dir: Path) -> Path:
+    return install_dir / "diagnostics" / "config-apply.json"
 
-    Maps:
-      WCH_BUILTIN_MODEL_BASE_URL  -> CLAW_OPENAI_BASE_URL
-      WCH_BUILTIN_MODEL_API_KEY   -> CLAW_OPENAI_API_KEY  (only if non-empty)
-      WCH_BUILTIN_MODEL_NAME      -> CLAW_OPENAI_MODEL
-      WCH_DIFY_BASE_URL           -> CLAW_DIFY_BASE_URL
-      WCH_DIFY_API_KEY            -> CLAW_DIFY_API_KEY    (only if non-empty)
-    """
-    if _read_local_node_kind(node_env_path) != "local":
+
+def _read_local_node_apply_state(path: Path) -> dict[str, str]:
+    if not path.exists():
+        return {
+            "config_apply_state": "idle",
+            "last_apply_error": "",
+            "last_apply_at": "",
+        }
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {
+            "config_apply_state": "idle",
+            "last_apply_error": "",
+            "last_apply_at": "",
+        }
+    return {
+        "config_apply_state": str(payload.get("config_apply_state", "idle") or "idle"),
+        "last_apply_error": str(payload.get("last_apply_error", "") or ""),
+        "last_apply_at": str(payload.get("last_apply_at", "") or ""),
+    }
+
+
+def _write_local_node_apply_state(
+    path: Path,
+    *,
+    config_apply_state: str,
+    last_apply_error: str = "",
+) -> None:
+    payload = {
+        "config_apply_state": config_apply_state,
+        "last_apply_error": last_apply_error,
+        "last_apply_at": datetime.now(UTC).isoformat(),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _validate_local_node_model_config(payload: LocalNodeModelConfigRequest) -> None:
+    provider = (payload.model_provider or "auto").strip().lower()
+    if provider == "openai":
+        if not payload.openai_base_url.strip():
+            raise HTTPException(status_code=422, detail="当前 Provider 已切换为 OpenAI，请先填写 OpenAI Base URL。")
+        if not payload.openai_api_key.strip():
+            raise HTTPException(status_code=422, detail="当前 Provider 已切换为 OpenAI，请先填写 OpenAI API Key。")
+        if not payload.openai_model.strip():
+            raise HTTPException(status_code=422, detail="当前 Provider 已切换为 OpenAI，请先填写 OpenAI Model。")
         return
+    if provider != "dify":
+        return
+    if not payload.dify_base_url.strip():
+        raise HTTPException(status_code=422, detail="当前 Provider 已切换为 Dify，请先填写 Dify Base URL。")
+    if not payload.dify_api_key.strip():
+        raise HTTPException(status_code=422, detail="当前 Provider 已切换为 Dify，请先填写 Dify API Key。")
 
-    # Locate gateway .env relative to the launcher repo root
-    from launcher.runtime import resource_root
-    gateway_env = resource_root() / "apps" / "gateway" / ".env"
-    gw = _read_env_file(gateway_env)
 
-    node = _read_env_file(node_env_path)
-
-    openai_base = gw.get("WCH_BUILTIN_MODEL_BASE_URL", "").strip()
-    openai_key = gw.get("WCH_BUILTIN_MODEL_API_KEY", "").strip()
-    openai_model = gw.get("WCH_BUILTIN_MODEL_NAME", "").strip()
-    dify_base = gw.get("WCH_DIFY_BASE_URL", "").strip()
-    dify_key = gw.get("WCH_DIFY_API_KEY", "").strip()
-
-    # Determine provider: prefer dify if configured, else openai
-    if dify_base and dify_key:
-        node["CLAW_MODEL_PROVIDER"] = "dify"
-        node["CLAW_DIFY_BASE_URL"] = dify_base
-        node["CLAW_DIFY_API_KEY"] = dify_key
-    elif openai_base or openai_key or openai_model:
-        node["CLAW_MODEL_PROVIDER"] = "openai"
-        if openai_base:
-            node["CLAW_OPENAI_BASE_URL"] = openai_base
-        if openai_key:
-            node["CLAW_OPENAI_API_KEY"] = openai_key
-        if openai_model:
-            node["CLAW_OPENAI_MODEL"] = openai_model
-    else:
-        return  # nothing to sync
-
-    lines = [f"{k}={v}" for k, v in node.items()]
-    node_env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+async def _apply_local_node_model_config_in_background(
+    manager: ProcessManager,
+    profile,
+    layout,
+    apply_state_path: Path,
+) -> None:
+    ensure_layout(layout)
+    try:
+        await asyncio.to_thread(manager.restart_local_node, profile, layout)
+    except Exception as exc:
+        _write_local_node_apply_state(
+            apply_state_path,
+            config_apply_state="failed",
+            last_apply_error=str(exc),
+        )
+        return
+    _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
 
 
 def _write_env_file(path: Path, values: dict[str, str]) -> None:
-    lines = [f"{key}={value}" for key, value in values.items()]
+    lines = [f"{key}={_escape_env_value(value)}" for key, value in values.items()]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _escape_env_value(value: str) -> str:
+    normalized = str(value).replace("\r", "\\r").replace("\n", "\\n")
+    if any(ch in normalized for ch in ('"', "'", " ", "#")):
+        escaped = normalized.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return normalized
+
+
+def _unescape_env_value(value: str) -> str:
+    normalized = value.strip()
+    if len(normalized) >= 2 and normalized[0] == normalized[-1] and normalized[0] in {'"', "'"}:
+        normalized = normalized[1:-1]
+        if value.strip()[0] == '"':
+            normalized = normalized.replace('\\"', '"').replace("\\\\", "\\")
+    return normalized.replace("\\r", "\r").replace("\\n", "\n")
 
 
 def _read_local_node_model_config(path: Path) -> LocalNodeModelConfig:
@@ -853,10 +944,23 @@ def _read_local_node_model_config(path: Path) -> LocalNodeModelConfig:
     return LocalNodeModelConfig(
         model_provider=values.get("CLAW_MODEL_PROVIDER", "auto") or "auto",
         openai_base_url=values.get("CLAW_OPENAI_BASE_URL", ""),
+        openai_api_key=values.get("CLAW_OPENAI_API_KEY", ""),
         openai_model=values.get("CLAW_OPENAI_MODEL", ""),
         openai_enable_thinking=values.get("CLAW_OPENAI_ENABLE_THINKING", "").strip().lower() == "true",
+        openai_temperature=_safe_float(values.get("CLAW_OPENAI_TEMPERATURE", ""), 0.3),
+        openai_top_p=_safe_float(values.get("CLAW_OPENAI_TOP_P", ""), 1.0),
+        openai_max_tokens=_safe_int(values.get("CLAW_OPENAI_MAX_TOKENS", ""), 0),
+        openai_seed=_safe_int(values.get("CLAW_OPENAI_SEED", ""), 0),
+        openai_thinking_budget=_safe_int(values.get("CLAW_OPENAI_THINKING_BUDGET", ""), 0),
+        openai_stop=values.get("CLAW_OPENAI_STOP", ""),
+        openai_enable_search=values.get("CLAW_OPENAI_ENABLE_SEARCH", "").strip().lower() == "true",
+        openai_search_forced=values.get("CLAW_OPENAI_SEARCH_FORCED", "").strip().lower() == "true",
+        openai_search_strategy=values.get("CLAW_OPENAI_SEARCH_STRATEGY", "") or "turbo",
+        openai_enable_search_extension=values.get("CLAW_OPENAI_SEARCH_EXTENSION", "").strip().lower() == "true" or values.get("CLAW_OPENAI_ENABLE_SEARCH_EXTENSION", "").strip().lower() == "true",
+        openai_multimodal_enabled=(values.get("CLAW_OPENAI_MULTIMODAL_ENABLED", "true").strip().lower() != "false"),
         openai_api_key_configured=bool(values.get("CLAW_OPENAI_API_KEY", "").strip()),
         dify_base_url=values.get("CLAW_DIFY_BASE_URL", ""),
+        dify_api_key=values.get("CLAW_DIFY_API_KEY", ""),
         dify_api_key_configured=bool(values.get("CLAW_DIFY_API_KEY", "").strip()),
     )
 
@@ -870,18 +974,37 @@ def _update_local_node_model_config(path: Path, payload: LocalNodeModelConfigReq
     values = _read_env_file(path)
     values["CLAW_MODEL_PROVIDER"] = (payload.model_provider or "auto").strip() or "auto"
     values["CLAW_OPENAI_BASE_URL"] = payload.openai_base_url.strip()
+    values["CLAW_OPENAI_API_KEY"] = payload.openai_api_key.strip()
     values["CLAW_OPENAI_MODEL"] = payload.openai_model.strip()
     values["CLAW_OPENAI_ENABLE_THINKING"] = "true" if payload.openai_enable_thinking else "false"
+    values["CLAW_OPENAI_TEMPERATURE"] = str(payload.openai_temperature)
+    values["CLAW_OPENAI_TOP_P"] = str(payload.openai_top_p)
+    values["CLAW_OPENAI_MAX_TOKENS"] = str(payload.openai_max_tokens)
+    values["CLAW_OPENAI_SEED"] = str(payload.openai_seed)
+    values["CLAW_OPENAI_THINKING_BUDGET"] = str(payload.openai_thinking_budget)
+    values["CLAW_OPENAI_STOP"] = payload.openai_stop
+    values["CLAW_OPENAI_ENABLE_SEARCH"] = "true" if payload.openai_enable_search else "false"
+    values["CLAW_OPENAI_SEARCH_FORCED"] = "true" if payload.openai_search_forced else "false"
+    values["CLAW_OPENAI_SEARCH_STRATEGY"] = payload.openai_search_strategy.strip() or "turbo"
+    values["CLAW_OPENAI_ENABLE_SEARCH_EXTENSION"] = "true" if payload.openai_enable_search_extension else "false"
+    values["CLAW_OPENAI_MULTIMODAL_ENABLED"] = "true" if payload.openai_multimodal_enabled else "false"
     values["CLAW_DIFY_BASE_URL"] = payload.dify_base_url.strip()
-    if payload.openai_api_key.strip():
-        values["CLAW_OPENAI_API_KEY"] = payload.openai_api_key.strip()
-    elif values.get("CLAW_MODEL_PROVIDER", "auto") == "dify":
-        values.setdefault("CLAW_OPENAI_API_KEY", values.get("CLAW_OPENAI_API_KEY", ""))
-    if payload.dify_api_key.strip():
-        values["CLAW_DIFY_API_KEY"] = payload.dify_api_key.strip()
-    elif values.get("CLAW_MODEL_PROVIDER", "auto") == "openai":
-        values.setdefault("CLAW_DIFY_API_KEY", values.get("CLAW_DIFY_API_KEY", ""))
+    values["CLAW_DIFY_API_KEY"] = payload.dify_api_key.strip()
     _write_env_file(path, values)
+
+
+def _safe_float(value: str, default: float) -> float:
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value: str, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
 
 
 def _parse_optional_datetime(value: object) -> object:
@@ -892,15 +1015,34 @@ def _parse_optional_datetime(value: object) -> object:
     return None
 
 
-def _local_node_has_model_config(model_settings: LocalNodeModelConfig) -> bool:
+def _has_openai_model_config(model_settings: LocalNodeModelConfig) -> bool:
     return bool(
-        (
-            model_settings.openai_api_key_configured
-            and model_settings.openai_base_url.strip()
-            and model_settings.openai_model.strip()
-        )
-        or (model_settings.dify_api_key_configured and model_settings.dify_base_url.strip())
+        model_settings.openai_api_key_configured
+        and model_settings.openai_base_url.strip()
+        and model_settings.openai_model.strip()
     )
+
+
+def _has_dify_model_config(model_settings: LocalNodeModelConfig) -> bool:
+    return bool(model_settings.dify_api_key_configured and model_settings.dify_base_url.strip())
+
+
+def _local_node_has_model_config(model_settings: LocalNodeModelConfig) -> bool:
+    provider = (model_settings.model_provider or "auto").strip().lower()
+    if provider in {"openai", "openai_compatible"}:
+        return _has_openai_model_config(model_settings)
+    if provider == "dify":
+        return _has_dify_model_config(model_settings)
+    return _has_openai_model_config(model_settings) or _has_dify_model_config(model_settings)
+
+
+def _missing_model_config_detail(model_settings: LocalNodeModelConfig) -> str:
+    provider = (model_settings.model_provider or "auto").strip().lower()
+    if provider in {"openai", "openai_compatible"}:
+        return "当前 Provider 为 OpenAI，但 OpenAI Base URL / API Key / Model 仍不完整。"
+    if provider == "dify":
+        return "当前 Provider 为 Dify，但 Dify Base URL / API Key 仍不完整。"
+    return "请先为当前节点配置 OpenAI 兼容模型或 Dify。"
 
 
 async def _infer_local_node_runtime_status(
@@ -921,7 +1063,7 @@ async def _infer_local_node_runtime_status(
             "needs_repair",
             f"{node_label}服务已运行，但当前没有可用模型配置，因此不会发起 register。",
             "blocked_by_missing_model",
-            "请先为当前节点配置 OpenAI 兼容模型或 Dify。",
+            _missing_model_config_detail(model_settings),
             None,
         )
     target_gateway = (gateway_base_url.strip() or f"http://127.0.0.1:{gateway_port}").rstrip("/")

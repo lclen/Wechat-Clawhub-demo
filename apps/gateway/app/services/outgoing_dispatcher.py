@@ -42,9 +42,9 @@ class OutgoingDispatcher:
         if session.channel != "wechat":
             return
         try:
-            await self._wechat_bot.send_text(
+            await self._wechat_bot.send_markdown(
                 user_id=session.user_id,
-                text=content,
+                content=content,
                 context_token=session.reply_context_token,
             )
         except Exception as exc:
@@ -55,5 +55,33 @@ class OutgoingDispatcher:
                 actor_id="gateway",
                 payload={"error": str(exc)},
             )
+        finally:
+            await self.clear_processing_indicator(session)
+
+    async def deliver_system_notice(
+        self,
+        session: SessionRecord,
+        content: str,
+        *,
+        event_type: str = "wechat_notice_failed",
+    ) -> bool:
+        if session.channel != "wechat":
+            return False
+        try:
+            await self._wechat_bot.send_text(
+                user_id=session.user_id,
+                text=content,
+                context_token=session.reply_context_token,
+            )
+            return True
+        except Exception as exc:
+            self._transcript_writer.append_event(
+                session_id=session.session_id,
+                event_type=event_type,
+                actor_type="system",
+                actor_id="gateway",
+                payload={"error": str(exc)},
+            )
+            return False
         finally:
             await self.clear_processing_indicator(session)

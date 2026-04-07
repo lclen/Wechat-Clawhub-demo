@@ -6,10 +6,28 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from claw_node.config import NodeSettings
+from claw_node.config import INSTALLED_NODE_ENV_PATH, LEGACY_NODE_ENV_PATH, NodeSettings, RUNTIME_NODE_ENV_PATH, resolve_default_node_env_path
 
 
 class NodeSettingsSourcePriorityTests(unittest.TestCase):
+    def test_default_env_path_prefers_runtime_node_config_when_present(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            runtime_env_path = Path(temp_dir) / "runtime-node.env"
+            runtime_env_path.write_text("CLAW_MODEL_PROVIDER=dify\n", encoding="utf-8")
+            with patch("claw_node.config.RUNTIME_NODE_ENV_PATH", runtime_env_path):
+                self.assertEqual(resolve_default_node_env_path(), runtime_env_path.resolve())
+
+        with patch("claw_node.config.RUNTIME_NODE_ENV_PATH", Path("D:/nonexistent/runtime-node.env")):
+            self.assertEqual(resolve_default_node_env_path(), LEGACY_NODE_ENV_PATH)
+
+    def test_default_env_path_prefers_installed_node_config_when_present(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            installed_env_path = Path(temp_dir) / "config" / "node.env"
+            installed_env_path.parent.mkdir(parents=True, exist_ok=True)
+            installed_env_path.write_text("CLAW_MODEL_PROVIDER=openai\n", encoding="utf-8")
+            with patch("claw_node.config.INSTALLED_NODE_ENV_PATH", installed_env_path):
+                self.assertEqual(resolve_default_node_env_path(), installed_env_path.resolve())
+
     def test_env_file_overrides_process_env_for_runtime_fields(self) -> None:
         with TemporaryDirectory() as temp_dir:
             env_path = Path(temp_dir) / "node.env"

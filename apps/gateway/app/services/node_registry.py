@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from time import perf_counter
 from datetime import UTC, datetime
 
 from redis.exceptions import RedisError
@@ -25,6 +27,7 @@ class NodeNotFoundError(NodeRegistryError):
 
 class NodeRegistry:
     ACTIVE_NODES_KEY = "wch:nodes:active"
+    logger = logging.getLogger(__name__)
 
     def __init__(self, store: RedisStore, settings: Settings) -> None:
         self._store = store
@@ -141,25 +144,43 @@ class NodeRegistry:
         return self._parse_record(raw, channel_in_use)
 
     async def list_nodes(self) -> list[NodeRecord]:
+        started = perf_counter()
         try:
             node_ids = sorted(await self._store.smembers(self.ACTIVE_NODES_KEY))
         except RedisError as exc:
             raise NodeRegistryError("Failed to list nodes") from exc
 
+        meta_keys = [self._meta_key(node_id) for node_id in node_ids]
+        slot_keys = [self._slots_key(node_id) for node_id in node_ids]
+
         nodes: list[NodeRecord] = []
         stale_ids: list[str] = []
-        for node_id in node_ids:
-            raw = await self._store.hgetall(self._meta_key(node_id))
+        try:
+            raw_records = await self._store.batch_hgetall(meta_keys)
+            slot_counts = await self._store.batch_hlen(slot_keys)
+        except RedisError as exc:
+            raise NodeRegistryError("Failed to list nodes") from exc
+
+        for node_id, raw, channel_in_use in zip(node_ids, raw_records, slot_counts, strict=False):
             if not raw:
                 stale_ids.append(node_id)
                 continue
-            channel_in_use = await self._store.hlen(self._slots_key(node_id))
             nodes.append(self._parse_record(raw, channel_in_use))
 
         if stale_ids:
-            await self._store.srem(self.ACTIVE_NODES_KEY, *stale_ids)
+            try:
+                await self._store.srem(self.ACTIVE_NODES_KEY, *stale_ids)
+            except RedisError as exc:
+                raise NodeRegistryError("Failed to list nodes") from exc
 
-        return sorted(nodes, key=lambda item: (item.status.value, item.node_id))
+        ordered_nodes = sorted(nodes, key=lambda item: (item.status.value, item.node_id))
+        self.logger.info(
+            "node_registry.list_nodes completed elapsed_ms=%.2f node_count=%d stale_count=%d",
+            (perf_counter() - started) * 1000,
+            len(ordered_nodes),
+            len(stale_ids),
+        )
+        return ordered_nodes
 
     async def remove(self, node_id: str) -> bool:
         try:

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import json
 import time
 from typing import Any
 
 import httpx
 
 from claw_node.config import NodeSettings
+from claw_node.multimodal import build_message_content
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +51,27 @@ class OpenAICompatibleClient:
         payload = {
             "model": self._settings.openai_model,
             "messages": messages,
-            "temperature": 0.3,
+            "temperature": self._settings.openai_temperature,
             "enable_thinking": self._settings.openai_enable_thinking,
         }
+        if self._settings.openai_top_p < 1.0:
+            payload["top_p"] = self._settings.openai_top_p
+        if self._settings.openai_max_tokens > 0:
+            payload["max_tokens"] = self._settings.openai_max_tokens
+        if self._settings.openai_seed > 0:
+            payload["seed"] = self._settings.openai_seed
+        stop_sequences = self._parse_stop_sequences(self._settings.openai_stop)
+        if stop_sequences:
+            payload["stop"] = stop_sequences[0] if len(stop_sequences) == 1 else stop_sequences
+        if self._settings.openai_thinking_budget > 0:
+            payload["thinking_budget"] = self._settings.openai_thinking_budget
+        if self._settings.openai_enable_search:
+            payload["enable_search"] = True
+            payload["search_options"] = {
+                "forced_search": self._settings.openai_search_forced,
+                "search_strategy": self._settings.openai_search_strategy,
+                "enable_search_extension": self._settings.openai_enable_search_extension,
+            }
         started_at = time.perf_counter()
         response = await self._client.post("/chat/completions", json=payload)
         response.raise_for_status()
@@ -86,14 +106,14 @@ class OpenAICompatibleClient:
         query: str,
         context_summary: str,
         recent_messages: list[dict[str, Any]],
-    ) -> list[dict[str, str]]:
+    ) -> list[dict[str, Any]]:
         system_prompt = (
             "You are the reply engine for wechat-claw-hub. "
             "Keep each reply concise, useful, and grounded in the existing conversation context. "
             "If the user asks to transfer to a human, clearly acknowledge the request and avoid pretending to be a human agent. "
             f"Session ID: {session_id}. User ID: {user_id}. Agent ID: {agent_id}."
         )
-        messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         if context_summary.strip():
             messages.append(
                 {
@@ -102,15 +122,32 @@ class OpenAICompatibleClient:
                 }
             )
 
+        provider = self._detect_provider()
         for item in recent_messages[-12:]:
             role = self._map_role(item.get("role"))
-            content = str(item.get("content") or "").strip()
-            if not role or not content:
+            content = build_message_content(
+                text=str(item.get("content") or ""),
+                metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else None,
+                provider=provider,
+                multimodal_enabled=self._settings.openai_multimodal_enabled,
+            )
+            if not role or self._is_empty_content(content):
                 continue
             messages.append({"role": role, "content": content})
 
         if not self._recent_messages_contain_query(recent_messages, query):
-            messages.append({"role": "user", "content": query})
+            latest_metadata = recent_messages[-1].get("metadata") if recent_messages and isinstance(recent_messages[-1].get("metadata"), dict) else None
+            messages.append(
+                {
+                    "role": "user",
+                    "content": build_message_content(
+                        text=query,
+                        metadata=latest_metadata,
+                        provider=provider,
+                        multimodal_enabled=self._settings.openai_multimodal_enabled,
+                    ),
+                }
+            )
         return messages
 
     def _map_role(self, role: str | None) -> str | None:
@@ -135,3 +172,27 @@ class OpenAICompatibleClient:
             return "-"
         value = usage.get(key)
         return str(value) if value is not None else "-"
+
+    def _parse_stop_sequences(self, raw: str) -> list[str]:
+        normalized = (raw or "").strip()
+        if not normalized:
+            return []
+        if normalized.startswith("["):
+            try:
+                parsed = json.loads(normalized)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        return [item.strip() for item in normalized.splitlines() if item.strip()]
+
+    def _detect_provider(self) -> str:
+        base_url = self._settings.openai_base_url.lower()
+        if "aliyuncs.com" in base_url or "dashscope" in base_url:
+            return "dashscope"
+        return "openai"
+
+    def _is_empty_content(self, content: str | list[dict[str, Any]]) -> bool:
+        if isinstance(content, str):
+            return not content.strip()
+        return len(content) == 0

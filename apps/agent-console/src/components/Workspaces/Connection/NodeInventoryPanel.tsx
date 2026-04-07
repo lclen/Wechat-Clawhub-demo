@@ -1,0 +1,141 @@
+import type { NodeKind } from "../../../types";
+import { InfoRow, SnippetBlock } from "./ConnectionUi";
+
+type InventoryAction = {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+};
+
+type InventoryCardView = {
+  nodeId: string;
+  title: string;
+  subtitle: string;
+  kind: NodeKind;
+  badge: string;
+  badgeTone: "human" | "typing" | "queued";
+  address: string;
+  detail: string;
+  platform: string;
+  version: string;
+  concurrency: string;
+  channels: string;
+  authFailed: boolean;
+  selected: boolean;
+  actions: InventoryAction[];
+};
+
+type DiagnosticsRow = {
+  label: string;
+  value: string;
+  multiline?: boolean;
+};
+
+type SelectedDiagnosticsView = {
+  nodeId: string;
+  kind: NodeKind | null;
+  traceId: string | null;
+  rows: DiagnosticsRow[];
+  timelineText?: string | null;
+  onClose: () => void;
+};
+
+type NodeInventoryPanelProps = {
+  headline: string;
+  cards: InventoryCardView[];
+  selectedDiagnostics: SelectedDiagnosticsView | null;
+};
+
+export function NodeInventoryPanel({ headline, cards, selectedDiagnostics }: NodeInventoryPanelProps) {
+  return (
+    <div className="connection-panel-stack">
+      <section className="surface">
+        <div className="section-head compact-head">
+          <div>
+            <div className="section-kicker">节点清单</div>
+            <h3>已接入节点总览</h3>
+          </div>
+          <span className="small-note">{headline}</span>
+        </div>
+        {!cards.length ? (
+          <div className="empty-state">当前还没有已接入节点。本机内置节点和远端工作节点会在这里统一显示，但会明确区分角色来源。</div>
+        ) : (
+          <div className="connection-node-grid connection-node-grid-compact">
+            {cards.map((card) => (
+              <article key={card.nodeId} className={`connection-node-card ${card.selected ? "connection-node-card-active" : ""}`}>
+                <div className="connection-node-card-top">
+                  <div className="connection-node-card-head">
+                    <div className="connection-node-card-title-row">
+                      <div className="node-card-title">{card.title}</div>
+                      <span className={`node-kind-tag node-kind-tag-${card.kind}`}>{card.kind === "local" ? "网关内置" : "远端工作节点"}</span>
+                      {card.authFailed ? <span className="auth-failed-badge" title="节点 token 不匹配，请重新配对或重置凭据">鉴权失败</span> : null}
+                    </div>
+                    <div className="node-card-subtitle">{card.subtitle}</div>
+                  </div>
+                  <span className={`session-badge session-badge-${card.badgeTone}`}>{card.badge}</span>
+                </div>
+                <div className="connection-node-address">{card.address}</div>
+                <div className="connection-node-detail">{card.detail}</div>
+                <div className="connection-node-stats">
+                  <div className="connection-node-stat">
+                    <span>平台</span>
+                    <strong>{card.platform}</strong>
+                  </div>
+                  <div className="connection-node-stat">
+                    <span>版本</span>
+                    <strong>{card.version}</strong>
+                  </div>
+                  <div className="connection-node-stat">
+                    <span>并发</span>
+                    <strong>{card.concurrency}</strong>
+                  </div>
+                  <div className="connection-node-stat">
+                    <span>通道</span>
+                    <strong>{card.channels}</strong>
+                  </div>
+                </div>
+                <div className="connection-node-card-actions">
+                  {card.actions.map((action) => (
+                    <button key={action.label} type="button" className="ghost-button launcher-row-btn" onClick={action.onClick} disabled={action.disabled}>
+                      {action.label}
+                    </button>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {selectedDiagnostics ? (
+        <section className="surface">
+          <div className="section-head compact-head">
+            <div>
+              <div className="section-kicker">节点诊断</div>
+              <h3 className="connection-diagnostics-title">
+                {selectedDiagnostics.nodeId}
+                {selectedDiagnostics.kind ? (
+                  <span className={`node-kind-tag node-kind-tag-${selectedDiagnostics.kind}`}>
+                    {selectedDiagnostics.kind === "local" ? "网关内置" : "远端工作节点"}
+                  </span>
+                ) : null}
+              </h3>
+            </div>
+            <div className="inline-actions">
+              {selectedDiagnostics.traceId ? <span className="small-note connection-trace-note">trace: {selectedDiagnostics.traceId.slice(0, 16)}…</span> : null}
+              <button type="button" className="ghost-button launcher-row-btn" onClick={selectedDiagnostics.onClose}>
+                关闭
+              </button>
+            </div>
+          </div>
+          <div className="info-stack">
+            {selectedDiagnostics.rows.map((row) => (
+              <InfoRow key={row.label} label={row.label} value={row.value} multiline={row.multiline} />
+            ))}
+          </div>
+          {selectedDiagnostics.timelineText ? <SnippetBlock label="诊断时间线" content={selectedDiagnostics.timelineText} /> : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}

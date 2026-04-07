@@ -39,6 +39,15 @@ class RedisStore:
     async def hgetall(self, key: str) -> dict[str, str]:
         return await self._client.hgetall(key)
 
+    async def batch_hgetall(self, keys: list[str]) -> list[dict[str, str]]:
+        if not keys:
+            return []
+        pipeline = self._client.pipeline(transaction=False)
+        for key in keys:
+            pipeline.hgetall(key)
+        results = await pipeline.execute()
+        return [result if isinstance(result, dict) else {} for result in results]
+
     async def hset(self, key: str, field: str, value: str) -> None:
         await self._client.hset(key, field, value)
 
@@ -56,6 +65,15 @@ class RedisStore:
     async def hlen(self, key: str) -> int:
         return await self._client.hlen(key)
 
+    async def batch_hlen(self, keys: list[str]) -> list[int]:
+        if not keys:
+            return []
+        pipeline = self._client.pipeline(transaction=False)
+        for key in keys:
+            pipeline.hlen(key)
+        results = await pipeline.execute()
+        return [int(result or 0) for result in results]
+
     async def set(self, key: str, value: str) -> None:
         await self._client.set(key, value)
 
@@ -64,6 +82,15 @@ class RedisStore:
 
     async def get(self, key: str) -> str | None:
         return await self._client.get(key)
+
+    async def batch_get(self, keys: list[str]) -> list[str | None]:
+        if not keys:
+            return []
+        pipeline = self._client.pipeline(transaction=False)
+        for key in keys:
+            pipeline.get(key)
+        results = await pipeline.execute()
+        return [result if result is None or isinstance(result, str) else str(result) for result in results]
 
     async def sadd(self, key: str, *values: str) -> None:
         if values:

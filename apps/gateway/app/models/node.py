@@ -77,7 +77,9 @@ class NodeRecord(BaseModel):
 NodeInventoryConnectionState = Literal[
     "connected",
     "pairing_pending",
+    "waiting_pair",
     "register_failed",
+    "needs_repair",
     "auth_failed",
     "paired_offline",
     "online_unpaired",

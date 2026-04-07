@@ -56,6 +56,13 @@ class NodeDiagnostics:
             "gateway_base_url": settings.gateway_base_url,
             "token_masked": self._mask_token(settings.node_token),
             "pairing_key_configured": bool(settings.pairing_key.strip()),
+            "configured_model_provider": self._normalize_provider(settings.model_provider),
+            "effective_model_provider": "",
+            "inference_ready": False,
+            "inference_detail": "",
+            "openai_configured": self._has_openai_config(settings),
+            "dify_configured": self._has_dify_config(settings),
+            "openai_model": settings.openai_model,
             "current_state": "not_installed",
             "detail": "",
             "last_error": "",
@@ -106,10 +113,38 @@ class NodeDiagnostics:
                 "gateway_base_url": self._settings.gateway_base_url,
                 "token_masked": self._mask_token(self._settings.node_token),
                 "pairing_key_configured": bool(self._settings.pairing_key.strip()),
+                "configured_model_provider": self._normalize_provider(self._settings.model_provider),
+                "openai_configured": self._has_openai_config(self._settings),
+                "dify_configured": self._has_dify_config(self._settings),
+                "openai_model": self._settings.openai_model,
                 "last_pairing_trace_id": self._settings.pairing_trace_id.strip(),
             }
         )
         self.flush()
+
+    def record_inference(
+        self,
+        *,
+        effective_provider: str,
+        ready: bool,
+        detail: str,
+        trace_id: str = "",
+        metadata: dict[str, str] | None = None,
+    ) -> None:
+        normalized_provider = self._normalize_provider(effective_provider)
+        self._snapshot["effective_model_provider"] = normalized_provider
+        self._snapshot["inference_ready"] = ready
+        self._snapshot["inference_detail"] = detail
+        if not ready and detail:
+            self._snapshot["last_error"] = detail
+        self.record_event(
+            category="inference",
+            result="ready" if ready else "unavailable",
+            message=detail,
+            trace_id=trace_id,
+            metadata=metadata,
+            level="info" if ready else "error",
+        )
 
     def set_state(self, state: str, detail: str = "", *, trace_id: str = "", level: str = "info") -> None:
         self._snapshot["current_state"] = state
@@ -241,6 +276,13 @@ class NodeDiagnostics:
             "node_kind": self._snapshot.get("node_kind", self._settings.node_kind),
             "gateway_base_url": self._snapshot.get("gateway_base_url", self._settings.gateway_base_url),
             "token_masked": self._snapshot.get("token_masked", self._mask_token(self._settings.node_token)),
+            "configured_model_provider": self._snapshot.get("configured_model_provider", self._normalize_provider(self._settings.model_provider)),
+            "effective_model_provider": self._snapshot.get("effective_model_provider", ""),
+            "inference_ready": self._snapshot.get("inference_ready", False),
+            "inference_detail": self._snapshot.get("inference_detail", ""),
+            "openai_configured": self._snapshot.get("openai_configured", self._has_openai_config(self._settings)),
+            "dify_configured": self._snapshot.get("dify_configured", self._has_dify_config(self._settings)),
+            "openai_model": self._snapshot.get("openai_model", self._settings.openai_model),
             "current_state": self._snapshot.get("current_state", ""),
             "detail": self._snapshot.get("detail", ""),
             "last_error": self._snapshot.get("last_error", ""),
@@ -347,3 +389,21 @@ class NodeDiagnostics:
 
     def _utcnow(self) -> datetime:
         return datetime.now(UTC)
+
+    def _normalize_provider(self, provider: str | None) -> str:
+        normalized = (provider or "").strip().lower()
+        if normalized in {"openai_compatible", "openai"}:
+            return "openai"
+        if normalized == "dify":
+            return "dify"
+        return normalized or "auto"
+
+    def _has_openai_config(self, settings: NodeSettings) -> bool:
+        return bool(
+            settings.openai_base_url.strip()
+            and settings.openai_api_key.strip()
+            and settings.openai_model.strip()
+        )
+
+    def _has_dify_config(self, settings: NodeSettings) -> bool:
+        return bool(settings.dify_base_url.strip() and settings.dify_api_key.strip())

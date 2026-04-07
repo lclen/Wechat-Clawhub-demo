@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
+import math
+import mimetypes
 import os
 import random
+import re
 import struct
 import time
 import uuid
@@ -12,6 +16,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import httpx
 
@@ -29,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 WECHAT_CONFIG_KEY = "wch:config:wechat"
 DEFAULT_WECHAT_BASE_URL = "https://ilinkai.weixin.qq.com"
+DEFAULT_WECHAT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000
 DEFAULT_API_TIMEOUT_MS = 15_000
 DEFAULT_CONFIG_TIMEOUT_MS = 10_000
@@ -36,17 +42,95 @@ CONFIG_CACHE_TTL_S = 86_400
 CONFIG_CACHE_INITIAL_RETRY_S = 2.0
 CONFIG_CACHE_MAX_RETRY_S = 3_600.0
 ITEM_TEXT = 1
+ITEM_IMAGE = 2
+ITEM_FILE = 4
+ITEM_VIDEO = 5
 MSG_TYPE_USER = 1
 MSG_TYPE_BOT = 2
 MSG_STATE_FINISH = 2
 TYPING_START = 1
 TYPING_CANCEL = 2
+UPLOAD_IMAGE = 1
+UPLOAD_VIDEO = 2
+UPLOAD_FILE = 3
+UPLOAD_MAX_RETRIES = 3
 DEDUP_TTL_SECONDS = 600
 DEDUP_MAX_SIZE = 500
 SEND_MIN_INTERVAL_SECONDS = 2.5
 TYPING_REFRESH_INTERVAL_SECONDS = 4.0
 TYPING_STALE_THRESHOLD_SECONDS = 1_800
 SWITCH_COMMANDS = {"切换节点", "/switch"}
+MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+(?:\s+\"[^\"]*\")?)\)")
+MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
+MARKDOWN_ITALIC_RE = re.compile(r"\*(.+?)\*")
+MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class OutboundMarkdownSegment:
+    kind: str
+    text: str = ""
+    url: str = ""
+    alt: str = ""
+
+
+def _encrypt_aes_ecb(plaintext: bytes, key: bytes) -> bytes:
+    from Crypto.Cipher import AES
+
+    pad_len = 16 - (len(plaintext) % 16)
+    padded = plaintext + bytes([pad_len] * pad_len)
+    cipher = AES.new(key, AES.MODE_ECB)
+    return cipher.encrypt(padded)
+
+
+def _aes_ecb_padded_size(plaintext_size: int) -> int:
+    return math.ceil((plaintext_size + 1) / 16) * 16
+
+
+def _markdown_to_plaintext(text: str) -> str:
+    result = MARKDOWN_IMAGE_RE.sub("", text)
+    result = MARKDOWN_LINK_RE.sub(r"\1", result)
+    result = MARKDOWN_BOLD_RE.sub(r"\1", result)
+    result = MARKDOWN_ITALIC_RE.sub(r"\1", result)
+    result = MARKDOWN_INLINE_CODE_RE.sub(r"\1", result)
+    result = MARKDOWN_HEADING_RE.sub("", result)
+    return result.strip()
+
+
+def _guess_extension(content_type: str | None, url: str) -> str:
+    if content_type:
+        ext = mimetypes.guess_extension(content_type.split(";")[0].strip())
+        if ext:
+            return ext
+    filename = url.split("?", 1)[0].rsplit("/", 1)[-1]
+    if "." in filename:
+        return f".{filename.rsplit('.', 1)[-1].lower()}"
+    return ".bin"
+
+
+def _extract_markdown_image_url(raw_url: str) -> str:
+    return raw_url.split(" ", 1)[0].strip()
+
+
+def parse_markdown_segments(content: str) -> list[OutboundMarkdownSegment]:
+    segments: list[OutboundMarkdownSegment] = []
+    cursor = 0
+    for match in MARKDOWN_IMAGE_RE.finditer(content):
+        if match.start() > cursor:
+            segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:match.start()]))
+        segments.append(
+            OutboundMarkdownSegment(
+                kind="image",
+                url=_extract_markdown_image_url(match.group(2)),
+                alt=match.group(1).strip(),
+            )
+        )
+        cursor = match.end()
+    if cursor < len(content):
+        segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:]))
+    return [segment for segment in segments if segment.text.strip() or segment.url]
 
 
 class WeChatSessionExpiredError(RuntimeError):
@@ -219,6 +303,76 @@ class WeChatBotService:
             )
         self._sent_messages += 1
         return client_id
+
+    async def send_markdown(self, *, user_id: str, content: str, context_token: str | None = None) -> list[str]:
+        if not self._config.token:
+            raise RuntimeError("WeChat token is not configured")
+        segments = parse_markdown_segments(content)
+        image_segments = [segment for segment in segments if segment.kind == "image"]
+        if not image_segments:
+            client_id = await self.send_text(user_id=user_id, text=content, context_token=context_token)
+            return [client_id] if client_id else []
+
+        client_ids: list[str] = []
+        pending_text_parts: list[str] = []
+        for segment in segments:
+            if segment.kind == "text":
+                pending_text_parts.append(segment.text)
+                continue
+            plain_text = _markdown_to_plaintext("".join(pending_text_parts))
+            pending_text_parts = []
+            if plain_text:
+                text_client_id = await self.send_text(user_id=user_id, text=plain_text, context_token=context_token)
+                if text_client_id:
+                    client_ids.append(text_client_id)
+            try:
+                image_client_id = await self.send_image_url(
+                    user_id=user_id,
+                    image_url=segment.url,
+                    context_token=context_token,
+                )
+                if image_client_id:
+                    client_ids.append(image_client_id)
+            except Exception:
+                logger.exception("wechat-bot: markdown image send failed for %s", segment.url)
+                fallback_text = "\n".join(part for part in [segment.alt, segment.url] if part).strip()
+                if fallback_text:
+                    fallback_client_id = await self.send_text(
+                        user_id=user_id,
+                        text=fallback_text,
+                        context_token=context_token,
+                    )
+                    if fallback_client_id:
+                        client_ids.append(fallback_client_id)
+
+        trailing_plain_text = _markdown_to_plaintext("".join(pending_text_parts))
+        if trailing_plain_text:
+            trailing_client_id = await self.send_text(
+                user_id=user_id,
+                text=trailing_plain_text,
+                context_token=context_token,
+            )
+            if trailing_client_id:
+                client_ids.append(trailing_client_id)
+        return client_ids
+
+    async def send_image_url(self, *, user_id: str, image_url: str, context_token: str | None = None) -> str:
+        if not self._config.token:
+            raise RuntimeError("WeChat token is not configured")
+        ctx = self._context_tokens.get(user_id) or context_token or ""
+        image_bytes, content_type = await self._download_remote_image(image_url)
+        uploaded = await self._cdn_upload_bytes(
+            image_bytes=image_bytes,
+            to_user_id=user_id,
+            mime=content_type,
+            source_url=image_url,
+        )
+        return await self._send_uploaded_media(
+            user_id=user_id,
+            uploaded=uploaded,
+            mime=content_type,
+            context_token=ctx,
+        )
 
     async def send_typing(self, *, user_id: str, context_token: str | None = None) -> None:
         if context_token:
@@ -472,6 +626,138 @@ class WeChatBotService:
         )
         response.raise_for_status()
         return response.json()
+
+    async def _download_remote_image(self, image_url: str) -> tuple[bytes, str]:
+        if self._http is None or self._http.is_closed:
+            self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+        response = await self._http.get(image_url, timeout=30.0, follow_redirects=True)
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "application/octet-stream")
+        if not content_type.startswith("image/"):
+            raise RuntimeError(f"Remote asset is not an image: {content_type}")
+        return response.content, content_type
+
+    async def _cdn_upload_bytes(
+        self,
+        *,
+        image_bytes: bytes,
+        to_user_id: str,
+        mime: str,
+        source_url: str,
+    ) -> dict[str, Any]:
+        rawsize = len(image_bytes)
+        rawfilemd5 = hashlib.md5(image_bytes).hexdigest()
+        filesize = _aes_ecb_padded_size(rawsize)
+        filekey = os.urandom(16).hex()
+        aeskey = os.urandom(16)
+        media_type = UPLOAD_IMAGE if mime.startswith("image/") else (UPLOAD_VIDEO if mime.startswith("video/") else UPLOAD_FILE)
+        upload_resp = await self._api_post(
+            "ilink/bot/getuploadurl",
+            {
+                "filekey": filekey,
+                "media_type": media_type,
+                "to_user_id": to_user_id,
+                "rawsize": rawsize,
+                "rawfilemd5": rawfilemd5,
+                "filesize": filesize,
+                "no_need_thumb": True,
+                "aeskey": aeskey.hex(),
+            },
+            timeout_s=DEFAULT_API_TIMEOUT_MS / 1000,
+        )
+        upload_param = upload_resp.get("upload_param")
+        if not upload_param:
+            raise RuntimeError("WeChat getuploadurl returned no upload_param")
+        ciphertext = _encrypt_aes_ecb(image_bytes, aeskey)
+        cdn_url = (
+            f"{DEFAULT_WECHAT_CDN_BASE_URL}/upload"
+            f"?encrypted_query_param={quote(upload_param, safe='')}"
+            f"&filekey={quote(filekey, safe='')}"
+        )
+        headers = {
+            "Content-Type": mime,
+            "Content-Length": str(len(ciphertext)),
+        }
+        last_error: Exception | None = None
+        for attempt in range(1, UPLOAD_MAX_RETRIES + 1):
+            try:
+                if self._http is None or self._http.is_closed:
+                    self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+                response = await self._http.put(cdn_url, content=ciphertext, headers=headers, timeout=30.0)
+                response.raise_for_status()
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt >= UPLOAD_MAX_RETRIES:
+                    raise RuntimeError(f"WeChat CDN upload failed for {source_url}: {exc}") from exc
+                await asyncio.sleep(float(attempt))
+        return {
+            "aeskey": aeskey.hex(),
+            "download_param": upload_param,
+            "filesize_cipher": len(ciphertext),
+            "filesize_raw": rawsize,
+            "filekey": filekey,
+        }
+
+    async def _send_uploaded_media(
+        self,
+        *,
+        user_id: str,
+        uploaded: dict[str, Any],
+        mime: str,
+        context_token: str,
+    ) -> str:
+        await self._rate_limit_wait(user_id)
+        aeskey_hex = str(uploaded["aeskey"])
+        media_ref = {
+            "encrypt_query_param": uploaded["download_param"],
+            "aes_key": base64.b64encode(aeskey_hex.encode()).decode(),
+            "encrypt_type": 1,
+        }
+        if mime.startswith("image/"):
+            item = {
+                "type": ITEM_IMAGE,
+                "image_item": {
+                    "aeskey": aeskey_hex,
+                    "media": media_ref,
+                    "mid_size": uploaded["filesize_cipher"],
+                },
+            }
+        elif mime.startswith("video/"):
+            item = {
+                "type": ITEM_VIDEO,
+                "video_item": {
+                    "aeskey": aeskey_hex,
+                    "media": media_ref,
+                    "video_size": uploaded["filesize_cipher"],
+                },
+            }
+        else:
+            item = {
+                "type": ITEM_FILE,
+                "file_item": {
+                    "aeskey": aeskey_hex,
+                    "media": media_ref,
+                    "file_name": f"wechat{_guess_extension(mime, '')}",
+                    "len": str(uploaded["filesize_raw"]),
+                },
+            }
+        client_id = f"wechat-claw-hub-{uuid.uuid4().hex[:12]}"
+        payload = {
+            "msg": {
+                "from_user_id": "",
+                "to_user_id": user_id,
+                "client_id": client_id,
+                "message_type": MSG_TYPE_BOT,
+                "message_state": MSG_STATE_FINISH,
+                "item_list": [item],
+                "context_token": context_token or None,
+            }
+        }
+        response = await self._api_post("ilink/bot/sendmessage", payload, timeout_s=DEFAULT_API_TIMEOUT_MS / 1000)
+        self._ensure_api_ok(response, action="sendmessage(media)")
+        self._sent_messages += 1
+        return client_id
 
     async def _typing_loop(self, user_id: str) -> None:
         while True:

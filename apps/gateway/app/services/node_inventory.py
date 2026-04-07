@@ -20,7 +20,14 @@ def build_node_inventory(
         paired = node_id in paired_ids or node_kind == "local"
         diagnostic = pairing_diagnostics.get(node_id, {})
         offline_state = diagnostic.get("connection_state") or "paired_offline"
-        if offline_state not in {"pairing_pending", "register_failed", "auth_failed", "paired_offline"}:
+        if offline_state not in {
+            "pairing_pending",
+            "waiting_pair",
+            "register_failed",
+            "needs_repair",
+            "auth_failed",
+            "paired_offline",
+        }:
             offline_state = "paired_offline"
         inventory.append(
             NodeInventoryRecord(

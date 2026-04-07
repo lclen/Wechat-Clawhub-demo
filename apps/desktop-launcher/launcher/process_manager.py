@@ -199,7 +199,7 @@ class ProcessManager:
 
     def _install_or_restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         node_spec = self._resolved_local_node_spec(profile)
-        existing_config = self._read_existing_local_node_config(layout)
+        existing_config = self._read_local_node_runtime_config(profile, layout) or self._read_existing_local_node_config(layout)
         gateway_base_url = node_spec["gateway_base_url"] or existing_config.get("CLAW_GATEWAY_BASE_URL", "").strip()
         local_node_id = node_spec["node_id"]
         install_dir = self._local_node_install_dir(layout)
@@ -230,6 +230,8 @@ class ProcessManager:
                 if node_spec["local_direct_auth"]
                 else existing_config.get("CLAW_PAIRING_KEY", "").strip()
             ),
+            "-ModelProvider",
+            existing_config.get("CLAW_MODEL_PROVIDER", "").strip() or "auto",
             "-MaxConcurrency",
             "1",
             "-InstallDir",
@@ -247,54 +249,33 @@ class ProcessManager:
             "-ServiceMode",
             "windows-service",
         ]
-        model_env = os.environ.copy()
-        # Only the gateway built-in node inherits model config from the local gateway.
-        gateway_env_path = self._repo_root / "apps" / "gateway" / ".env"
-        if node_spec["local_direct_auth"] and gateway_env_path.exists():
-            for raw_line in gateway_env_path.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, v = line.split("=", 1)
-                k = k.strip()
-                # Map gateway keys to CLAW_ equivalents (don't overwrite if already set in env)
-                mapping = {
-                    "WCH_BUILTIN_MODEL_BASE_URL": "CLAW_OPENAI_BASE_URL",
-                    "WCH_BUILTIN_MODEL_API_KEY": "CLAW_OPENAI_API_KEY",
-                    "WCH_BUILTIN_MODEL_NAME": "CLAW_OPENAI_MODEL",
-                    "WCH_DIFY_BASE_URL": "CLAW_DIFY_BASE_URL",
-                    "WCH_DIFY_API_KEY": "CLAW_DIFY_API_KEY",
-                }
-                if k in mapping and v.strip():
-                    model_env.setdefault(mapping[k], v.strip())
-        if model_env.get("CLAW_DIFY_BASE_URL") and model_env.get("CLAW_DIFY_API_KEY"):
-            model_env.setdefault("CLAW_MODEL_PROVIDER", "dify")
-        elif model_env.get("CLAW_OPENAI_BASE_URL") or model_env.get("CLAW_OPENAI_API_KEY"):
-            model_env.setdefault("CLAW_MODEL_PROVIDER", "openai")
-        if model_env.get("CLAW_DIFY_BASE_URL"):
-            command.extend(["-DifyBaseUrl", model_env["CLAW_DIFY_BASE_URL"]])
-        elif existing_config.get("CLAW_DIFY_BASE_URL", "").strip():
+        if existing_config.get("CLAW_DIFY_BASE_URL", "").strip():
             command.extend(["-DifyBaseUrl", existing_config["CLAW_DIFY_BASE_URL"].strip()])
-        if model_env.get("CLAW_DIFY_API_KEY"):
-            command.extend(["-DifyApiKey", model_env["CLAW_DIFY_API_KEY"]])
-        elif existing_config.get("CLAW_DIFY_API_KEY", "").strip():
+        if existing_config.get("CLAW_DIFY_API_KEY", "").strip():
             command.extend(["-DifyApiKey", existing_config["CLAW_DIFY_API_KEY"].strip()])
-        if model_env.get("CLAW_OPENAI_BASE_URL"):
-            command.extend(["-OpenAIBaseUrl", model_env["CLAW_OPENAI_BASE_URL"]])
-        elif existing_config.get("CLAW_OPENAI_BASE_URL", "").strip():
+        if existing_config.get("CLAW_OPENAI_BASE_URL", "").strip():
             command.extend(["-OpenAIBaseUrl", existing_config["CLAW_OPENAI_BASE_URL"].strip()])
-        if model_env.get("CLAW_OPENAI_API_KEY"):
-            command.extend(["-OpenAIApiKey", model_env["CLAW_OPENAI_API_KEY"]])
-        elif existing_config.get("CLAW_OPENAI_API_KEY", "").strip():
+        if existing_config.get("CLAW_OPENAI_API_KEY", "").strip():
             command.extend(["-OpenAIApiKey", existing_config["CLAW_OPENAI_API_KEY"].strip()])
-        if model_env.get("CLAW_OPENAI_MODEL"):
-            command.extend(["-OpenAIModel", model_env["CLAW_OPENAI_MODEL"]])
-        elif existing_config.get("CLAW_OPENAI_MODEL", "").strip():
+        if existing_config.get("CLAW_OPENAI_MODEL", "").strip():
             command.extend(["-OpenAIModel", existing_config["CLAW_OPENAI_MODEL"].strip()])
-        if model_env.get("CLAW_OPENAI_ENABLE_THINKING"):
-            command.extend(["-OpenAIEnableThinking", model_env["CLAW_OPENAI_ENABLE_THINKING"]])
-        elif existing_config.get("CLAW_OPENAI_ENABLE_THINKING", "").strip():
+        if existing_config.get("CLAW_OPENAI_ENABLE_THINKING", "").strip():
             command.extend(["-OpenAIEnableThinking", existing_config["CLAW_OPENAI_ENABLE_THINKING"].strip()])
+        for env_key, flag in (
+            ("CLAW_OPENAI_TEMPERATURE", "-OpenAITemperature"),
+            ("CLAW_OPENAI_TOP_P", "-OpenAITopP"),
+            ("CLAW_OPENAI_MAX_TOKENS", "-OpenAIMaxTokens"),
+            ("CLAW_OPENAI_SEED", "-OpenAISeed"),
+            ("CLAW_OPENAI_THINKING_BUDGET", "-OpenAIThinkingBudget"),
+            ("CLAW_OPENAI_STOP", "-OpenAIStop"),
+            ("CLAW_OPENAI_ENABLE_SEARCH", "-OpenAIEnableSearch"),
+            ("CLAW_OPENAI_SEARCH_FORCED", "-OpenAISearchForced"),
+            ("CLAW_OPENAI_SEARCH_STRATEGY", "-OpenAISearchStrategy"),
+            ("CLAW_OPENAI_ENABLE_SEARCH_EXTENSION", "-OpenAIEnableSearchExtension"),
+            ("CLAW_OPENAI_MULTIMODAL_ENABLED", "-OpenAIMultimodalEnabled"),
+        ):
+            if existing_config.get(env_key, "").strip():
+                command.extend([flag, existing_config[env_key].strip()])
         self._run_sync_command(command, cwd=self._repo_root, log_path=log_path)
         self._statuses["local-node"] = self.local_node_service_status(profile, layout)
 
@@ -744,18 +725,28 @@ class ProcessManager:
 
     def _describe_local_node_runtime(self, runtime_state: str, diagnostics: dict[str, Any]) -> str:
         detail = str(diagnostics.get("detail", "") or "").strip()
+        effective_provider = str(diagnostics.get("effective_model_provider", "") or "").strip()
+        inference_ready = bool(diagnostics.get("inference_ready", False))
+        inference_detail = str(diagnostics.get("inference_detail", "") or "").strip()
+        provider_hint = ""
+        if effective_provider:
+            provider_hint = f" · 推理={effective_provider}"
+            if inference_ready:
+                provider_hint += " 已就绪"
         if runtime_state == "connected":
-            return "已注册到当前主网关"
+            return f"已注册到当前主网关{provider_hint}"
         if runtime_state == "waiting_pair":
             return "等待网关"
         if runtime_state == "pairing_pending":
             return "已写入配置，等待注册确认"
         if runtime_state == "register_failed":
-            return f"服务运行中，未注册{f'：{detail}' if detail else ''}"
+            suffix = inference_detail or detail
+            return f"服务运行中，未注册{f'：{suffix}' if suffix else ''}"
         if runtime_state == "needs_repair":
-            return f"服务运行中，但本机节点需要修复{f'：{detail}' if detail else ''}"
+            suffix = inference_detail or detail
+            return f"服务运行中，但本机节点需要修复{f'：{suffix}' if suffix else ''}"
         if runtime_state == "service_running":
-            return "服务运行中，等待首次注册"
+            return f"服务运行中，等待首次注册{provider_hint}"
         return detail
 
     def _spawn_self(

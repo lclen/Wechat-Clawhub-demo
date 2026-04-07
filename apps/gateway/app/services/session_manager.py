@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+from time import perf_counter
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -17,6 +19,7 @@ from app.models.session import (
 )
 from app.services.redis_store import RedisStore
 from app.services.session_keys import build_session_id
+from app.services.snapshot_services import SessionOverviewSnapshotService
 from app.services.session_stream import SessionStreamBroker
 from app.services.transcript_writer import TranscriptWriter
 from app.services.user_data_store import UserDataStore
@@ -36,6 +39,7 @@ class SessionCursorError(SessionManagerError):
 
 class SessionManager:
     ACTIVE_SESSIONS_KEY = "wch:sessions:active"
+    logger = logging.getLogger(__name__)
 
     def __init__(
         self,
@@ -44,12 +48,14 @@ class SessionManager:
         user_data_store: UserDataStore,
         settings: Settings,
         session_stream: SessionStreamBroker | None = None,
+        overview_snapshot: SessionOverviewSnapshotService | None = None,
     ) -> None:
         self._store = store
         self._transcript_writer = transcript_writer
         self._user_data_store = user_data_store
         self._settings = settings
         self._session_stream = session_stream
+        self._overview_snapshot = overview_snapshot
 
     def _session_meta_key(self, session_id: str) -> str:
         return f"wch:session:{session_id}:meta"
@@ -112,25 +118,49 @@ class SessionManager:
         return await self._get_or_create_session(channel=channel, user_id=user_id, agent_id=agent_id)
 
     async def list_sessions(self) -> list[SessionRecord]:
+        started = perf_counter()
         try:
             session_ids = sorted(await self._store.smembers(self.ACTIVE_SESSIONS_KEY))
         except RedisError as exc:
             raise SessionManagerError("Failed to list sessions") from exc
 
+        meta_keys = [self._session_meta_key(session_id) for session_id in session_ids]
+        summary_keys = [self._session_summary_key(session_id) for session_id in session_ids]
+
         sessions: list[SessionRecord] = []
         stale_ids: list[str] = []
-        for session_id in session_ids:
-            raw = await self._store.hgetall(self._session_meta_key(session_id))
+        try:
+            raw_records = await self._store.batch_hgetall(meta_keys)
+            summaries = await self._store.batch_get(summary_keys)
+        except RedisError as exc:
+            raise SessionManagerError("Failed to list sessions") from exc
+
+        for session_id, raw, summary in zip(session_ids, raw_records, summaries, strict=False):
             if not raw:
                 stale_ids.append(session_id)
                 continue
-            summary = await self._store.get(self._session_summary_key(session_id))
             sessions.append(self._parse_session(raw, summary))
 
         if stale_ids:
-            await self._store.srem(self.ACTIVE_SESSIONS_KEY, *stale_ids)
+            try:
+                await self._store.srem(self.ACTIVE_SESSIONS_KEY, *stale_ids)
+            except RedisError as exc:
+                raise SessionManagerError("Failed to list sessions") from exc
 
-        return sorted(sessions, key=lambda item: item.last_message_at, reverse=True)
+        ordered_sessions = sorted(sessions, key=lambda item: item.last_message_at, reverse=True)
+        if self._overview_snapshot is not None:
+            await self._overview_snapshot.update(
+                ordered_sessions,
+                source_version=self._build_overview_source_version(ordered_sessions),
+                degraded=False,
+            )
+        self.logger.info(
+            "session_manager.list_sessions completed elapsed_ms=%.2f session_count=%d stale_count=%d",
+            (perf_counter() - started) * 1000,
+            len(ordered_sessions),
+            len(stale_ids),
+        )
+        return ordered_sessions
 
     async def get_session(self, session_id: str) -> SessionRecord:
         try:
@@ -369,6 +399,11 @@ class SessionManager:
             return
         await self._session_stream.publish_overview(await self.list_sessions())
 
+    def _build_overview_source_version(self, sessions: list[SessionRecord]) -> str:
+        if not sessions:
+            return "sessions:empty"
+        return "|".join(f"{session.session_id}:{session.version}" for session in sessions)
+
     def _parse_session(self, raw: dict[str, str], summary: str | None) -> SessionRecord:
         last_dispatch_raw = raw.get("last_dispatch_at") or None
         slot_bound_at_raw = raw.get("slot_bound_at") or None
@@ -575,4 +610,3 @@ class SessionManager:
         }
 
         return to_status in valid_transitions.get(from_status, set())
-

@@ -14,6 +14,7 @@ from app.services.node_stream import NodeStreamBroker
 from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager
+from app.services.snapshot_services import GatewaySummarySnapshotService, SessionOverviewSnapshotService
 from app.services.session_stream import SessionStreamBroker
 from app.services.setup_service import SetupService
 from app.services.transcript_writer import TranscriptWriter
@@ -57,6 +58,14 @@ def get_gateway_summary_stream(request: Request) -> GatewaySummaryStreamBroker:
 
 def get_gateway_summary_service(request: Request) -> GatewaySummaryService:
     return request.app.state.gateway_summary_service
+
+
+def get_gateway_summary_snapshot_service(request: Request) -> GatewaySummarySnapshotService:
+    return request.app.state.gateway_summary_snapshot_service
+
+
+def get_session_overview_snapshot_service(request: Request) -> SessionOverviewSnapshotService:
+    return request.app.state.session_overview_snapshot_service
 
 
 def get_node_auth(request: Request) -> NodeAuthService:

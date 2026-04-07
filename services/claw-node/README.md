@@ -16,6 +16,7 @@
 - 正式运行：通过 `scripts/install-claw-node.ps1` 安装成 Windows 服务，由服务长期托管
 - 固定配置文件：`<install-dir>/config/node.env`
 - 固定诊断目录：`<install-dir>/diagnostics`
+- 模型连通性验证：`python scripts/chat-check-claw.py --env-file services/claw-node/.env`
 
 启动入口：
 

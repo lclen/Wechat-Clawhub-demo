@@ -106,6 +106,30 @@ class NodeInventoryTests(unittest.TestCase):
         self.assertEqual(inventory[0].connection_state, "auth_failed")
         self.assertEqual(inventory[0].last_error, "401 Unauthorized")
 
+    def test_inventory_preserves_waiting_pair_state_from_diagnostics(self) -> None:
+        inventory = build_node_inventory(
+            [],
+            {"node-a": "token-a"},
+            "",
+            {"node-a": {"connection_state": "waiting_pair", "last_error": "等待配对"}},
+        )
+
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0].connection_state, "waiting_pair")
+        self.assertEqual(inventory[0].last_error, "等待配对")
+
+    def test_inventory_preserves_needs_repair_state_from_diagnostics(self) -> None:
+        inventory = build_node_inventory(
+            [],
+            {"node-a": "token-a"},
+            "",
+            {"node-a": {"connection_state": "needs_repair", "last_error": "推理后端未配置"}},
+        )
+
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(inventory[0].connection_state, "needs_repair")
+        self.assertEqual(inventory[0].last_error, "推理后端未配置")
+
 
 if __name__ == "__main__":
     unittest.main()

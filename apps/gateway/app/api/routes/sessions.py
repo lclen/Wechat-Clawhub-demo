@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 
-from app.core.deps import ensure_redis_available, get_dispatch_queue, get_redis_store, get_session_manager
+from app.core.deps import (
+    ensure_redis_available,
+    get_dispatch_queue,
+    get_redis_store,
+    get_session_manager,
+    get_session_overview_snapshot_service,
+)
 from app.dispatch.queue import DispatchQueue, DispatchQueueError
 from app.models.session import (
     SessionClaimRequest,
@@ -20,6 +27,7 @@ from app.models.session import (
 )
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionCursorError, SessionManager, SessionManagerError, SessionNotFoundError
+from app.services.snapshot_services import SessionOverviewSnapshotService
 from app.services.session_stream import SessionStreamBroker
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -30,11 +38,45 @@ logger = logging.getLogger(__name__)
 async def list_sessions(
     store: RedisStore = Depends(get_redis_store),
     manager: SessionManager = Depends(get_session_manager),
+    snapshot_service: SessionOverviewSnapshotService = Depends(get_session_overview_snapshot_service),
 ) -> SessionListResponse:
-    await ensure_redis_available(store)
+    started = perf_counter()
     try:
-        return SessionListResponse(sessions=await manager.list_sessions())
+        await ensure_redis_available(store)
+        response = SessionListResponse(sessions=await manager.list_sessions())
+        logger.info(
+            "sessions_request completed path=/api/sessions elapsed_ms=%.2f degraded=false session_count=%d",
+            (perf_counter() - started) * 1000,
+            len(response.sessions),
+        )
+        return response
+    except HTTPException as exc:
+        if exc.status_code != status.HTTP_503_SERVICE_UNAVAILABLE:
+            raise
+        snapshot = await snapshot_service.get_snapshot()
+        if snapshot is None:
+            raise
+        logger.warning(
+            "sessions_request completed path=/api/sessions elapsed_ms=%.2f degraded=true generated_at=%s source_version=%s session_count=%d",
+            (perf_counter() - started) * 1000,
+            snapshot.generated_at.isoformat(),
+            snapshot.source_version,
+            len(snapshot.sessions),
+        )
+        return SessionListResponse(sessions=snapshot.sessions)
     except SessionManagerError as exc:
+        snapshot = await snapshot_service.get_snapshot()
+        if snapshot is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        logger.warning(
+            "sessions_request completed path=/api/sessions elapsed_ms=%.2f degraded=true generated_at=%s source_version=%s session_count=%d",
+            (perf_counter() - started) * 1000,
+            snapshot.generated_at.isoformat(),
+            snapshot.source_version,
+            len(snapshot.sessions),
+        )
+        return SessionListResponse(sessions=snapshot.sessions)
+    except Exception as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 

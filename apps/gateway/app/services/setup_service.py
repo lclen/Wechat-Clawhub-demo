@@ -619,19 +619,9 @@ class SetupService:
         candidates: list[Path] = []
         if normalized_install_dir:
             root = Path(normalized_install_dir)
-            candidates.extend(
-                [
-                    root / "config" / "node.env",
-                    root / "bundle" / "claw-node" / ".env",
-                    root / "bundle" / "claw-node" / "services" / "claw-node" / ".env",
-                ]
-            )
+            candidates.append(root / "config" / "node.env")
         default_root = Path("C:/wechat-claw-node")
-        for path in (
-            default_root / "config" / "node.env",
-            default_root / "bundle" / "claw-node" / ".env",
-            default_root / "bundle" / "claw-node" / "services" / "claw-node" / ".env",
-        ):
+        for path in (default_root / "config" / "node.env",):
             if path not in candidates:
                 candidates.append(path)
         return candidates
@@ -1004,15 +994,17 @@ class SetupService:
             return "connected"
         if normalized == "pairing_pending":
             return "pairing_pending"
+        if normalized == "waiting_pair":
+            return "waiting_pair"
         if normalized == "auth_failed":
             return "auth_failed"
-        if normalized in {"register_failed", "needs_repair"}:
+        if normalized == "needs_repair":
+            return "needs_repair"
+        if normalized == "register_failed":
             return "register_failed"
         lowered_error = last_error.lower()
         if "401" in lowered_error or "unauthorized" in lowered_error:
             return "auth_failed"
-        if normalized == "waiting_pair":
-            return "paired_offline" if node_kind == "local" else current_state
         return current_state
 
     def _schedule_node_diagnostics_publish(self, node_id: str) -> None:

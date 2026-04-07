@@ -12,6 +12,41 @@ from claw_node.worker import Worker
 
 
 class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_worker_publishes_effective_inference_provider_to_diagnostics(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="local-node",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_MODEL_PROVIDER="openai",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+
+        worker = Worker(settings)
+        worker._publish_inference_status()
+
+        runtime_state = worker._diagnostics.export_runtime_state()
+        self.assertEqual(runtime_state["effective_model_provider"], "openai")
+        self.assertTrue(runtime_state["inference_ready"])
+        self.assertIn("OpenAI", str(runtime_state["inference_detail"]))
+
+    async def test_worker_reports_unavailable_inference_to_diagnostics(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="local-node",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_MODEL_PROVIDER="dify",
+            CLAW_DIFY_BASE_URL="",
+            CLAW_DIFY_API_KEY="",
+        )
+
+        worker = Worker(settings)
+        worker._publish_inference_status()
+
+        runtime_state = worker._diagnostics.export_runtime_state()
+        self.assertEqual(runtime_state["effective_model_provider"], "dify")
+        self.assertFalse(runtime_state["inference_ready"])
+        self.assertIn("required", str(runtime_state["inference_detail"]))
+
     async def test_local_direct_auth_can_start_gateway_loops_without_token(self) -> None:
         settings = NodeSettings(
             CLAW_NODE_ID="local-node",
@@ -187,6 +222,7 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 CLAW_NODE_ID="node-local-1",
                 CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
                 CLAW_NODE_TOKEN="stale-token",
+                CLAW_LOCAL_DIRECT_AUTH="false",
                 CLAW_PAIRING_KEY="123456",
                 CLAW_OPENAI_BASE_URL="https://example.com/v1",
                 CLAW_OPENAI_API_KEY="test-key",

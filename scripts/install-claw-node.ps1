@@ -5,12 +5,24 @@ param(
     [string]$LocalDirectAuth = "false",
     [string]$NodeKind = "remote",
     [string]$PairingKey = "",
+    [string]$ModelProvider = "",
     [string]$DifyBaseUrl = "",
     [string]$DifyApiKey = "",
     [string]$OpenAIBaseUrl = "",
     [string]$OpenAIApiKey = "",
     [string]$OpenAIModel = "",
     [string]$OpenAIEnableThinking = "false",
+    [string]$OpenAITemperature = "0.3",
+    [string]$OpenAITopP = "1.0",
+    [int]$OpenAIMaxTokens = 0,
+    [int]$OpenAISeed = 0,
+    [int]$OpenAIThinkingBudget = 0,
+    [string]$OpenAIStop = "",
+    [string]$OpenAIEnableSearch = "false",
+    [string]$OpenAISearchForced = "false",
+    [string]$OpenAISearchStrategy = "turbo",
+    [string]$OpenAIEnableSearchExtension = "false",
+    [string]$OpenAIMultimodalEnabled = "true",
     [Parameter(Mandatory = $true)][int]$MaxConcurrency,
     [Parameter(Mandatory = $true)][string]$InstallDir,
     [string]$BundlePath = "",
@@ -484,17 +496,25 @@ else {
 $DiscoveryEnabledBool = Convert-ToBoolean $DiscoveryEnabled $true
 $LocalCacheEnabledBool = Convert-ToBoolean $LocalCacheEnabled $false
 $OpenAIEnableThinkingBool = Convert-ToBoolean $OpenAIEnableThinking $false
+$OpenAIEnableSearchBool = Convert-ToBoolean $OpenAIEnableSearch $false
+$OpenAISearchForcedBool = Convert-ToBoolean $OpenAISearchForced $false
+$OpenAIEnableSearchExtensionBool = Convert-ToBoolean $OpenAIEnableSearchExtension $false
+$OpenAIMultimodalEnabledBool = Convert-ToBoolean $OpenAIMultimodalEnabled $true
+$OpenAIStopEscaped = $OpenAIStop.Replace("`r", "\r").Replace("`n", "\n")
 $LocalDirectAuthBool = Convert-ToBoolean $LocalDirectAuth $false
 if ($NodeKind.Trim().ToLowerInvariant() -eq "local") {
     $DiscoveryEnabledBool = $false
     Write-Step "Local node mode detected; disabling UDP discovery listener"
 }
-$ModelProvider = "auto"
-if (-not [string]::IsNullOrWhiteSpace($OpenAIBaseUrl) -and -not [string]::IsNullOrWhiteSpace($OpenAIApiKey) -and -not [string]::IsNullOrWhiteSpace($OpenAIModel)) {
-    $ModelProvider = "openai"
-}
-elseif (-not [string]::IsNullOrWhiteSpace($DifyBaseUrl) -and -not [string]::IsNullOrWhiteSpace($DifyApiKey)) {
-    $ModelProvider = "dify"
+$ResolvedModelProvider = $ModelProvider.Trim().ToLowerInvariant()
+if ([string]::IsNullOrWhiteSpace($ResolvedModelProvider)) {
+    $ResolvedModelProvider = "auto"
+    if (-not [string]::IsNullOrWhiteSpace($DifyBaseUrl) -and -not [string]::IsNullOrWhiteSpace($DifyApiKey)) {
+        $ResolvedModelProvider = "dify"
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($OpenAIBaseUrl) -and -not [string]::IsNullOrWhiteSpace($OpenAIApiKey) -and -not [string]::IsNullOrWhiteSpace($OpenAIModel)) {
+        $ResolvedModelProvider = "openai"
+    }
 }
 
 $ConfigDir = Join-Path $InstallDir "config"
@@ -520,13 +540,24 @@ $EnvContent = @(
     "CLAW_LOCAL_CACHE_ENABLED=$LocalCacheEnabledBool"
     "CLAW_LOCAL_CACHE_REDIS_URL=$LocalCacheRedisUrl"
     "CLAW_LOCAL_CACHE_TTL_SECONDS=$LocalCacheTtlSeconds"
-    "CLAW_MODEL_PROVIDER=$ModelProvider"
+    "CLAW_MODEL_PROVIDER=$ResolvedModelProvider"
     "CLAW_DIFY_BASE_URL=$DifyBaseUrl"
     "CLAW_DIFY_API_KEY=$DifyApiKey"
     "CLAW_OPENAI_BASE_URL=$OpenAIBaseUrl"
     "CLAW_OPENAI_API_KEY=$OpenAIApiKey"
     "CLAW_OPENAI_MODEL=$OpenAIModel"
     "CLAW_OPENAI_ENABLE_THINKING=$OpenAIEnableThinkingBool"
+    "CLAW_OPENAI_TEMPERATURE=$OpenAITemperature"
+    "CLAW_OPENAI_TOP_P=$OpenAITopP"
+    "CLAW_OPENAI_MAX_TOKENS=$OpenAIMaxTokens"
+    "CLAW_OPENAI_SEED=$OpenAISeed"
+    "CLAW_OPENAI_THINKING_BUDGET=$OpenAIThinkingBudget"
+    "CLAW_OPENAI_STOP=$OpenAIStopEscaped"
+    "CLAW_OPENAI_ENABLE_SEARCH=$OpenAIEnableSearchBool"
+    "CLAW_OPENAI_SEARCH_FORCED=$OpenAISearchForcedBool"
+    "CLAW_OPENAI_SEARCH_STRATEGY=$OpenAISearchStrategy"
+    "CLAW_OPENAI_ENABLE_SEARCH_EXTENSION=$OpenAIEnableSearchExtensionBool"
+    "CLAW_OPENAI_MULTIMODAL_ENABLED=$OpenAIMultimodalEnabledBool"
     "CLAW_MAX_CONCURRENCY=$MaxConcurrency"
     "CLAW_PULL_INTERVAL_MS=1500"
     "CLAW_HEARTBEAT_INTERVAL_SECONDS=5"
@@ -545,10 +576,11 @@ Write-Utf8NoBomFile -Path $EnvPath -Content ($EnvContent + [Environment]::NewLin
 
 Sync-NodeFirewallRules -NodeId $NodeId -DiscoveryEnabled $DiscoveryEnabledBool -DiscoveryPort $DiscoveryPort
 
-# Also write a minimal .env in the bundle working directory as fallback,
-# so the node process can find CLAW_ENV_FILE even if WinSW env injection fails.
 $BundleEnvPath = Join-Path $ProjectRoot ".env"
-Write-Utf8NoBomFile -Path $BundleEnvPath -Content ("CLAW_ENV_FILE=$EnvPath" + [Environment]::NewLine)
+if (Test-Path -LiteralPath $BundleEnvPath) {
+    Remove-Item -LiteralPath $BundleEnvPath -Force
+    Write-Step "Removed legacy bundle .env fallback: $BundleEnvPath"
+}
 
 if ([string]::IsNullOrWhiteSpace($NodeToken)) {
     Write-Step "Node token is empty; node will stay in waiting_pair until the gateway issues credentials"

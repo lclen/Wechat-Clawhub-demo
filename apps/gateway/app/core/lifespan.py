@@ -17,6 +17,7 @@ from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.node_stream import NodeStreamBroker
 from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.setup_service import SetupService
+from app.services.snapshot_services import GatewaySummarySnapshotService, SessionOverviewSnapshotService
 from app.services.session_manager import SessionManager
 from app.services.session_stream import SessionStreamBroker
 from app.services.node_registry import NodeRegistry
@@ -40,7 +41,16 @@ async def lifespan(app: FastAPI):
     node_stream = NodeStreamBroker()
     node_diagnostics_stream = NodeDiagnosticsStreamBroker()
     gateway_summary_stream = GatewaySummaryStreamBroker()
-    session_manager = SessionManager(redis_store, transcript_writer, user_data_store, settings, session_stream=session_stream)
+    gateway_summary_snapshot = GatewaySummarySnapshotService()
+    session_overview_snapshot = SessionOverviewSnapshotService()
+    session_manager = SessionManager(
+        redis_store,
+        transcript_writer,
+        user_data_store,
+        settings,
+        session_stream=session_stream,
+        overview_snapshot=session_overview_snapshot,
+    )
     scheduler = DispatchScheduler(node_registry, settings)
     wechat_bot = WeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
     outgoing_dispatcher = OutgoingDispatcher(wechat_bot=wechat_bot, transcript_writer=transcript_writer)
@@ -68,6 +78,7 @@ async def lifespan(app: FastAPI):
         wechat_bot=wechat_bot,
         setup_service=setup_service,
         stream=gateway_summary_stream,
+        snapshot_service=gateway_summary_snapshot,
     )
     summary_task = asyncio.create_task(_gateway_summary_loop(gateway_summary_service), name="gateway-summary-loop")
 
@@ -82,6 +93,8 @@ async def lifespan(app: FastAPI):
     app.state.node_stream = node_stream
     app.state.node_diagnostics_stream = node_diagnostics_stream
     app.state.gateway_summary_stream = gateway_summary_stream
+    app.state.gateway_summary_snapshot_service = gateway_summary_snapshot
+    app.state.session_overview_snapshot_service = session_overview_snapshot
     app.state.gateway_summary_service = gateway_summary_service
     app.state.dispatch_queue = dispatch_queue
     app.state.node_auth = node_auth

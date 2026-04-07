@@ -17,6 +17,7 @@ from claw_node.diagnostics import NodeDiagnostics
 from claw_node.discovery_service import DiscoveryService
 from claw_node.dify_client import DifyClient
 from claw_node.gateway_client import GatewayClient
+from claw_node.inference import create_inference_client
 from claw_node.local_cache import LocalCache
 from claw_node.openai_compatible_client import OpenAICompatibleClient
 
@@ -29,8 +30,7 @@ class Worker:
         self._pending_diagnostics_events: deque[dict[str, Any]] = deque(maxlen=100)
         self._diagnostics = NodeDiagnostics(settings, event_hook=self._enqueue_diagnostics_event)
         self._gateway = GatewayClient(settings)
-        self._inference_error: str | None = None
-        self._inference = self._build_inference_client(settings)
+        self._inference, self._inference_error = create_inference_client(settings)
         self._discovery = DiscoveryService(settings, self._handle_pair_request)
         self._local_cache = LocalCache(settings)
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
@@ -49,6 +49,7 @@ class Worker:
             "service_running" if self._settings.service_mode == "windows-service" else "installed",
             f"节点进程已启动，配置文件：{self._settings.resolved_env_file_path}",
         )
+        self._publish_inference_status()
         logger.info(
             "[worker] starting node_id=%s gateway=%s provider=%s model=%s thinking=%s concurrency=%s pull_interval_ms=%s pull_wait_s=%s task_stream=%s heartbeat_s=%s hostname=%s lan_ip=%s advertised=%s",
             self._settings.node_id,
@@ -754,6 +755,60 @@ class Worker:
             return one_line
         return f"{one_line[:max_len]}..."
 
+    def _publish_inference_status(self) -> None:
+        configured_provider = self._normalized_provider(self._settings.model_provider)
+        effective_provider = self._effective_inference_provider(configured_provider)
+        metadata = {
+            "configured_model_provider": configured_provider,
+            "effective_model_provider": effective_provider,
+            "openai_model": self._settings.openai_model.strip(),
+            "gateway_base_url": self._settings.gateway_base_url.strip(),
+            "config_path": str(self._settings.resolved_env_file_path),
+            "service_mode": self._settings.service_mode,
+        }
+        if self._inference is None:
+            self._diagnostics.record_inference(
+                effective_provider=effective_provider,
+                ready=False,
+                detail=self._inference_error or "推理后端尚未就绪。",
+                trace_id=self._settings.pairing_trace_id.strip(),
+                metadata=metadata,
+            )
+            return
+        provider_label = "Dify" if effective_provider == "dify" else "OpenAI 兼容"
+        model_label = self._settings.openai_model.strip() if effective_provider == "openai" else ""
+        detail = f"已加载 {provider_label} 推理后端"
+        if model_label:
+            detail = f"{detail}（{model_label}）"
+        self._diagnostics.record_inference(
+            effective_provider=effective_provider,
+            ready=True,
+            detail=detail,
+            trace_id=self._settings.pairing_trace_id.strip(),
+            metadata=metadata,
+        )
+
+    def _effective_inference_provider(self, configured_provider: str) -> str:
+        if isinstance(self._inference, DifyClient):
+            return "dify"
+        if isinstance(self._inference, OpenAICompatibleClient):
+            return "openai"
+        if configured_provider in {"openai", "dify"}:
+            return configured_provider
+        if self._settings.openai_base_url.strip() and self._settings.openai_api_key.strip() and self._settings.openai_model.strip():
+            return "openai"
+        if self._settings.dify_base_url.strip() and self._settings.dify_api_key.strip():
+            return "dify"
+        return configured_provider or "auto"
+
+    def _normalized_provider(self, provider: str | None) -> str:
+        normalized = (provider or "").strip().lower()
+        if normalized in {"openai", "openai_compatible"}:
+            return "openai"
+        if normalized == "dify":
+            return "dify"
+        return normalized or "auto"
+
     def _extract_reasoning_tokens(self, usage: dict[str, Any] | None) -> str:
         if not usage:
             return "-"
@@ -772,32 +827,6 @@ class Worker:
         except Exception:
             return "-"
 
-    def _build_inference_client(self, settings: NodeSettings) -> DifyClient | OpenAICompatibleClient | None:
-        try:
-            provider = settings.model_provider.strip().lower()
-            if provider in {"openai", "openai_compatible"}:
-                self._ensure_openai_config(settings)
-                self._inference_error = None
-                return OpenAICompatibleClient(settings)
-            if provider == "dify":
-                self._ensure_dify_config(settings)
-                self._inference_error = None
-                return DifyClient(settings)
-
-            if settings.openai_base_url and settings.openai_api_key and settings.openai_model:
-                self._inference_error = None
-                return OpenAICompatibleClient(settings)
-            if settings.dify_base_url and settings.dify_api_key:
-                self._inference_error = None
-                return DifyClient(settings)
-            raise RuntimeError(
-                "No inference backend is configured. Set OpenAI-compatible or Dify environment variables."
-            )
-        except Exception as exc:
-            self._inference_error = str(exc)
-            logger.warning("[worker] inference backend unavailable: %s", exc)
-            return None
-
     def _mask_token(self, token: str | None) -> str:
         normalized = (token or "").strip()
         if not normalized:
@@ -805,18 +834,3 @@ class Worker:
         if len(normalized) <= 12:
             return f"{normalized[:4]}...({len(normalized)})"
         return f"{normalized[:8]}...{normalized[-4:]}({len(normalized)})"
-
-    def _ensure_openai_config(self, settings: NodeSettings) -> None:
-        if settings.openai_base_url and settings.openai_api_key and settings.openai_model:
-            return
-        raise RuntimeError(
-            "CLAW_OPENAI_BASE_URL, CLAW_OPENAI_API_KEY, and CLAW_OPENAI_MODEL are required "
-            "when CLAW_MODEL_PROVIDER=openai."
-        )
-
-    def _ensure_dify_config(self, settings: NodeSettings) -> None:
-        if settings.dify_base_url and settings.dify_api_key:
-            return
-        raise RuntimeError(
-            "CLAW_DIFY_BASE_URL and CLAW_DIFY_API_KEY are required when CLAW_MODEL_PROVIDER=dify."
-        )

@@ -483,7 +483,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reset_worker_node_credentials_clears_local_env_token(self) -> None:
         install_dir = Path(self.tempdir.name) / "worker"
-        env_path = install_dir / "bundle" / "claw-node" / ".env"
+        env_path = install_dir / "config" / "node.env"
         env_path.parent.mkdir(parents=True, exist_ok=True)
         env_path.write_text(
             "\n".join(

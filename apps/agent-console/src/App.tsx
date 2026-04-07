@@ -11,6 +11,11 @@ import {
   validateWorkerGatewayUrl,
   resolveTokenDisplayState,
 } from "./roleWorkspace";
+import { DiagnosticsConsole } from "./components/Workspaces/Connection/DiagnosticsConsole";
+import { NodeInventoryPanel } from "./components/Workspaces/Connection/NodeInventoryPanel";
+import { NodeModelConfigPanel } from "./components/Workspaces/Connection/NodeModelConfigPanel";
+import { OverviewPanel } from "./components/Workspaces/Connection/OverviewPanel";
+import { WeChatConfigCard } from "./components/Workspaces/Connection/WeChatConfigCard";
 
 type ModelStatus = { configured: boolean; base_url: string; model: string };
 type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; gateway_bind_host: string; preferred_lan_ip: string | null; preferred_gateway_base_url: string; timestamp: string };
@@ -80,9 +85,10 @@ type LauncherEnvironmentStatus = { ready: boolean; python_version: string; check
 type LauncherStatusResponse = { profile: LauncherProfile; runtime_model: LauncherRuntimeModel; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[]; local_lan_ip: string };
 type LauncherStartRequest = { machine_role?: LauncherMachineRole; enable_local_node?: boolean; enable_gateway?: boolean; enable_node_cache_redis: boolean; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; local_node_id?: string };
 type LauncherLogResponse = { component: string; log_path: string | null; content: string };
-type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_model: string; openai_enable_thinking: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key_configured: boolean };
-type LocalNodeModelConfigRequest = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; dify_base_url: string; dify_api_key: string; restart_service: boolean };
-type LocalNodeStatusResponse = { service_name: string; state: string; pid: number | null; node_kind: NodeKind; config_path: string; diagnostics_path: string; install_dir: string; detail: string; service_state: string; runtime_state: string; last_register_result: string; last_register_error: string; last_register_at: string | null; diagnostics: Record<string, unknown>; model_settings: LocalNodeModelConfig };
+type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; openai_temperature: number; openai_top_p: number; openai_max_tokens: number; openai_seed: number; openai_thinking_budget: number; openai_stop: string; openai_enable_search: boolean; openai_search_forced: boolean; openai_search_strategy: string; openai_enable_search_extension: boolean; openai_multimodal_enabled: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key: string; dify_api_key_configured: boolean };
+type LocalNodeModelConfigRequest = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; openai_temperature: number; openai_top_p: number; openai_max_tokens: number; openai_seed: number; openai_thinking_budget: number; openai_stop: string; openai_enable_search: boolean; openai_search_forced: boolean; openai_search_strategy: string; openai_enable_search_extension: boolean; openai_multimodal_enabled: boolean; dify_base_url: string; dify_api_key: string; restart_service: boolean };
+type LocalNodeConfigApplyState = "idle" | "saving" | "restarting" | "applied" | "failed";
+type LocalNodeStatusResponse = { service_name: string; state: string; pid: number | null; node_kind: NodeKind; config_path: string; diagnostics_path: string; install_dir: string; detail: string; service_state: string; runtime_state: string; last_register_result: string; last_register_error: string; last_register_at: string | null; config_apply_state: LocalNodeConfigApplyState; last_apply_error: string; last_apply_at: string | null; configured_model_provider: string; active_model_provider: string; inference_ready: boolean; inference_detail: string; diagnostics: Record<string, unknown>; model_settings: LocalNodeModelConfig };
 type LocalNodeLogsResponse = { service_name: string; event_log_path: string | null; service_log_path: string | null; wrapper_log_path: string | null; event_log: string; service_log: string; wrapper_log: string };
 type LocalNodeActionResponse = { ok: boolean; detail: string; status: LocalNodeStatusResponse };
 type LocalNodeExportResponse = { ok: boolean; export_path: string; detail: string };
@@ -181,10 +187,45 @@ const DEFAULT_LOCAL_NODE_MODEL_CONFIG: LocalNodeModelConfigRequest = {
   openai_api_key: "",
   openai_model: "",
   openai_enable_thinking: false,
+  openai_temperature: 0.3,
+  openai_top_p: 1,
+  openai_max_tokens: 0,
+  openai_seed: 0,
+  openai_thinking_budget: 0,
+  openai_stop: "",
+  openai_enable_search: false,
+  openai_search_forced: false,
+  openai_search_strategy: "turbo",
+  openai_enable_search_extension: false,
+  openai_multimodal_enabled: true,
   dify_base_url: "",
   dify_api_key: "",
   restart_service: true,
 };
+
+function buildLocalNodeModelDraftFromStatus(status: LocalNodeStatusResponse | null): LocalNodeModelConfigRequest {
+  return {
+    model_provider: status?.model_settings?.model_provider || "auto",
+    openai_base_url: status?.model_settings?.openai_base_url || "",
+    openai_api_key: status?.model_settings?.openai_api_key || "",
+    openai_model: status?.model_settings?.openai_model || "",
+    openai_enable_thinking: Boolean(status?.model_settings?.openai_enable_thinking),
+    openai_temperature: Number(status?.model_settings?.openai_temperature ?? 0.3),
+    openai_top_p: Number(status?.model_settings?.openai_top_p ?? 1),
+    openai_max_tokens: Number(status?.model_settings?.openai_max_tokens ?? 0),
+    openai_seed: Number(status?.model_settings?.openai_seed ?? 0),
+    openai_thinking_budget: Number(status?.model_settings?.openai_thinking_budget ?? 0),
+    openai_stop: status?.model_settings?.openai_stop || "",
+    openai_enable_search: Boolean(status?.model_settings?.openai_enable_search),
+    openai_search_forced: Boolean(status?.model_settings?.openai_search_forced),
+    openai_search_strategy: status?.model_settings?.openai_search_strategy || "turbo",
+    openai_enable_search_extension: Boolean(status?.model_settings?.openai_enable_search_extension),
+    openai_multimodal_enabled: status?.model_settings?.openai_multimodal_enabled !== false,
+    dify_base_url: status?.model_settings?.dify_base_url || "",
+    dify_api_key: status?.model_settings?.dify_api_key || "",
+    restart_service: true,
+  };
+}
 
 const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope OpenAI Compatible（默认 qwen3.5-plus）";
 const GATEWAY_NODE_TOKEN_LOCATION = "apps/gateway/.env → WCH_NODE_TOKENS";
@@ -920,16 +961,7 @@ export function App() {
         if (cancelled) return;
         setLocalNodeStatus(status);
         if (!localNodeModelDirty) {
-          setLocalNodeModelDraft({
-            model_provider: status.model_settings?.model_provider || "auto",
-            openai_base_url: status.model_settings?.openai_base_url || "",
-            openai_api_key: "",
-            openai_model: status.model_settings?.openai_model || "",
-            openai_enable_thinking: Boolean(status.model_settings?.openai_enable_thinking),
-            dify_base_url: status.model_settings?.dify_base_url || "",
-            dify_api_key: "",
-            restart_service: true,
-          });
+          setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(status));
         }
       } catch {
         // keep local diagnostics polling best-effort
@@ -2258,16 +2290,7 @@ export function App() {
       const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
       setLocalNodeStatus(status);
       if (!localNodeModelDirty) {
-        setLocalNodeModelDraft({
-          model_provider: status.model_settings?.model_provider || "auto",
-          openai_base_url: status.model_settings?.openai_base_url || "",
-          openai_api_key: "",
-          openai_model: status.model_settings?.openai_model || "",
-          openai_enable_thinking: Boolean(status.model_settings?.openai_enable_thinking),
-          dify_base_url: status.model_settings?.dify_base_url || "",
-          dify_api_key: "",
-          restart_service: true,
-        });
+        setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(status));
       }
     } catch {
       // local diagnostics are best-effort
@@ -2290,6 +2313,30 @@ export function App() {
     setLocalNodeModelDraft((current) => ({ ...current, [key]: value }));
   }
   async function saveLocalNodeModelConfig() {
+    if (localNodeModelDraft.model_provider === "openai") {
+      if (!localNodeModelDraft.openai_base_url.trim()) {
+        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Base URL。");
+        return;
+      }
+      if (!localNodeModelDraft.openai_api_key.trim()) {
+        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI API Key。");
+        return;
+      }
+      if (!localNodeModelDraft.openai_model.trim()) {
+        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Model。");
+        return;
+      }
+    }
+    if (localNodeModelDraft.model_provider === "dify") {
+      if (!localNodeModelDraft.dify_base_url.trim()) {
+        setNotice("当前 Provider 已切换为 Dify，请先填写 Dify Base URL。");
+        return;
+      }
+      if (!localNodeModelDraft.dify_api_key.trim()) {
+        setNotice("当前 Provider 已切换为 Dify，请先填写 Dify API Key。");
+        return;
+      }
+    }
     try {
       const result = await withBusy(
         "local-node-model-save",
@@ -2300,18 +2347,8 @@ export function App() {
       );
       setLocalNodeStatus(result.status);
       setLocalNodeModelDirty(false);
-      setLocalNodeModelDraft({
-        model_provider: result.status.model_settings?.model_provider || "auto",
-        openai_base_url: result.status.model_settings?.openai_base_url || "",
-        openai_api_key: "",
-        openai_model: result.status.model_settings?.openai_model || "",
-        openai_enable_thinking: Boolean(result.status.model_settings?.openai_enable_thinking),
-        dify_base_url: result.status.model_settings?.dify_base_url || "",
-        dify_api_key: "",
-        restart_service: true,
-      });
-      await refreshLauncherStatus();
-      await refreshLocalNodeStatus();
+      setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(result.status));
+      void refreshLauncherStatus();
       setNotice(result.detail || "本机节点模型配置已保存。");
     } catch (error) {
       setNotice(`保存本机节点模型配置失败：${(error as Error).message}`);
@@ -3076,6 +3113,214 @@ export function App() {
       "当分发模式开启但在线节点为 0 时，网关只能接入消息，无法完成实际回复。",
     ];
   }, [currentRoleIsWorker]);
+  const connectionPrepItems = useMemo<Array<{ label: string; detail: string; tone: "good" | "warn" }>>(
+    () => [
+      {
+        label: "模型可用",
+        detail: modelStatus?.configured ? modelStatus.model : "尚未检测",
+        tone: modelStatus?.configured ? "good" : "warn",
+      },
+      {
+        label: "微信已连接",
+        detail: wechatRuntimeSummary.value,
+        tone: wechatRuntimeSummary.tone,
+      },
+      {
+        label: "节点在线",
+        detail: `${systemStatus?.active_nodes ?? 0} 个节点`,
+        tone: (systemStatus?.active_nodes ?? 0) > 0 ? "good" : "warn",
+      },
+    ],
+    [modelStatus?.configured, modelStatus?.model, systemStatus?.active_nodes, wechatRuntimeSummary.tone, wechatRuntimeSummary.value],
+  );
+  const connectionSignalCards = useMemo<Array<{ label: string; value: string; meta: string; tone: "good" | "warn" }>>(
+    () => [
+      {
+        label: "模型",
+        value: modelStatus?.configured ? "已就绪" : "待检测",
+        meta: modelStatus?.model || "未配置模型",
+        tone: modelStatus?.configured ? "good" : "warn",
+      },
+      {
+        label: "微信",
+        value: wechatRuntimeSummary.value,
+        meta: wechatStatus?.has_token ? "Token 已存在" : "尚未写入 Token",
+        tone: wechatRuntimeSummary.tone,
+      },
+      {
+        label: "Redis",
+        value: systemStatus?.redis_ok ? "正常" : "未就绪",
+        meta: systemStatus?.redis_ok ? "主状态存储可用" : "请先恢复主存储",
+        tone: systemStatus?.redis_ok ? "good" : "warn",
+      },
+      {
+        label: "调度",
+        value: systemStatus?.dispatch_mode_enabled ? "分发模式" : "本机处理",
+        meta: `${systemStatus?.active_nodes ?? 0} 个在线节点`,
+        tone: (systemStatus?.active_nodes ?? 0) > 0 || !systemStatus?.dispatch_mode_enabled ? "good" : "warn",
+      },
+    ],
+    [
+      modelStatus?.configured,
+      modelStatus?.model,
+      systemStatus?.active_nodes,
+      systemStatus?.dispatch_mode_enabled,
+      systemStatus?.redis_ok,
+      wechatRuntimeSummary.tone,
+      wechatRuntimeSummary.value,
+      wechatStatus?.has_token,
+    ],
+  );
+  const nodeInventoryCards = useMemo<Array<{
+    nodeId: string;
+    title: string;
+    subtitle: string;
+    kind: NodeKind;
+    badge: string;
+    badgeTone: "human" | "typing" | "queued";
+    address: string;
+    detail: string;
+    platform: string;
+    version: string;
+    concurrency: string;
+    channels: string;
+    authFailed: boolean;
+    selected: boolean;
+    actions: Array<{ label: string; onClick: () => void; disabled?: boolean }>;
+  }>>(
+    () =>
+      nodeInventory.map((node) => {
+        const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
+        return {
+          nodeId: node.node_id,
+          title: node.hostname || node.node_id,
+          subtitle: node.node_id,
+          kind: node.node_kind,
+          badge: presentation.badge,
+          badgeTone: presentation.tone as "human" | "typing" | "queued",
+          address: getInventoryNodeAddress(node),
+          detail: presentation.detail,
+          platform: node.platform || "未知",
+          version: node.node_version || "-",
+          concurrency: String(node.max_concurrency ?? "-"),
+          channels: `${node.channel_in_use ?? 0} / ${node.channel_capacity ?? 0}`,
+          authFailed: node.connection_state === "auth_failed",
+          selected: selectedNodeId === node.node_id,
+          actions: [
+            {
+              label: selectedNodeId === node.node_id ? "收起诊断" : "查看诊断",
+              onClick: () => setSelectedNodeId(selectedNodeId === node.node_id ? null : node.node_id),
+            },
+            ...(node.node_kind === "remote" && node.paired
+              ? [
+                  {
+                    label: busy === `delete-node-${node.node_id}` ? "处理中..." : "删除节点",
+                    onClick: () => void deletePairedNode(node),
+                    disabled: busy !== null,
+                  },
+                ]
+              : []),
+            ...(node.node_kind === "remote" && node.online
+              ? [
+                  {
+                    label: busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接",
+                    onClick: () => void disconnectPairedNode(node),
+                    disabled: busy !== null,
+                  },
+                ]
+              : []),
+          ],
+        };
+      }),
+    [busy, deletePairedNode, disconnectPairedNode, launcherStatus, localNodeStatus, nodeInventory, selectedNodeId],
+  );
+  const selectedNodeDiagnosticsView = useMemo(() => {
+    if (!selectedNodeId || !selectedNodeDiagnostics) return null;
+    const rows: Array<{ label: string; value: string; multiline?: boolean }> = [
+      { label: "连接状态", value: selectedNodeDiagnostics.connection_state || "未记录" },
+      {
+        label: "最近配对",
+        value: selectedNodeDiagnostics.last_pairing_status
+          ? `${selectedNodeDiagnostics.last_pairing_status}${selectedNodeDiagnostics.last_pairing_at ? ` · ${formatTimeLabel(selectedNodeDiagnostics.last_pairing_at, true)}` : ""}`
+          : "暂无",
+      },
+      {
+        label: "最近注册",
+        value: selectedNodeDiagnostics.last_register_result
+          ? `${selectedNodeDiagnostics.last_register_result}${selectedNodeDiagnostics.last_register_at ? ` · ${formatTimeLabel(selectedNodeDiagnostics.last_register_at, true)}` : ""}`
+          : "暂无",
+      },
+      {
+        label: "最近心跳",
+        value: selectedNodeDiagnostics.last_heartbeat_at ? formatTimeLabel(selectedNodeDiagnostics.last_heartbeat_at, true) : "暂无",
+      },
+    ];
+    if (selectedNodeDiagnostics.last_auth_decision) {
+      rows.push({ label: "最近鉴权", value: selectedNodeDiagnostics.last_auth_decision });
+      if (selectedNodeDiagnostics.last_auth_failure_at) {
+        rows.push({ label: "鉴权失败时间", value: formatTimeLabel(selectedNodeDiagnostics.last_auth_failure_at, true) });
+      }
+      if (selectedNodeDiagnostics.expected_token_masked) {
+        rows.push({ label: "期望 Token", value: selectedNodeDiagnostics.expected_token_masked });
+      }
+      if (selectedNodeDiagnostics.provided_token_masked) {
+        rows.push({ label: "实际 Token", value: selectedNodeDiagnostics.provided_token_masked });
+      }
+      if (selectedNodeDiagnostics.expected_token_masked && selectedNodeDiagnostics.provided_token_masked) {
+        rows.push({
+          label: "Token 对比",
+          value: `期望：${selectedNodeDiagnostics.expected_token_masked} / 实际提供：${selectedNodeDiagnostics.provided_token_masked}`,
+          multiline: true,
+        });
+      }
+      if (selectedNodeDiagnostics.last_auth_client_host) {
+        rows.push({ label: "来源地址", value: selectedNodeDiagnostics.last_auth_client_host });
+      }
+    }
+    if (selectedNodeDiagnostics.last_error) {
+      rows.push({ label: "最近错误", value: selectedNodeDiagnostics.last_error, multiline: true });
+    }
+    return {
+      nodeId: selectedNodeId,
+      kind: selectedNodeDiagnostics.node_kind || null,
+      traceId: selectedNodeDiagnostics.last_pairing_trace_id || null,
+      rows,
+      timelineText: selectedNodeDiagnostics.timeline?.length ? selectedNodeTimelineText : null,
+      onClose: () => setSelectedNodeId(null),
+    };
+  }, [selectedNodeDiagnostics, selectedNodeId, selectedNodeTimelineText]);
+  const wechatStatusRows = useMemo(
+    () => [
+      { label: "接入状态", value: wechatRuntimeSummary.value, multiline: true },
+      { label: "Token 状态", value: wechatStatus?.has_token ? "已写入当前网关" : "尚未写入" },
+      { label: "运行状态", value: wechatStatus?.running ? "轮询中" : "未轮询" },
+      ...(wechatStatus?.last_error ? [{ label: "最近错误", value: wechatStatus.last_error, multiline: true }] : []),
+    ],
+    [wechatRuntimeSummary.value, wechatStatus?.has_token, wechatStatus?.last_error, wechatStatus?.running],
+  );
+  const pairingDebugViewEntries = useMemo<Array<{
+    id: string;
+    title: string;
+    target: string;
+    updatedAtLabel: string;
+    statusLabel: string;
+    statusTone: "human" | "typing" | "queued";
+    summary: string;
+    logText: string;
+  }>>(
+    () =>
+      pairingDebugEntries.map((entry) => ({
+        id: entry.id,
+        title: entry.title,
+        target: entry.target,
+        updatedAtLabel: formatTimeLabel(entry.updated_at, true),
+        statusLabel: pairingDebugStatusLabel(entry.status),
+        statusTone: (entry.status === "succeeded" ? "human" : entry.status === "running" || entry.status === "pending" ? "typing" : "queued") as "human" | "typing" | "queued",
+        summary: entry.summary || "等待更多日志...",
+        logText: entry.logs.length ? entry.logs.join("\n") : "暂无详细日志",
+      })),
+    [pairingDebugEntries],
+  );
 
   return (
     <div className="console-app">
@@ -3085,7 +3330,11 @@ export function App() {
           <div className="topbar-main">
             <div className="topbar-kicker">wechat-claw-hub</div>
             <div className="topbar-title">微信 Agent 运维工作台</div>
-            <div className="topbar-copy">把快速配置、接入联调和会话观察拆成三个一级工作区，首次启动先走向导，后续也能随时重配。</div>
+            <div className="topbar-copy">
+              {workspace === "connection"
+                ? "接入中心优先展示当前运行态、接入结果和关键配置。"
+                : "把快速配置、接入联调和会话观察拆成三个一级工作区，首次启动先走向导，后续也能随时重配。"}
+            </div>
           </div>
           <div className="topbar-status-row">
             {currentRoleIsWorker ? (
@@ -3093,7 +3342,7 @@ export function App() {
                 <StatusChip label="目标网关" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已连接" : workerSetup.gateway_base_url ? "可达" : "未填写"} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
                 <StatusChip label="节点" value={workerSetup.node_id || "未配置"} tone={workerSetup.node_id ? "good" : "warn"} />
                 <StatusChip label="注册状态" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已注册" : workerGatewayConnection.state === "idle" ? "未检测" : workerGatewayConnection.label} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
-                <StatusChip label="模型" value={localNodeStatus?.model_settings?.model_provider && (localNodeStatus.model_settings.openai_api_key_configured || localNodeStatus.model_settings.dify_api_key_configured) ? localNodeStatus.model_settings.model_provider : "未配置"} tone={localNodeStatus?.model_settings?.openai_api_key_configured || localNodeStatus?.model_settings?.dify_api_key_configured ? "good" : "warn"} />
+                <StatusChip label="模型" value={localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider || "未配置"} tone={localNodeStatus?.inference_ready ? "good" : "warn"} />
               </>
             ) : (
               <>
@@ -3484,21 +3733,189 @@ export function App() {
         ) : workspace === "connection" ? (
           <section className="workspace-frame connection-workspace">
             <div className="workspace-heading">
-              <div><div className="section-kicker">{currentRoleIsWorker ? "节点工作台" : "接入中心"}</div><h2>{currentRoleIsWorker ? "聚焦本机节点安装、回连与发现响应" : "连接前先确认模型、微信和节点都已就绪"}</h2></div>
-              <div className="workspace-caption">{currentRoleIsWorker ? "当前角色不会展示网关纳管、微信接入和分发模式操作。" : "保留原有 API，不改协议，只重组桌面工作流。"}</div>
+              <div><div className="section-kicker">{currentRoleIsWorker ? "节点工作台" : "接入中心"}</div><h2>{currentRoleIsWorker ? "聚焦本机节点安装、回连与发现响应" : "先确认网关、微信、节点和模型都处于可用状态"}</h2></div>
+              <div className="workspace-caption">{currentRoleIsWorker ? "当前角色不会展示网关纳管、微信接入和分发模式操作。" : "摘要优先，细节折叠，常规联调不再需要一路向下翻整页表单。"}</div>
             </div>
-            <section className="surface connection-overview">
-              <div className="connection-overview-main">
-                <div>
-                  <div className="section-kicker">{currentRoleIsWorker ? "操作重点" : "联调总览"}</div>
-                  <h3>{currentRoleIsWorker ? "先让这台机器稳定回连，再看诊断细节" : "把接入中心变成一张可执行的运行面板"}</h3>
+            {!currentRoleIsWorker ? (
+              <div className="connection-layout-stack">
+                <OverviewPanel
+                  heroCards={connectionHeroCards}
+                  prepItems={connectionPrepItems}
+                  signalCards={connectionSignalCards}
+                  consoleTarget={setupProfile?.console.gateway_base_url || currentGatewayBaseUrl}
+                  modelCheckText={modelCheck ? (modelCheck.configured_model_available ? "可用" : "未命中模型列表") : null}
+                  lastError={wechatStatus?.last_error || null}
+                  dispatchWarning={gatewaySetup.dispatch_mode_enabled && availableDispatchNodes === 0 ? "已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。" : null}
+                  onRunModelCheck={runModelCheck}
+                  onToggleDispatch={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)}
+                  runModelCheckLabel={busy === "model-check" ? "检测中..." : "检测模型"}
+                  toggleDispatchLabel={busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}
+                  busy={busy !== null}
+                />
+
+                <div className="connection-section-grid">
+                  <NodeInventoryPanel headline={nodeInventoryHeadline} cards={nodeInventoryCards} selectedDiagnostics={selectedNodeDiagnosticsView} />
+                  <WeChatConfigCard
+                    statusRows={wechatStatusRows}
+                    qrImageSrc={qrImageSrc}
+                    pollStatus={pollState?.status ?? "未开始"}
+                    wechatBaseUrl={wechatBaseUrl}
+                    manualToken={manualToken}
+                    busyKey={busy}
+                    onWechatBaseUrlChange={setWechatBaseUrl}
+                    onManualTokenChange={setManualToken}
+                    onStartQrFlow={startQrFlow}
+                    onPollQrStatus={pollQrStatus}
+                    onConnectManualToken={connectManualToken}
+                    onDisconnectWeChat={disconnectWeChat}
+                  />
                 </div>
-                <div className="connection-overview-copy">
-                  {connectionActionTips.map((tip) => (
-                    <div key={tip} className="connection-overview-tip">{tip}</div>
-                  ))}
+
+                <div className="connection-section-grid">
+                  <div className="connection-panel-stack">
+                    <section className="surface">
+                      <div className="section-head">
+                        <div><div className="section-kicker">节点与模型参数</div><h3>添加或修复远端工作节点</h3></div>
+                        <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>
+                          填入当前网关地址
+                        </button>
+                      </div>
+                      <div className="inline-tip">
+                        基础安装信息直接展示，按地址直连和局域网扫描收纳到折叠区，降低首次配置时的认知负担。
+                      </div>
+                      <div className="connection-form-grid">
+                        <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
+                        <label><span>目标网关地址</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
+                        <label>
+                          <span>配对密钥</span>
+                          <div className="field-with-action">
+                            <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="节点与网关保持一致" autoComplete="new-password" />
+                            <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>
+                              {workerPairingKeyVisible ? "隐藏" : "显示"}
+                            </button>
+                          </div>
+                        </label>
+                        <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
+                      </div>
+                      <details className="form-advanced-details connection-fold-card">
+                        <summary>
+                          <span className="section-kicker">高级选项</span>
+                          <span className="connection-fold-hint">发现响应、并发与 bundle 路径</span>
+                        </summary>
+                        <div className="connection-form-grid">
+                          <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
+                          <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
+                          <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
+                          <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
+                          <label className="checkbox-row"><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /><span>启用局域网发现</span></label>
+                          <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
+                        </div>
+                      </details>
+                      <div className="inline-actions" style={{ marginTop: 14 }}>
+                        <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>
+                          {busy === "setup-worker" ? "安装中..." : "安装当前机器节点"}
+                        </button>
+                      </div>
+                    </section>
+
+                    <section className="surface" style={{ padding: "12px 20px" }}>
+                      <details className="form-advanced-details connection-fold-card">
+                        <summary>
+                          <span className="section-kicker">高级功能</span>
+                          <span className="connection-fold-hint">按地址直接纳管远端节点</span>
+                        </summary>
+                        <div className="inline-tip">
+                          如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
+                        </div>
+                        <div className="connection-form-grid">
+                          <label><span>目标 IP / 主机名</span><input value={manualPair.host} onChange={(event) => updateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
+                          <label><span>配对端口</span><input type="number" value={manualPair.pairing_port} onChange={(event) => updateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
+                          <label><span>配对密钥</span><ToggleSecretInput value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
+                          <label><span>指定节点 ID（可选）</span><input value={manualPair.node_id} onChange={(event) => updateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
+                        </div>
+                        <div className="inline-actions">
+                          <button type="button" onClick={() => void manualPairNode()} disabled={busy !== null}>
+                            {busy === "setup-manual-pair" ? "连接中..." : "按地址配对"}
+                          </button>
+                        </div>
+                      </details>
+                    </section>
+
+                    <section className="surface" style={{ padding: "12px 20px" }}>
+                      <details className="form-advanced-details connection-fold-card">
+                        <summary>
+                          <span className="section-kicker">局域网发现</span>
+                          <span className="connection-fold-hint">扫描并批量纳管附近节点</span>
+                        </summary>
+                        <div className="section-head compact-head">
+                          <button type="button" onClick={scanLanNodes} disabled={busy !== null}>
+                            {busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}
+                          </button>
+                        </div>
+                        <div className="inline-tip">
+                          当前网关回连地址：{currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
+                        </div>
+                        {!discoveredNodes.length ? (
+                          <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div>
+                        ) : (
+                          <div className="discovery-list">
+                            {discoveredNodes.map((item) => (
+                              <div key={item.discovery_id} className="discovery-card">
+                                <div className="discovery-card-top">
+                                  <div>
+                                    <div className="node-card-title">{item.pairing_label || item.hostname}</div>
+                                    <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
+                                  </div>
+                                  <span className={`session-badge session-badge-${pairingStatusTone(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}`}>
+                                    {pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}
+                                  </span>
+                                </div>
+                                <div className="node-card-grid">
+                                  <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
+                                  <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
+                                  <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
+                                  <div><div className="node-card-label">正式节点 ID</div><div className="node-card-value">{item.node_id || "配对时自动生成"}</div></div>
+                                </div>
+                                <div className="discovery-actions">
+                                  <input value={pairingSecrets[item.discovery_id] || ""} onChange={(event) => setPairingSecrets((current) => ({ ...current, [item.discovery_id]: event.target.value }))} placeholder="输入该机器的配对密钥" />
+                                  <button type="button" onClick={() => pairLanNode(item)} disabled={busy !== null}>
+                                    {busy === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </details>
+                    </section>
+                  </div>
+
+                  <NodeModelConfigPanel
+                    launcherAvailable={launcherAvailable}
+                    busyKey={busy}
+                    status={localNodeStatus}
+                    runtimeSummary={localNodeRuntimeSummary}
+                    eventPreview={localNodeEventPreview}
+                    draft={localNodeModelDraft}
+                    onChange={updateLocalNodeModelDraft}
+                    onRefresh={() => void refreshLocalNodeDiagnostics()}
+                    onRestart={() => void restartLocalNodeService()}
+                    onSave={() => void saveLocalNodeModelConfig()}
+                    onExport={() => void exportLocalNodeDiagnostics()}
+                  />
                 </div>
+
+                <DiagnosticsConsole
+                  title="配对过程与问题定位"
+                  subtitle="把扫描、配对、失败原因和返回日志集中收进一个底部面板，减少常规配置时的视觉干扰。"
+                  emptyText="这里会显示扫描、直连配对、失败原因和返回日志，方便快速定位问题。"
+                  entries={pairingDebugViewEntries}
+                  onClear={() => setPairingDebugEntries([])}
+                />
               </div>
+            ) : (
+              <>
+            <section className="surface connection-overview" style={{ padding: "16px", background: "transparent", boxShadow: "none" }}>
               <div className="connection-hero-grid">
                 {connectionHeroCards.map((card) => (
                   <ConnectionHeroCard key={`${card.eyebrow}-${card.title}`} eyebrow={card.eyebrow} title={card.title} detail={card.detail} tone={card.tone} />
@@ -3708,28 +4125,36 @@ export function App() {
               <div className="connection-action-column">
                 {!currentRoleIsWorker && setupProfile ? (
                   <>
-                    <section className="surface">
-                      <div className="section-head">
-                        <div><div className="section-kicker">直连配对</div><h3>按地址直接纳管工作节点</h3></div>
-                      </div>
+                    <section className="surface" style={{ padding: "12px 20px" }}>
+                      <details className="form-advanced-details">
+                        <summary className="section-head" style={{ cursor: "pointer", marginBottom: 0, padding: "4px 0", userSelect: "none" }}>
+                          <div><div className="section-kicker">高级功能</div><h3 style={{ display: "inline-block", marginRight: "12px" }}>按地址直接纳管远端工作节点 ▼</h3></div>
+                        </summary>
+                        <div style={{ marginTop: "16px" }}>
                       <div className="inline-tip">
                         如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
                       </div>
                       <div className="form-grid">
                         <label><span>目标 IP / 主机名</span><input value={manualPair.host} onChange={(event) => updateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
                         <label><span>配对端口</span><input type="number" value={manualPair.pairing_port} onChange={(event) => updateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
-                        <label><span>配对密钥</span><input type="password" value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
+                        <label><span>配对密钥</span><ToggleSecretInput value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
                         <label><span>指定节点 ID（可选）</span><input value={manualPair.node_id} onChange={(event) => updateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
                       </div>
-                      <div className="inline-actions">
+                      <div className="inline-actions" style={{ marginBottom: "12px" }}>
                         <button type="button" onClick={() => void manualPairNode()} disabled={busy !== null}>{busy === "setup-manual-pair" ? "连接中..." : "按地址配对"}</button>
                       </div>
+                        </div>
+                      </details>
                     </section>
-                    <section className="surface">
-                      <div className="section-head">
-                        <div><div className="section-kicker">节点配对</div><h3>扫描并纳管局域网工作节点</h3></div>
-                        <button type="button" onClick={scanLanNodes} disabled={busy !== null}>{busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}</button>
-                      </div>
+                    <section className="surface" style={{ padding: "12px 20px" }}>
+                      <details className="form-advanced-details">
+                        <summary className="section-head" style={{ cursor: "pointer", marginBottom: 0, padding: "4px 0", userSelect: "none" }}>
+                          <div><div className="section-kicker">局域网发现</div><h3 style={{ display: "inline-block", marginRight: "12px" }}>扫描并批量纳管附近局域网内的节点 ▼</h3></div>
+                        </summary>
+                        <div style={{ marginTop: "16px" }}>
+                        <div className="section-head">
+                          <button type="button" onClick={scanLanNodes} disabled={busy !== null}>{busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}</button>
+                        </div>
                       <div className="inline-tip">
                         当前网关回连地址：{currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
                       </div>
@@ -3758,6 +4183,8 @@ export function App() {
                           ))}
                         </div>
                       )}
+                        </div>
+                      </details>
                     </section>
                     <section className="surface">
                       <div className="section-head">
@@ -3804,9 +4231,33 @@ export function App() {
                           <span>OpenAI Model</span>
                           <input value={localNodeModelDraft.openai_model} onChange={(event) => updateLocalNodeModelDraft("openai_model", event.target.value)} placeholder="qwen3.5-plus" />
                         </label>
+                      </div>
+                      <details className="form-advanced-details" style={{ background: "rgba(255,255,255,0.4)", borderRadius: 8, padding: "12px 16px", marginTop: 16 }}>
+                        <summary className="section-kicker" style={{ cursor: "pointer", userSelect: "none", color: "var(--blue)", marginBottom: 0 }}>高级模型参数 ▼</summary>
+                        <div className="form-grid" style={{ marginTop: 16 }}>
+                        <label>
+                          <span>Temperature</span>
+                          <input type="number" step="0.1" min="0" max="2" value={localNodeModelDraft.openai_temperature} onChange={(event) => updateLocalNodeModelDraft("openai_temperature", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Top P</span>
+                          <input type="number" step="0.1" min="0" max="1" value={localNodeModelDraft.openai_top_p} onChange={(event) => updateLocalNodeModelDraft("openai_top_p", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Max Tokens</span>
+                          <input type="number" min="0" value={localNodeModelDraft.openai_max_tokens} onChange={(event) => updateLocalNodeModelDraft("openai_max_tokens", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Seed</span>
+                          <input type="number" min="0" value={localNodeModelDraft.openai_seed} onChange={(event) => updateLocalNodeModelDraft("openai_seed", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Thinking Budget</span>
+                          <input type="number" min="0" value={localNodeModelDraft.openai_thinking_budget} onChange={(event) => updateLocalNodeModelDraft("openai_thinking_budget", Number(event.target.value) || 0)} />
+                        </label>
                         <label>
                           <span>OpenAI API Key</span>
-                          <input type="password" value={localNodeModelDraft.openai_api_key} onChange={(event) => updateLocalNodeModelDraft("openai_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                          <ToggleSecretInput value={localNodeModelDraft.openai_api_key} onChange={(event) => updateLocalNodeModelDraft("openai_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
                         </label>
                         <label>
                           <span>Dify Base URL</span>
@@ -3814,7 +4265,11 @@ export function App() {
                         </label>
                         <label>
                           <span>Dify API Key</span>
-                          <input type="password" value={localNodeModelDraft.dify_api_key} onChange={(event) => updateLocalNodeModelDraft("dify_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                          <ToggleSecretInput value={localNodeModelDraft.dify_api_key} onChange={(event) => updateLocalNodeModelDraft("dify_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                        </label>
+                        <label style={{ gridColumn: "1 / -1" }}>
+                          <span>Stop Sequences（每行一个，或 JSON 数组）</span>
+                          <textarea value={localNodeModelDraft.openai_stop} onChange={(event) => updateLocalNodeModelDraft("openai_stop", event.target.value)} placeholder={"Observation:\n[\"</answer>\", \"###\"]"} />
                         </label>
                       </div>
                       <div className="inline-actions">
@@ -3823,10 +4278,36 @@ export function App() {
                           <span>启用 OpenAI Thinking</span>
                         </label>
                         <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_enable_search} onChange={(event) => updateLocalNodeModelDraft("openai_enable_search", event.target.checked)} />
+                          <span>启用联网搜索</span>
+                        </label>
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_search_forced} onChange={(event) => updateLocalNodeModelDraft("openai_search_forced", event.target.checked)} />
+                          <span>强制搜索</span>
+                        </label>
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_enable_search_extension} onChange={(event) => updateLocalNodeModelDraft("openai_enable_search_extension", event.target.checked)} />
+                          <span>垂域搜索扩展</span>
+                        </label>
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_multimodal_enabled} onChange={(event) => updateLocalNodeModelDraft("openai_multimodal_enabled", event.target.checked)} />
+                          <span>启用多模态输入</span>
+                        </label>
+                        <label>
+                          <span>搜索策略</span>
+                          <select value={localNodeModelDraft.openai_search_strategy} onChange={(event) => updateLocalNodeModelDraft("openai_search_strategy", event.target.value)}>
+                            <option value="turbo">turbo</option>
+                            <option value="max">max</option>
+                            <option value="agent">agent</option>
+                            <option value="agent_max">agent_max</option>
+                          </select>
+                        </label>
+                        <label className="checkbox-row">
                           <input type="checkbox" checked={localNodeModelDraft.restart_service} onChange={(event) => updateLocalNodeModelDraft("restart_service", event.target.checked)} />
                           <span>保存后自动重启服务</span>
                         </label>
                       </div>
+                      </details>
                       <SnippetBlock label="本机节点事件日志" content={localNodeEventPreview} />
                     </section>
                   </>
@@ -3876,9 +4357,33 @@ export function App() {
                           <span>OpenAI Model</span>
                           <input value={localNodeModelDraft.openai_model} onChange={(event) => updateLocalNodeModelDraft("openai_model", event.target.value)} placeholder="qwen3.5-plus" />
                         </label>
+                      </div>
+                      <details className="form-advanced-details" style={{ background: "rgba(255,255,255,0.4)", borderRadius: 8, padding: "12px 16px", marginTop: 16 }}>
+                        <summary className="section-kicker" style={{ cursor: "pointer", userSelect: "none", color: "var(--blue)", marginBottom: 0 }}>高级模型参数 ▼</summary>
+                        <div className="form-grid" style={{ marginTop: 16 }}>
+                        <label>
+                          <span>Temperature</span>
+                          <input type="number" step="0.1" min="0" max="2" value={localNodeModelDraft.openai_temperature} onChange={(event) => updateLocalNodeModelDraft("openai_temperature", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Top P</span>
+                          <input type="number" step="0.1" min="0" max="1" value={localNodeModelDraft.openai_top_p} onChange={(event) => updateLocalNodeModelDraft("openai_top_p", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Max Tokens</span>
+                          <input type="number" min="0" value={localNodeModelDraft.openai_max_tokens} onChange={(event) => updateLocalNodeModelDraft("openai_max_tokens", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Seed</span>
+                          <input type="number" min="0" value={localNodeModelDraft.openai_seed} onChange={(event) => updateLocalNodeModelDraft("openai_seed", Number(event.target.value) || 0)} />
+                        </label>
+                        <label>
+                          <span>Thinking Budget</span>
+                          <input type="number" min="0" value={localNodeModelDraft.openai_thinking_budget} onChange={(event) => updateLocalNodeModelDraft("openai_thinking_budget", Number(event.target.value) || 0)} />
+                        </label>
                         <label>
                           <span>OpenAI API Key</span>
-                          <input type="password" value={localNodeModelDraft.openai_api_key} onChange={(event) => updateLocalNodeModelDraft("openai_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                          <ToggleSecretInput value={localNodeModelDraft.openai_api_key} onChange={(event) => updateLocalNodeModelDraft("openai_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
                         </label>
                         <label>
                           <span>Dify Base URL</span>
@@ -3886,7 +4391,11 @@ export function App() {
                         </label>
                         <label>
                           <span>Dify API Key</span>
-                          <input type="password" value={localNodeModelDraft.dify_api_key} onChange={(event) => updateLocalNodeModelDraft("dify_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                          <ToggleSecretInput value={localNodeModelDraft.dify_api_key} onChange={(event) => updateLocalNodeModelDraft("dify_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
+                        </label>
+                        <label style={{ gridColumn: "1 / -1" }}>
+                          <span>Stop Sequences（每行一个，或 JSON 数组）</span>
+                          <textarea value={localNodeModelDraft.openai_stop} onChange={(event) => updateLocalNodeModelDraft("openai_stop", event.target.value)} placeholder={"Observation:\n[\"</answer>\", \"###\"]"} />
                         </label>
                       </div>
                       <div className="inline-actions">
@@ -3895,10 +4404,36 @@ export function App() {
                           <span>启用 OpenAI Thinking</span>
                         </label>
                         <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_enable_search} onChange={(event) => updateLocalNodeModelDraft("openai_enable_search", event.target.checked)} />
+                          <span>启用联网搜索</span>
+                        </label>
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_search_forced} onChange={(event) => updateLocalNodeModelDraft("openai_search_forced", event.target.checked)} />
+                          <span>强制搜索</span>
+                        </label>
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_enable_search_extension} onChange={(event) => updateLocalNodeModelDraft("openai_enable_search_extension", event.target.checked)} />
+                          <span>垂域搜索扩展</span>
+                        </label>
+                        <label className="checkbox-row">
+                          <input type="checkbox" checked={localNodeModelDraft.openai_multimodal_enabled} onChange={(event) => updateLocalNodeModelDraft("openai_multimodal_enabled", event.target.checked)} />
+                          <span>启用多模态输入</span>
+                        </label>
+                        <label>
+                          <span>搜索策略</span>
+                          <select value={localNodeModelDraft.openai_search_strategy} onChange={(event) => updateLocalNodeModelDraft("openai_search_strategy", event.target.value)}>
+                            <option value="turbo">turbo</option>
+                            <option value="max">max</option>
+                            <option value="agent">agent</option>
+                            <option value="agent_max">agent_max</option>
+                          </select>
+                        </label>
+                        <label className="checkbox-row">
                           <input type="checkbox" checked={localNodeModelDraft.restart_service} onChange={(event) => updateLocalNodeModelDraft("restart_service", event.target.checked)} />
                           <span>保存后自动重启服务</span>
                         </label>
                       </div>
+                      </details>
                       <div className="info-stack" style={{marginTop: 10}}>
                         <InfoRow label="当前提供方" value={localNodeStatus?.model_settings?.model_provider || "未读取"} />
                         <InfoRow label="OpenAI Key" value={localNodeStatus?.model_settings?.openai_api_key_configured ? "已配置" : "未配置"} />
@@ -3951,6 +4486,8 @@ export function App() {
                 </section> : null}
               </div>
             </div>
+              </>
+            )}
           </section>
         ) : (
           <section className="workspace-frame session-workspace">
@@ -4020,7 +4557,7 @@ export function App() {
                         <div className={`message-row message-row-${message.role === "user" ? "user" : "assistant"}`}>
                           <div className={`message-bubble message-bubble-${message.role}`}>
                             <div className="message-role-line"><span className="message-role">{roleLabel(message.role)}</span>{message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}<span>{formatTimeLabel(message.created_at, true)}</span></div>
-                            <div className="message-content">{message.content}</div>
+                            <div className="message-content">{renderMessageContent(message.content)}</div>
                           </div>
                         </div>
                       </div>
@@ -4112,6 +4649,17 @@ function Metric({ title, value }: { title: string; value: string }) { return <di
 function InfoRow({ label, value, multiline }: { label: string; value: string; multiline?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={multiline ? "multiline" : ""}>{value}</strong></div>; }
 function MetaPill({ label, value }: { label: string; value: string }) { return <div className="meta-pill"><span>{label}</span><strong>{value}</strong></div>; }
 function SnippetBlock({ label, content }: { label: string; content: string }) { return <div className="snippet-block"><div className="snippet-label">{label}</div><div className="snippet-content">{content}</div></div>; }
+function ToggleSecretInput(props: JSX.IntrinsicElements["input"]) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <input {...props} type={visible ? "text" : "password"} style={{ ...(props.style ?? {}), flex: 1 }} />
+      <button type="button" className="ghost-button" onClick={() => setVisible((current) => !current)} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+        {visible ? "隐藏" : "显示"}
+      </button>
+    </div>
+  );
+}
 function ConnectionHeroCard({ eyebrow, title, detail, tone }: { eyebrow: string; title: string; detail: string; tone: "good" | "warn" }) {
   return (
     <article className={`connection-hero-card connection-hero-card-${tone}`}>
@@ -4129,6 +4677,48 @@ function ConnectionSignalCard({ label, value, meta, tone }: { label: string; val
       <div className="connection-signal-meta">{meta}</div>
     </article>
   );
+}
+function renderMessageContent(content: string) {
+  const parts = parseMarkdownImageParts(content);
+  if (!parts.length) {
+    return content;
+  }
+  return parts.map((part, index) => {
+    if (part.kind === "image") {
+      return (
+        <figure key={`img-${index}-${part.url}`} className="message-image-block">
+          <img className="message-inline-image" src={part.url} alt={part.alt || "message image"} loading="lazy" />
+          {part.alt ? <figcaption>{part.alt}</figcaption> : null}
+        </figure>
+      );
+    }
+    return (
+      <span key={`text-${index}`} className="message-text-fragment">
+        {part.text}
+      </span>
+    );
+  });
+}
+function parseMarkdownImageParts(content: string): Array<{ kind: "text"; text: string } | { kind: "image"; url: string; alt: string }> {
+  const pattern = /!\[([^\]]*)\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g;
+  const parts: Array<{ kind: "text"; text: string } | { kind: "image"; url: string; alt: string }> = [];
+  let cursor = 0;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      parts.push({ kind: "text", text: content.slice(cursor, index) });
+    }
+    parts.push({
+      kind: "image",
+      alt: match[1]?.trim() || "",
+      url: match[2].split(" ", 1)[0].trim(),
+    });
+    cursor = index + match[0].length;
+  }
+  if (cursor < content.length) {
+    parts.push({ kind: "text", text: content.slice(cursor) });
+  }
+  return parts;
 }
 
 function syncSessions(next: SessionRecord[], setSessions: React.Dispatch<React.SetStateAction<SessionRecord[]>>, setSelectedSessionId: React.Dispatch<React.SetStateAction<string | null>>, setActiveSession: React.Dispatch<React.SetStateAction<SessionRecord | null>>) {

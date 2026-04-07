@@ -29,6 +29,10 @@ class DispatchTaskNotFoundError(DispatchQueueError):
 
 
 class DispatchQueue:
+    USER_NOTICE_NO_NODE = "抱歉，当前没有可用的处理节点，请稍后再试。"
+    USER_NOTICE_RETRYING = "抱歉，刚刚处理消息时出现异常，系统正在自动切换可用节点重试，请稍候。"
+    USER_NOTICE_FAILURE = "抱歉，刚刚处理您的消息时发生异常，请稍后重试。"
+
     def __init__(
         self,
         store: RedisStore,
@@ -90,6 +94,15 @@ class DispatchQueue:
                 actor_type="system",
                 actor_id="gateway",
                 payload={"message_id": message.message_id},
+            )
+            await self._notify_user_notice(
+                session,
+                self.USER_NOTICE_NO_NODE,
+                metadata={
+                    "system_action": "dispatch_notice",
+                    "notice_kind": "node_unavailable",
+                    "source_message_id": message.message_id,
+                },
             )
             return None
         session, _, _ = allocation
@@ -229,7 +242,25 @@ class DispatchQueue:
             clear_assigned_node=False,
         )
         if task.retry_count >= 1:
-            return released_session
+            return await self._notify_user_notice(
+                released_session,
+                self.USER_NOTICE_FAILURE,
+                metadata={
+                    "system_action": "dispatch_notice",
+                    "notice_kind": "final_failure",
+                    "error_code": payload.error_code,
+                },
+            )
+        if not payload.retryable:
+            return await self._notify_user_notice(
+                released_session,
+                self.USER_NOTICE_FAILURE,
+                metadata={
+                    "system_action": "dispatch_notice",
+                    "notice_kind": "dispatch_failed",
+                    "error_code": payload.error_code,
+                },
+            )
         switched = await self._switch_session(
             released_session.session_id,
             requested_by=payload.node_id,
@@ -239,7 +270,15 @@ class DispatchQueue:
             allow_active_task_cleanup=False,
         )
         if not switched.assigned_node_id or not switched.assigned_slot_id:
-            return switched
+            return await self._notify_user_notice(
+                switched,
+                self.USER_NOTICE_FAILURE,
+                metadata={
+                    "system_action": "dispatch_notice",
+                    "notice_kind": "retry_target_unavailable",
+                    "error_code": payload.error_code,
+                },
+            )
         await self._enqueue_task(
             session=switched,
             message=task.message,
@@ -248,7 +287,17 @@ class DispatchQueue:
             context_version=task.context_version,
             retry_count=task.retry_count + 1,
         )
-        return await self._session_manager.get_session(switched.session_id)
+        notified_session = await self._notify_user_notice(
+            switched,
+            self.USER_NOTICE_RETRYING,
+            metadata={
+                "system_action": "dispatch_notice",
+                "notice_kind": "retrying",
+                "error_code": payload.error_code,
+                "retry_count": str(task.retry_count + 1),
+            },
+        )
+        return await self._session_manager.get_session(notified_session.session_id)
 
     async def switch_session_target(
         self,
@@ -368,6 +417,28 @@ class DispatchQueue:
             },
         )
         return await self._session_manager.clear_dispatch_state(session.session_id, expected_task_id=session.active_task_id)
+
+    async def _notify_user_notice(
+        self,
+        session: SessionRecord,
+        content: str,
+        *,
+        metadata: dict[str, str],
+    ) -> SessionRecord:
+        delivered = await self._outgoing_dispatcher.deliver_system_notice(
+            session,
+            content,
+            event_type="wechat_notice_failed",
+        )
+        if not delivered:
+            return session
+        return await self._session_manager.append_bot_message(
+            session_id=session.session_id,
+            content=content,
+            actor_id="gateway",
+            node_id=session.assigned_node_id or "gateway",
+            metadata=metadata,
+        )
 
     async def _enqueue_task(
         self,

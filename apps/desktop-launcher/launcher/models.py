@@ -160,6 +160,13 @@ class LocalNodeStatusResponse(BaseModel):
     last_register_result: str = ""
     last_register_error: str = ""
     last_register_at: datetime | None = None
+    config_apply_state: str = "idle"
+    last_apply_error: str = ""
+    last_apply_at: datetime | None = None
+    configured_model_provider: str = "auto"
+    active_model_provider: str = ""
+    inference_ready: bool = False
+    inference_detail: str = ""
     diagnostics: dict[str, object] = Field(default_factory=dict)
     model_settings: "LocalNodeModelConfig" = Field(default_factory=lambda: LocalNodeModelConfig())
 
@@ -189,10 +196,23 @@ class LocalNodeExportResponse(BaseModel):
 class LocalNodeModelConfig(BaseModel):
     model_provider: str = "auto"
     openai_base_url: str = ""
+    openai_api_key: str = ""
     openai_model: str = ""
     openai_enable_thinking: bool = False
+    openai_temperature: float = 0.3
+    openai_top_p: float = 1.0
+    openai_max_tokens: int = 0
+    openai_seed: int = 0
+    openai_thinking_budget: int = 0
+    openai_stop: str = ""
+    openai_enable_search: bool = False
+    openai_search_forced: bool = False
+    openai_search_strategy: str = "turbo"
+    openai_enable_search_extension: bool = False
+    openai_multimodal_enabled: bool = True
     openai_api_key_configured: bool = False
     dify_base_url: str = ""
+    dify_api_key: str = ""
     dify_api_key_configured: bool = False
 
 
@@ -202,6 +222,17 @@ class LocalNodeModelConfigRequest(BaseModel):
     openai_api_key: str = ""
     openai_model: str = ""
     openai_enable_thinking: bool = False
+    openai_temperature: float = 0.3
+    openai_top_p: float = 1.0
+    openai_max_tokens: int = 0
+    openai_seed: int = 0
+    openai_thinking_budget: int = 0
+    openai_stop: str = ""
+    openai_enable_search: bool = False
+    openai_search_forced: bool = False
+    openai_search_strategy: str = "turbo"
+    openai_enable_search_extension: bool = False
+    openai_multimodal_enabled: bool = True
     dify_base_url: str = ""
     dify_api_key: str = ""
     restart_service: bool = True
