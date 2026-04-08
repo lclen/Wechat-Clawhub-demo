@@ -20,6 +20,12 @@ type InventoryCardView = {
   version: string;
   concurrency: string;
   channels: string;
+  channelIdle: string;
+  channelBusy: string;
+  channelCapacity: string;
+  channelUsagePercent: number;
+  channelPressureLabel: string;
+  channelPressureTone: "good" | "warn" | "busy";
   authFailed: boolean;
   selected: boolean;
   actions: InventoryAction[];
@@ -76,6 +82,25 @@ export function NodeInventoryPanel({ headline, cards, selectedDiagnostics }: Nod
                 </div>
                 <div className="connection-node-address">{card.address}</div>
                 <div className="connection-node-detail">{card.detail}</div>
+                <div className="connection-node-channel-band">
+                  <div className="connection-node-channel-band-top">
+                    <div>
+                      <span className="connection-node-channel-label">空闲通道</span>
+                      <strong>{card.channelIdle}</strong>
+                    </div>
+                    <span className={`connection-node-channel-pill connection-node-channel-pill-${card.channelPressureTone}`}>
+                      {card.channelPressureLabel}
+                    </span>
+                  </div>
+                  <div className="connection-node-channel-meter" aria-hidden="true">
+                    <div className="connection-node-channel-meter-fill" style={{ width: `${card.channelUsagePercent}%` }} />
+                  </div>
+                  <div className="connection-node-channel-meta">
+                    <span>占用 {card.channelBusy}</span>
+                    <span>总量 {card.channelCapacity}</span>
+                    <span>使用率 {card.channelUsagePercent}% </span>
+                  </div>
+                </div>
                 <div className="connection-node-stats">
                   <div className="connection-node-stat">
                     <span>平台</span>

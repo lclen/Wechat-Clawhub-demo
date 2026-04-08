@@ -6,6 +6,13 @@ type NodeModelConfigPanelProps = {
   busyKey: string | null;
   status: LocalNodeStatusResponse | null;
   runtimeSummary: { label: string; detail: string };
+  gatewayControl?: {
+    managed: boolean;
+    state: string;
+    onRestart: () => void;
+    disabled: boolean;
+    busy: boolean;
+  } | null;
   eventPreview: string;
   draft: LocalNodeModelConfigRequest;
   onChange: <K extends keyof LocalNodeModelConfigRequest>(key: K, value: LocalNodeModelConfigRequest[K]) => void;
@@ -20,6 +27,7 @@ export function NodeModelConfigPanel({
   busyKey,
   status,
   runtimeSummary,
+  gatewayControl,
   eventPreview,
   draft,
   onChange,
@@ -73,8 +81,24 @@ export function NodeModelConfigPanel({
         <div>
           <div className="section-kicker">节点与模型参数</div>
           <h3>本机内置节点与推理后端</h3>
+          {gatewayControl ? (
+            <div className="connection-host-inline-meta">
+              <span className="connection-host-inline-pill">主网关 {gatewayControl.managed ? "托管中" : "未托管"}</span>
+              <span className="connection-host-inline-detail">状态 {gatewayControl.state}</span>
+            </div>
+          ) : null}
         </div>
         <div className="inline-actions">
+          {gatewayControl ? (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={gatewayControl.onRestart}
+              disabled={gatewayControl.disabled}
+            >
+              {gatewayControl.busy ? "网关重启中..." : "重启网关"}
+            </button>
+          ) : null}
           <button type="button" className="ghost-button" onClick={onRefresh} disabled={busyKey !== null}>
             刷新
           </button>
@@ -260,7 +284,7 @@ export function NodeModelConfigPanel({
         </div>
       </details>
 
-      <SnippetBlock label="本机节点事件日志" content={eventPreview} />
+      {eventPreview ? <SnippetBlock label="本机节点事件日志" content={eventPreview} /> : null}
     </section>
   );
 }

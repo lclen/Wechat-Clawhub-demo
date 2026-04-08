@@ -46,20 +46,22 @@ export function DiagnosticsConsole({ title, subtitle, emptyText, entries, onClea
         <div className="empty-state">{emptyText}</div>
       ) : (
         <div className="pairing-debug-list">
-          {entries.map((entry) => (
-            <article key={entry.id} className="pairing-debug-card">
-              <div className="pairing-debug-top">
-                <div>
-                  <div className="node-card-title">{entry.title}</div>
-                  <div className="node-card-subtitle">
-                    {entry.target} · {entry.updatedAtLabel}
+          {entries.map((entry, index) => (
+            <details key={entry.id} className="pairing-debug-card pairing-debug-card-collapsible" open={index === 0}>
+              <summary className="pairing-debug-summary-row">
+                <div className="pairing-debug-top">
+                  <div>
+                    <div className="node-card-title">{entry.title}</div>
+                    <div className="node-card-subtitle">
+                      {entry.target} · {entry.updatedAtLabel}
+                    </div>
                   </div>
+                  <span className={`session-badge session-badge-${entry.statusTone}`}>{entry.statusLabel}</span>
                 </div>
-                <span className={`session-badge session-badge-${entry.statusTone}`}>{entry.statusLabel}</span>
-              </div>
-              <div className="pairing-debug-summary">{entry.summary || "等待更多日志..."}</div>
+                <div className="pairing-debug-summary">{entry.summary || "等待更多日志..."}</div>
+              </summary>
               <pre className="pairing-debug-log">{entry.logText || "暂无详细日志"}</pre>
-            </article>
+            </details>
           ))}
         </div>
       )}

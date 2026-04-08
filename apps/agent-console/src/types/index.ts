@@ -18,7 +18,7 @@ export type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; conn
 export type NodeDiagnosticsResponse = { node_id: string; diagnostics: NodeDiagnosticsRecord };
 export type NodeDiagnosticsStreamEnvelope = { type: "diagnostics_snapshot"; node_id: string; diagnostics: NodeDiagnosticsRecord };
 export type SessionsResponse = { sessions: SessionRecord[] };
-export type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean };
+export type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean; history_start: number | null; has_more_before: boolean | null };
 export type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
 export type SessionOverviewEnvelope = { type: "sessions_snapshot"; sessions: SessionRecord[] };
 export type GatewaySummaryResponse = { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse };
@@ -31,6 +31,8 @@ export type SessionMessageCacheEntry = {
   session: SessionRecord | null;
   messages: MessageRecord[];
   cursor: number;
+  historyStart: number;
+  hasMoreBefore: boolean;
   loaded: boolean;
   lastLoadedAt: number;
 };

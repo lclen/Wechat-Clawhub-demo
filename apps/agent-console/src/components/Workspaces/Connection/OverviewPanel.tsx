@@ -44,7 +44,7 @@ export function OverviewPanel({
           <div className="connection-overview-chip-row">
             <span className="connection-overview-chip">先看状态</span>
             <span className="connection-overview-chip">再改配置</span>
-            <span className="connection-overview-chip">日志默认收起</span>
+            <span className="connection-overview-chip">日志自动刷新</span>
           </div>
         </div>
         <div className="connection-hero-grid">
