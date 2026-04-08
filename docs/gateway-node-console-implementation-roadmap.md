@@ -318,6 +318,70 @@
 - Dify 上下文语义更清晰，后续做多节点调度时更容易保持一致
 - 节点侧实现“通道 10 分钟空闲自动释放”时，可以更放心地把 Dify 会话视为用户级上下文，而不是槽位级上下文
 
+## 3.6 Dify 会话持久化 + 节点侧空闲释放（2026-04-08）
+
+目标：
+
+- 不再让 `dify_conversation_id` 只活在节点内存里
+- 让“10 分钟空闲释放通道”真正先由节点发现并上报
+- 保持网关仍是最终裁决者，但把空闲感知和通道归还动作前移到节点
+
+本次已完成：
+
+- ✅ **`dify_conversation_id` 已持久化到节点本地缓存**
+  - `LocalCache` 新增 `store_dify_conversation_id()` / `get_dify_conversation_id()`
+  - `DifyClient` 恢复顺序改为：
+    - 进程内缓存
+    - 节点本地 Redis 缓存
+    - recent messages 元数据
+  - Dify 返回的新 `conversation_id` 会立即写回本地缓存
+  - bot 结果 metadata 现已显式透传 `dify_conversation_id`
+
+- ✅ **节点侧 `last_active_at` 已落地**
+  - `Worker` 现在会在接到任务时记录对应 `session_id / slot_id` 的活动状态
+  - 任务完成或失败回传后，会把该通道的 `last_active_at` 刷新为当前时间
+  - 只有在没有 inflight 任务时，通道才会进入空闲判定
+
+- ✅ **节点侧 `channel_released` 事件已打通**
+  - 节点新增空闲巡检循环，默认 10 分钟无 inflight 自动上报 `channel_released`
+  - WebSocket 任务流已支持 `channel_released`
+  - HTTP 降级链路也新增 `POST /api/nodes/{node_id}/channel-released`
+
+- ✅ **网关已支持节点上报空闲释放并做最终裁决**
+  - `DispatchQueue.release_channel_from_node()` 会校验：
+    - 当前 session 是否仍绑定该 `node_id`
+    - 当前 slot 是否仍是该 `slot_id`
+    - 是否没有 `active_task_id`
+    - `queue_status` 是否已经回到 `none`
+  - 只有满足条件才真正释放槽位
+  - 本轮实现中，节点侧空闲释放会清空 `assigned_node_id`
+    - 这样后续新消息到来时，可重新随机派发到任意空闲节点
+
+当前边界：
+
+- 节点可以提议释放通道，但不能直接改网关真相
+- 网关仍然是槽位和会话绑定关系的唯一裁决者
+- 若节点上报释放时 session 已重新接单、切换节点或槽位不一致，网关会忽略这次释放请求
+
+已补测试：
+
+- `services/claw-node/tests/test_dify_client.py`
+- `services/claw-node/tests/test_worker.py`
+- `apps/gateway/tests/test_dispatch_queue.py`
+
+这个问题修完后，最应该继续收口的是：
+
+1. **把 `dify_conversation_id` 做跨节点可恢复**
+   - 当前持久化范围仍是“单节点本地缓存”
+   - 若用户后续被随机派发到另一台节点，仍需要从网关历史消息 metadata 恢复，虽然能工作，但不是最快路径
+
+2. **让前端明确展示“节点空闲通道数”的实时变化**
+   - 后端基础数据已经具备：`channel_capacity` 和 `channel_in_use`
+   - 下一步最值得做的是把这些字段在接入中心做成更直观的空闲/占用展示
+
+3. **把 Dify 版上下文隔离与节点空闲池调度合并成一个闭环**
+   - 当节点持续释放空闲槽位后，网关的调度策略可以进一步向“优先选空闲节点、减少热点节点堆积”收敛
+
 下一步最值得做的事情：
 
 1. **持久化 Dify conversation_id**（高优先级）
