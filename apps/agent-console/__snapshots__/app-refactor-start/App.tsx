@@ -12,101 +12,131 @@ import {
   resolveTokenDisplayState,
 } from "./roleWorkspace";
 import { DiagnosticsConsole } from "./components/Workspaces/Connection/DiagnosticsConsole";
-import {
-  ConnectionHeroCard,
-  ConnectionSignalCard,
-  InfoRow,
-  MetaPill,
-  Metric,
-  PrepStrip,
-  SetupStepPill,
-  SnippetBlock,
-  StatusChip,
-  ToggleSecretInput,
-} from "./components/Workspaces/Connection/ConnectionUi";
 import { NodeInventoryPanel } from "./components/Workspaces/Connection/NodeInventoryPanel";
 import { NodeModelConfigPanel } from "./components/Workspaces/Connection/NodeModelConfigPanel";
 import { OverviewPanel } from "./components/Workspaces/Connection/OverviewPanel";
-import { PairingStatusModal } from "./components/Workspaces/Connection/PairingStatusModal";
 import { RuntimeLogsPanel } from "./components/Workspaces/Connection/RuntimeLogsPanel";
 import { WeChatConfigCard } from "./components/Workspaces/Connection/WeChatConfigCard";
-import { LogsWorkspace } from "./components/Workspaces/Logs/LogsWorkspace";
-import { MessageContent } from "./components/Workspaces/Sessions/MessageContent";
-import type {
-  AppSummaryStateCache,
-  AppUiStateCache,
-  ConsoleSetupConfig,
-  DiscoveryPairResponse,
-  DiscoveryScanResponse,
-  DiscoveredNodeRecord,
-  GatewayConsoleSetupRequest,
-  GatewayProbeRequest,
-  GatewaySetupConfig,
-  GatewaySetupSaveRequest,
-  GatewaySetupSaveResponse,
-  GatewaySummaryEnvelope,
-  GatewaySummaryResponse,
-  LauncherComponentName,
-  LauncherComponentStatus,
-  LauncherEnvironmentStatus,
-  LauncherLogResponse,
-  LauncherMachineRole,
-  LauncherNodeCachePolicy,
-  LauncherProfile,
-  LauncherRedisInstallState,
-  LauncherRedisSource,
-  LauncherRuntimeModel,
-  LauncherStartRequest,
-  LauncherState,
-  LauncherStatusResponse,
-  LauncherWorkdirLayout,
-  LocalNodeActionResponse,
-  LocalNodeConfigApplyState,
-  LocalNodeExportResponse,
-  LocalNodeLogsResponse,
-  LocalNodeModelConfig,
-  LocalNodeModelConfigRequest,
-  LocalNodeStatusResponse,
-  ManualPairDraft,
-  ManualPairRequest,
-  MessageRecord,
-  ModelCheck,
-  ModelStatus,
-  NodeCredentialResetRequest,
-  NodeDeleteResponse,
-  NodeDiagnosticsRecord,
-  NodeDiagnosticsResponse,
-  NodeDiagnosticsStreamEnvelope,
-  NodeInventoryConnectionState,
-  NodeInventoryRecord,
-  NodeInventorySummary,
-  NodeKind,
-  NodeListResponse,
-  NodeRecord,
-  PairingStatus,
-  PollResponse,
-  PairingDebugEntry,
-  QrStart,
-  SessionFilter,
-  SessionMessageCacheEntry,
-  SessionMessagesResponse,
-  SessionOverviewEnvelope,
-  SessionRecord,
-  SessionsResponse,
-  SessionStreamEnvelope,
-  SessionSwitchResponse,
-  SetupMode,
-  SetupProfileResponse,
-  SetupRole,
-  SetupTaskEnvelope,
-  SetupTaskResult,
-  SetupTaskStatus,
-  SystemStatus,
-  WeChatStatus,
-  WorkerGatewayConnectionState,
-  WorkerNodeSetupConfig,
-  WorkspaceTab,
-} from "./types";
+
+type ModelStatus = { configured: boolean; base_url: string; model: string };
+type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; gateway_bind_host: string; preferred_lan_ip: string | null; preferred_gateway_base_url: string; timestamp: string };
+type ModelCheck = { ok: boolean; configured_model: string; available_models: string[]; configured_model_available: boolean };
+type WeChatStatus = { configured: boolean; running: boolean; base_url: string; has_token: boolean; last_error: string | null; received_messages: number; sent_messages: number };
+type SessionStatus = "bot_active" | "handoff_pending" | "human_active" | "closing";
+type QueueStatus = "none" | "pending" | "inflight";
+type RoutingMode = "auto" | "manual";
+type SessionRecord = { session_id: string; channel: string; user_id: string; agent_id: string; status: SessionStatus; assigned_node_id: string | null; assigned_slot_id: string | null; active_task_id: string | null; queue_status: QueueStatus; context_summary: string; context_version: number; routing_mode: RoutingMode; slot_bound_at: string | null; slot_expires_at: string | null; reply_context_token: string | null; handoff_ticket_id: string | null; claimed_by: string | null; message_count: number; last_message_at: string; last_dispatch_at: string | null; created_at: string; updated_at: string; version: number };
+type MessageRecord = { message_id: string; session_id: string; channel: string; user_id: string; role: "user" | "bot" | "human" | "system"; content: string; created_at: string; actor_id: string | null; node_id: string | null; metadata: Record<string, string> };
+type NodeRecord = { node_id: string; base_url: string; advertised_address: string | null; lan_ip: string | null; max_concurrency: number; current_load: number; status: string; last_heartbeat_at: string; updated_at: string; last_error: string | null; load_ratio: number; node_version: string | null; platform: string | null; hostname: string | null; capabilities: string[]; channel_capacity: number; channel_in_use: number };
+type NodeKind = "local" | "remote";
+type NodeInventoryConnectionState = "connected" | "pairing_pending" | "register_failed" | "auth_failed" | "paired_offline" | "online_unpaired";
+type NodeInventoryRecord = { node_id: string; node_kind: NodeKind; paired: boolean; online: boolean; connection_state: NodeInventoryConnectionState; status: string | null; last_heartbeat_at: string | null; updated_at: string | null; hostname: string | null; lan_ip: string | null; platform: string | null; node_version: string | null; advertised_address: string | null; last_error: string | null; base_url: string | null; max_concurrency: number | null; current_load: number | null; channel_capacity: number | null; channel_in_use: number | null; last_pairing_trace_id: string | null; last_register_result: string | null; last_register_at: string | null; last_auth_failure_at: string | null };
+type NodeInventorySummary = { paired_total: number; online_total: number; offline_total: number };
+type NodeListResponse = { nodes: NodeRecord[]; inventory: NodeInventoryRecord[]; summary: NodeInventorySummary };
+type NodeDiagnosticsEvent = { timestamp: string; level: string; category: string; result: string; message: string; trace_id: string; metadata: Record<string, string> };
+type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; connection_state: NodeInventoryConnectionState; last_error: string; last_pairing_trace_id: string; last_pairing_status: string; last_pairing_at: string | null; last_register_result: string; last_register_at: string | null; last_heartbeat_result: string; last_heartbeat_at: string | null; last_auth_failure_at: string | null; last_auth_decision: string; last_auth_client_host: string; last_auth_path: string; expected_token_masked: string; provided_token_masked: string; timeline: NodeDiagnosticsEvent[] };
+type NodeDiagnosticsResponse = { node_id: string; diagnostics: NodeDiagnosticsRecord };
+type NodeDiagnosticsStreamEnvelope = { type: "diagnostics_snapshot"; node_id: string; diagnostics: NodeDiagnosticsRecord };
+type SessionsResponse = { sessions: SessionRecord[] };
+type SessionMessagesResponse = {
+  session: SessionRecord;
+  messages: MessageRecord[];
+  next_cursor: number;
+  replace_messages: boolean;
+  history_start: number | null;
+  has_more_before: boolean | null;
+};
+type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
+type SessionOverviewEnvelope = { type: "sessions_snapshot"; sessions: SessionRecord[] };
+type GatewaySummaryResponse = { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse };
+type GatewaySummaryEnvelope = { type: "gateway_summary"; summary: { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse } };
+type SessionMessageCacheEntry = {
+  session: SessionRecord | null;
+  messages: MessageRecord[];
+  cursor: number;
+  historyStart: number;
+  hasMoreBefore: boolean;
+  loaded: boolean;
+  lastLoadedAt: number;
+};
+type SessionSwitchResponse = { ok: boolean; session: SessionRecord; detail: string };
+type QrStart = { qrcode: string; qrcode_url: string };
+type PollResponse = { status: string; token?: string; base_url?: string; message?: string; bot_id?: string; user_id?: string };
+type SetupRole = "gateway_host" | "gateway_host_console" | "worker_node" | "console_only";
+type SetupTaskStatus = "pending" | "running" | "succeeded" | "failed";
+type GatewaySetupConfig = { redis_url: string; default_agent_id: string; dify_base_url: string; dify_api_key: string; builtin_model_base_url: string; builtin_model_api_key: string; builtin_model_name: string; wechat_base_url: string; wechat_token: string; dispatch_mode_enabled: boolean };
+type WorkerNodeSetupConfig = { node_id: string; gateway_base_url: string; node_token: string; pairing_key: string; dify_base_url: string; dify_api_key: string; max_concurrency: number; install_dir: string; bundle_path: string; discovery_enabled: boolean; discovery_port: number };
+type ConsoleSetupConfig = { gateway_base_url: string };
+type PairingStatus = "pending" | "paired" | "paired_pending_confirm" | "register_failed" | "auth_failed" | "already_paired" | "offline";
+type DiscoveredNodeRecord = { discovery_id: string; node_id: string | null; pairing_label: string | null; hostname: string; lan_ip: string | null; platform: string | null; node_version: string | null; capabilities: string[]; advertised_address: string | null; pairing_required: boolean; already_paired: boolean; pairing_port: number; last_seen_at: string };
+type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "gateway_probe" | "discovery_scan" | "discovery_pair" | "manual_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
+type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; preferred_gateway_base_url: string; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
+type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boolean; applied_runtime: string[] };
+type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_base_url?: string };
+type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };
+type GatewayProbeRequest = { gateway_base_url: string; node_id?: string; timeout_ms?: number };
+type NodeCredentialResetRequest = { node_id: string; install_dir: string };
+type SetupTaskEnvelope = { task: SetupTaskResult };
+type NodeDeleteResponse = { ok: boolean; node_id: string; removed_pairing: boolean; removed_runtime: boolean; detail: string };
+type DiscoveryScanResponse = { task: SetupTaskResult; nodes: DiscoveredNodeRecord[] };
+type DiscoveryPairResponse = { task: SetupTaskResult; pairing_status: PairingStatus; node_id: string | null };
+type ManualPairRequest = { host: string; pairing_port: number; pairing_key: string; gateway_base_url: string; node_id?: string };
+type LauncherState = "stopped" | "starting" | "running" | "degraded" | "failed";
+type LauncherRedisSource = "github" | "mirror";
+type LauncherNodeCachePolicy = "disabled" | "optional" | "enabled";
+type LauncherMachineRole = "gateway" | "node" | "console" | "gateway_console";
+type LauncherComponentStatus = { name: string; state: LauncherState; pid: number | null; detail: string; error_code: string; started_at: string | null; log_path: string | null };
+type LauncherProfile = { workdir: string; gateway_port: number; gateway_base_url?: string; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean; local_node_id: string };
+type LauncherRuntimeModel = { machine_role: LauncherMachineRole; gateway_should_run: boolean; host_redis_should_run: boolean; local_node_should_run: boolean; node_cache_should_run: boolean; runtime_authority: string };
+type LauncherWorkdirLayout = { root: string; host_redis_dir: string; transcript_dir: string; identity_dir: string; memory_dir: string; log_dir: string; runtime_dir: string; config_dir: string; node_cache_dir: string };
+type LauncherRedisInstallState = { installed: boolean; source: LauncherRedisSource; archive_path: string; executable_path: string; version: string; detail: string };
+type LauncherEnvironmentCheck = { name: string; ready: boolean; detail: string };
+type LauncherEnvironmentStatus = { ready: boolean; python_version: string; checks: LauncherEnvironmentCheck[] };
+type LauncherStatusResponse = { profile: LauncherProfile; runtime_model: LauncherRuntimeModel; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[]; local_lan_ip: string };
+type LauncherStartRequest = { machine_role?: LauncherMachineRole; enable_local_node?: boolean; enable_gateway?: boolean; enable_node_cache_redis: boolean; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; local_node_id?: string };
+type LauncherLogResponse = { component: string; log_path: string | null; content: string };
+type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; openai_temperature: number; openai_top_p: number; openai_max_tokens: number; openai_seed: number; openai_thinking_budget: number; openai_stop: string; openai_enable_search: boolean; openai_search_forced: boolean; openai_search_strategy: string; openai_enable_search_extension: boolean; openai_multimodal_enabled: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key: string; dify_api_key_configured: boolean };
+type LocalNodeModelConfigRequest = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; openai_temperature: number; openai_top_p: number; openai_max_tokens: number; openai_seed: number; openai_thinking_budget: number; openai_stop: string; openai_enable_search: boolean; openai_search_forced: boolean; openai_search_strategy: string; openai_enable_search_extension: boolean; openai_multimodal_enabled: boolean; dify_base_url: string; dify_api_key: string; restart_service: boolean };
+type LocalNodeConfigApplyState = "idle" | "saving" | "restarting" | "applied" | "failed";
+type LocalNodeStatusResponse = { service_name: string; state: string; pid: number | null; node_kind: NodeKind; config_path: string; diagnostics_path: string; install_dir: string; detail: string; service_state: string; runtime_state: string; last_register_result: string; last_register_error: string; last_register_at: string | null; config_apply_state: LocalNodeConfigApplyState; last_apply_error: string; last_apply_at: string | null; configured_model_provider: string; active_model_provider: string; inference_ready: boolean; inference_detail: string; diagnostics: Record<string, unknown>; model_settings: LocalNodeModelConfig };
+type LocalNodeLogsResponse = { service_name: string; event_log_path: string | null; service_log_path: string | null; wrapper_log_path: string | null; event_log: string; service_log: string; wrapper_log: string };
+type LocalNodeActionResponse = { ok: boolean; detail: string; status: LocalNodeStatusResponse };
+type LocalNodeExportResponse = { ok: boolean; export_path: string; detail: string };
+type WorkspaceTab = "quick_setup" | "sessions" | "connection" | "logs";
+type SessionFilter = "all" | "processing" | "human" | "recent";
+type SetupMode = "status" | "role" | "config" | "preview" | "result";
+type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cache-redis";
+type ManualPairDraft = { host: string; pairing_port: number; pairing_key: string; node_id: string };
+type PairingDebugEntry = {
+  id: string;
+  kind: "discovery_scan" | "discovery_pair" | "manual_pair" | "gateway_probe" | "node_install" | "client_error";
+  title: string;
+  status: SetupTaskStatus | "failed";
+  summary: string;
+  logs: string[];
+  target: string;
+  updated_at: string;
+};
+type WorkerGatewayConnectionState =
+  | "idle"
+  | "gateway_unreachable"
+  | "gateway_reachable_node_missing"
+  | "gateway_reachable_node_pending_confirm"
+  | "gateway_reachable_node_register_failed"
+  | "gateway_reachable_node_connected";
+
+type AppUiStateCache = {
+  workspace: WorkspaceTab | null;
+  selected_session_id: string | null;
+  selected_node_id: string | null;
+};
+
+type AppSummaryStateCache = {
+  system_status: SystemStatus | null;
+  wechat_status: WeChatStatus | null;
+  node_list: NodeListResponse | null;
+  sessions: SessionRecord[];
+};
 
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
@@ -4412,15 +4442,35 @@ export function App() {
             )}
           </section>
         ) : workspace === "logs" ? (
-          <LogsWorkspace
-            currentRoleIsWorker={currentRoleIsWorker}
-            workerConnectionLog={workerConnectionLog}
-            runtimeLogEntries={runtimeLogEntries}
-            runtimeLogsRefreshing={runtimeLogsRefreshing}
-            pairingDebugViewEntries={pairingDebugViewEntries}
-            onRefreshRuntimeLogs={() => void refreshRuntimeLogs()}
-            onClearPairingDebugEntries={() => setPairingDebugEntries([])}
-          />
+          <section className="workspace-frame connection-workspace">
+            <div className="workspace-heading">
+              <div>
+                <div className="section-kicker">日志中心</div>
+                <h2>{currentRoleIsWorker ? "集中查看节点回连、配对与本地运行日志" : "集中查看主机组件、本机节点与配对日志"}</h2>
+              </div>
+              <div className="workspace-caption">
+                {currentRoleIsWorker ? "这里不再混入安装配置表单，只保留当前机器节点的关键日志。" : "接入中心负责配置与状态，日志中心负责集中排障与运行追踪。"}
+              </div>
+            </div>
+            <div className="logs-workspace-stack">
+              {currentRoleIsWorker ? <SnippetBlock label="节点连接日志" content={workerConnectionLog} /> : null}
+              <RuntimeLogsPanel
+                title={currentRoleIsWorker ? "节点本地运行与回连日志" : "主机组件与本机节点日志"}
+                subtitle={currentRoleIsWorker ? "展示当前机器节点的服务、回连与诊断日志。" : "这里集中查看 launcher、主网关和本机内置节点的运行日志。"}
+                helperText="日志中心可见时每 4 秒自动刷新"
+                entries={runtimeLogEntries}
+                onRefresh={() => void refreshRuntimeLogs()}
+                refreshing={runtimeLogsRefreshing}
+              />
+              <DiagnosticsConsole
+                title={currentRoleIsWorker ? "节点配对与回连日志" : "配对与纳管日志中心"}
+                subtitle={currentRoleIsWorker ? "记录当前节点与网关的配对、检测和回连结果。" : "集中展示扫描、手动配对和节点纳管的调试输出。"}
+                emptyText={currentRoleIsWorker ? "当前还没有节点配对日志；执行网关探测或等待回连后会显示在这里。" : "当前还没有网关配对日志；开始扫描或连接节点后会在这里出现。"}
+                entries={pairingDebugViewEntries}
+                onClear={() => setPairingDebugEntries([])}
+              />
+            </div>
+          </section>
         ) : (
           <section className="workspace-frame session-workspace">
             {/* console_only gateway status banner - req 4.2, 4.5 */}
@@ -4500,7 +4550,7 @@ export function App() {
                         <div className={`message-row message-row-${message.role === "user" ? "user" : "assistant"}`}>
                           <div className={`message-bubble message-bubble-${message.role}`}>
                             <div className="message-role-line"><span className="message-role">{roleLabel(message.role)}</span>{message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}<span>{formatTimeLabel(message.created_at, true)}</span></div>
-                            <div className="message-content"><MessageContent content={message.content} /></div>
+                            <div className="message-content">{renderMessageContent(message.content)}</div>
                           </div>
                         </div>
                       </div>
@@ -4551,34 +4601,117 @@ export function App() {
         )}
       </div>
       {(() => {
-        const isPairingTimeout =
-          pairingModalTaskId !== null &&
-          pairingModalTask?.status !== "succeeded" &&
-          pairingModalTask?.status !== "failed" &&
-          now - pairingModalStartedAt > 30000;
+        const isPairingTimeout = pairingModalTaskId !== null && pairingModalTask?.status !== "succeeded" && pairingModalTask?.status !== "failed" && now - pairingModalStartedAt > 30000;
         const pairingStatusText = isPairingTimeout
           ? "配对超时，请检查节点是否在线"
           : pairingModalTask?.status === "succeeded"
-            ? "配对成功，节点已上线"
-            : pairingModalTask?.status === "failed"
-              ? (pairingModalTask.summary?.includes("密钥")
-                  ? "配对失败：密钥错误，请检查配对密钥是否一致"
-                  : pairingModalTask.summary?.includes("写入")
-                    ? "配对失败：节点配置写入失败，请检查节点磁盘权限"
-                    : `配对失败：${pairingModalTask.summary}`)
-              : "正在连接节点...";
-        return (
-          <PairingStatusModal
-            open={pairingModalTaskId !== null}
-            statusText={pairingStatusText}
-            showSpinner={(pairingModalTask?.status === "running" || pairingModalTask === null) && !isPairingTimeout}
-            showActions={pairingModalTask?.status === "failed" || isPairingTimeout}
-            onClose={closePairingModal}
-          />
-        );
+          ? "配对成功，节点已上线"
+          : pairingModalTask?.status === "failed"
+          ? (pairingModalTask.summary?.includes("密钥")
+              ? "配对失败：密钥错误，请检查配对密钥是否一致"
+              : pairingModalTask.summary?.includes("写入")
+              ? "配对失败：节点配置写入失败，请检查节点磁盘权限"
+              : `配对失败：${pairingModalTask.summary}`)
+          : "正在连接节点...";
+        return pairingModalTaskId !== null ? (
+          <div className="pairing-modal-overlay" onClick={() => { if (pairingModalTask?.status === "failed" || isPairingTimeout) closePairingModal(); }}>
+            <div className="pairing-modal-card" onClick={(e) => e.stopPropagation()}>
+              <div className="pairing-modal-title">节点配对</div>
+              <div className="pairing-modal-status">{pairingStatusText}</div>
+              {(pairingModalTask?.status === "running" || pairingModalTask === null) && !isPairingTimeout ? (
+                <div className="pairing-modal-spinner" aria-label="配对中" />
+              ) : null}
+              {(pairingModalTask?.status === "failed" || isPairingTimeout) ? (
+                <div className="pairing-modal-actions">
+                  <button type="button" onClick={closePairingModal}>重试</button>
+                  <button type="button" className="ghost-button" onClick={closePairingModal}>关闭</button>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null;
       })()}
     </div>
   );
+}
+
+function StatusChip({ label, value, tone }: { label: string; value: string; tone: "good" | "warn" }) { return <div className={`status-chip status-chip-${tone}`}><span>{label}</span><strong>{value}</strong></div>; }
+function SetupStepPill({ label, active, done }: { label: string; active?: boolean; done?: boolean }) { return <div className={`setup-step-pill ${active ? "setup-step-pill-active" : ""} ${done ? "setup-step-pill-done" : ""}`}>{label}</div>; }
+function PrepStrip({ label, detail, tone }: { label: string; detail: string; tone: "good" | "warn" }) { return <div className="prep-strip"><div className={`prep-dot prep-dot-${tone}`} /><div className="prep-copy"><strong>{label}</strong><span>{detail}</span></div></div>; }
+function Metric({ title, value }: { title: string; value: string }) { return <div className="metric-card"><div className="metric-title">{title}</div><div className="metric-value">{value}</div></div>; }
+function InfoRow({ label, value, multiline }: { label: string; value: string; multiline?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={multiline ? "multiline" : ""}>{value}</strong></div>; }
+function MetaPill({ label, value }: { label: string; value: string }) { return <div className="meta-pill"><span>{label}</span><strong>{value}</strong></div>; }
+function SnippetBlock({ label, content }: { label: string; content: string }) { return <div className="snippet-block"><div className="snippet-label">{label}</div><div className="snippet-content">{content}</div></div>; }
+function ToggleSecretInput(props: JSX.IntrinsicElements["input"]) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <input {...props} type={visible ? "text" : "password"} style={{ ...(props.style ?? {}), flex: 1 }} />
+      <button type="button" className="ghost-button" onClick={() => setVisible((current) => !current)} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+        {visible ? "隐藏" : "显示"}
+      </button>
+    </div>
+  );
+}
+function ConnectionHeroCard({ eyebrow, title, detail, tone }: { eyebrow: string; title: string; detail: string; tone: "good" | "warn" }) {
+  return (
+    <article className={`connection-hero-card connection-hero-card-${tone}`}>
+      <div className="connection-hero-eyebrow">{eyebrow}</div>
+      <div className="connection-hero-title">{title}</div>
+      <div className="connection-hero-detail">{detail}</div>
+    </article>
+  );
+}
+function ConnectionSignalCard({ label, value, meta, tone }: { label: string; value: string; meta: string; tone: "good" | "warn" }) {
+  return (
+    <article className={`connection-signal-card connection-signal-card-${tone}`}>
+      <div className="connection-signal-label">{label}</div>
+      <div className="connection-signal-value">{value}</div>
+      <div className="connection-signal-meta">{meta}</div>
+    </article>
+  );
+}
+function renderMessageContent(content: string) {
+  const parts = parseMarkdownImageParts(content);
+  if (!parts.length) {
+    return content;
+  }
+  return parts.map((part, index) => {
+    if (part.kind === "image") {
+      return (
+        <figure key={`img-${index}-${part.url}`} className="message-image-block">
+          <img className="message-inline-image" src={part.url} alt={part.alt || "message image"} loading="lazy" />
+          {part.alt ? <figcaption>{part.alt}</figcaption> : null}
+        </figure>
+      );
+    }
+    return (
+      <span key={`text-${index}`} className="message-text-fragment">
+        {part.text}
+      </span>
+    );
+  });
+}
+function parseMarkdownImageParts(content: string): Array<{ kind: "text"; text: string } | { kind: "image"; url: string; alt: string }> {
+  const pattern = /!\[([^\]]*)\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g;
+  const parts: Array<{ kind: "text"; text: string } | { kind: "image"; url: string; alt: string }> = [];
+  let cursor = 0;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      parts.push({ kind: "text", text: content.slice(cursor, index) });
+    }
+    parts.push({
+      kind: "image",
+      alt: match[1]?.trim() || "",
+      url: match[2].split(" ", 1)[0].trim(),
+    });
+    cursor = index + match[0].length;
+  }
+  if (cursor < content.length) {
+    parts.push({ kind: "text", text: content.slice(cursor) });
+  }
+  return parts;
 }
 
 function syncSessions(next: SessionRecord[], setSessions: React.Dispatch<React.SetStateAction<SessionRecord[]>>, setSelectedSessionId: React.Dispatch<React.SetStateAction<string | null>>, setActiveSession: React.Dispatch<React.SetStateAction<SessionRecord | null>>) {

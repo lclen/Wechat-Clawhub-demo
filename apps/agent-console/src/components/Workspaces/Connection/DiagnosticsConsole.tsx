@@ -1,4 +1,4 @@
-type DiagnosticsConsoleEntry = {
+export type DiagnosticsConsoleEntry = {
   id: string;
   title: string;
   target: string;

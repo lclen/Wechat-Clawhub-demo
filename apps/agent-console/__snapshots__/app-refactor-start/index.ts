@@ -79,7 +79,7 @@ export type LocalNodeStatusResponse = { service_name: string; state: string; pid
 export type LocalNodeLogsResponse = { service_name: string; event_log_path: string | null; service_log_path: string | null; wrapper_log_path: string | null; event_log: string; service_log: string; wrapper_log: string };
 export type LocalNodeActionResponse = { ok: boolean; detail: string; status: LocalNodeStatusResponse };
 export type LocalNodeExportResponse = { ok: boolean; export_path: string; detail: string };
-export type WorkspaceTab = "quick_setup" | "sessions" | "connection" | "logs";
+export type WorkspaceTab = "quick_setup" | "sessions" | "connection";
 export type SessionFilter = "all" | "processing" | "human" | "recent";
 export type SetupMode = "status" | "role" | "config" | "preview" | "result";
 export type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cache-redis";
@@ -109,7 +109,6 @@ export type AppUiStateCache = {
 };
 
 export type AppSummaryStateCache = {
-  system_status: SystemStatus | null;
   wechat_status: WeChatStatus | null;
   node_list: NodeListResponse | null;
   sessions: SessionRecord[];

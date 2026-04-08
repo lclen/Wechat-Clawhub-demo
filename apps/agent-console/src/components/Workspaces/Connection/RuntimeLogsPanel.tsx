@@ -1,4 +1,4 @@
-type RuntimeLogEntry = {
+export type RuntimeLogEntry = {
   id: string;
   title: string;
   subtitle: string;

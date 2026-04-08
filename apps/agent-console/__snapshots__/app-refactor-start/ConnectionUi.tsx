@@ -2,28 +2,6 @@ import { useState } from "react";
 import type { ComponentProps } from "react";
 import type { ConnectionHeroCardData, ConnectionSignalCardData, ConnectionTone } from "../../../types";
 
-export function StatusChip({ label, value, tone }: { label: string; value: string; tone: "good" | "warn" }) {
-  return (
-    <div className={`status-chip status-chip-${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-export function SetupStepPill({ label, active, done }: { label: string; active?: boolean; done?: boolean }) {
-  return <div className={`setup-step-pill ${active ? "setup-step-pill-active" : ""} ${done ? "setup-step-pill-done" : ""}`}>{label}</div>;
-}
-
-export function Metric({ title, value }: { title: string; value: string }) {
-  return (
-    <div className="metric-card">
-      <div className="metric-title">{title}</div>
-      <div className="metric-value">{value}</div>
-    </div>
-  );
-}
-
 export function ConnectionHeroCard({ eyebrow, title, detail, tone }: ConnectionHeroCardData) {
   return (
     <article className={`connection-hero-card connection-hero-card-${tone}`}>
@@ -61,15 +39,6 @@ export function InfoRow({ label, value, multiline }: { label: string; value: str
     <div className="info-row">
       <span>{label}</span>
       <strong className={multiline ? "multiline" : ""}>{value}</strong>
-    </div>
-  );
-}
-
-export function MetaPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="meta-pill">
-      <span>{label}</span>
-      <strong>{value}</strong>
     </div>
   );
 }
