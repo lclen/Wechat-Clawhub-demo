@@ -258,6 +258,8 @@ async def switch_session_node(
             session_id,
             requested_by="console",
             reason=payload.reason,
+            routing_mode=payload.routing_mode,
+            target_node_id=payload.target_node_id,
         )
         return SessionSwitchResponse(session=session, detail=detail)
     except SessionNotFoundError as exc:

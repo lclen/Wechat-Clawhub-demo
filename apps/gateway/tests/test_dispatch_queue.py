@@ -245,6 +245,37 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
             "dispatch_failed",
         )
 
+    async def test_switch_session_target_accepts_explicit_manual_target(self) -> None:
+        switched = self._build_session(session_id="session-6", assigned_node_id="node-2", assigned_slot_id="slot-02")
+        self.queue._switch_session = AsyncMock(return_value=switched)  # type: ignore[method-assign]
+
+        session, detail = await self.queue.switch_session_target(
+            "session-6",
+            requested_by="console",
+            reason="manual",
+            routing_mode=RoutingMode.MANUAL,
+            target_node_id="node-2",
+        )
+
+        self.assertEqual(session.assigned_node_id, "node-2")
+        self.assertIn("node-2", detail)
+        self.queue._switch_session.assert_awaited_once()
+        self.assertEqual(self.queue._switch_session.await_args.kwargs["target_node_id"], "node-2")
+
+    async def test_switch_session_target_reports_unavailable_manual_target(self) -> None:
+        unavailable = self._build_session(session_id="session-7", assigned_node_id="node-9", assigned_slot_id=None)
+        self.queue._switch_session = AsyncMock(return_value=unavailable)  # type: ignore[method-assign]
+
+        _, detail = await self.queue.switch_session_target(
+            "session-7",
+            requested_by="console",
+            reason="manual",
+            routing_mode=RoutingMode.MANUAL,
+            target_node_id="node-3",
+        )
+
+        self.assertIn("node-3", detail)
+
 
 if __name__ == "__main__":
     unittest.main()

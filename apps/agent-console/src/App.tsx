@@ -49,6 +49,7 @@ type SessionMessageCacheEntry = {
   loaded: boolean;
   lastLoadedAt: number;
 };
+type SessionSwitchRequest = { reason: string; routing_mode: RoutingMode; target_node_id?: string };
 type SessionSwitchResponse = { ok: boolean; session: SessionRecord; detail: string };
 type QrStart = { qrcode: string; qrcode_url: string };
 type PollResponse = { status: string; token?: string; base_url?: string; message?: string; bot_id?: string; user_id?: string };
@@ -715,6 +716,8 @@ export function App() {
       : initialSummaryState.sessions[0] ?? null,
   );
   const [messages, setMessages] = useState<MessageRecord[]>([]);
+  const [sessionRoutingModeDraft, setSessionRoutingModeDraft] = useState<RoutingMode>("auto");
+  const [sessionTargetNodeDraft, setSessionTargetNodeDraft] = useState("");
   const [sessionsLoaded, setSessionsLoaded] = useState(initialSummaryState.sessions.length > 0);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messageCursor, setMessageCursor] = useState<number>(0);
@@ -2471,12 +2474,22 @@ export function App() {
     }
   }
   async function switchSessionNode(sessionId: string) {
+    const routingMode = sessionRoutingModeDraft;
+    const targetNodeId = sessionTargetNodeDraft.trim();
+    if (routingMode === "manual" && !targetNodeId) {
+      setNotice("请先选择一个指定节点，再应用当前会话路由。");
+      return;
+    }
     try {
       const result = await withBusy(
         "session-switch-node",
         () => requestJson<SessionSwitchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/switch-node`, {
           method: "POST",
-          body: JSON.stringify({ reason: "console_manual_switch" }),
+          body: JSON.stringify({
+            reason: routingMode === "manual" ? "console_manual_target_switch" : "console_restore_auto_routing",
+            routing_mode: routingMode,
+            target_node_id: routingMode === "manual" ? targetNodeId : undefined,
+          } satisfies SessionSwitchRequest),
         }),
       );
       upsertSessionInView(result.session);
@@ -2484,7 +2497,7 @@ export function App() {
         refreshSessionDetail(sessionId),
         refreshGatewaySummarySnapshot(),
       ]);
-      setNotice(result.detail || "已提交会话切换请求。");
+      setNotice(result.detail || (routingMode === "manual" ? "已提交指定节点切换请求。" : "已恢复系统自动分配。"));
     } catch (error) {
       setNotice(`切换会话节点失败：${(error as Error).message}`);
     }
@@ -2750,7 +2763,17 @@ export function App() {
 
   const selectedSession = useMemo(() => sessions.find((session) => session.session_id === selectedSessionId) ?? activeSession, [sessions, selectedSessionId, activeSession]);
   const selectedNode = useMemo(() => nodes.find((node) => node.node_id === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const sessionSwitchableNodes = useMemo(() => nodes.filter((node) => node.status !== "offline"), [nodes]);
   const filteredSessions = useMemo(() => sessions.filter((session) => matchesFilter(session, sessionFilter, now)), [sessions, sessionFilter, now]);
+  useEffect(() => {
+    if (!selectedSession) {
+      setSessionRoutingModeDraft("auto");
+      setSessionTargetNodeDraft("");
+      return;
+    }
+    setSessionRoutingModeDraft(selectedSession.routing_mode);
+    setSessionTargetNodeDraft(selectedSession.assigned_node_id || "");
+  }, [selectedSession?.assigned_node_id, selectedSession?.routing_mode, selectedSession?.session_id]);
   const counts = useMemo(() => ({ all: sessions.length, processing: sessions.filter((item) => item.queue_status !== "none" || Boolean(item.active_task_id)).length, human: sessions.filter((item) => item.status === "human_active" || item.status === "handoff_pending").length, recent: sessions.filter((item) => isRecent(item, now)).length }), [sessions, now]);
   const latestUserMessage = useMemo(() => [...messages].reverse().find((message) => message.role === "user") ?? null, [messages]);
   const latestBotMessage = useMemo(() => [...messages].reverse().find((message) => message.role === "bot") ?? null, [messages]);
@@ -4541,7 +4564,41 @@ export function App() {
                     <>
                       <div className="stage-header-main">
                         <div><div className="section-kicker">当前会话</div><h2>{formatSessionName(selectedSession.user_id)}</h2><div className="subtitle-stack"><span title={selectedSession.user_id}>{selectedSession.user_id}</span><span>{selectedSession.channel}</span><span title={selectedSession.session_id}>{selectedSession.session_id}</span></div></div>
-                        <div className="stage-meta-row"><MetaPill label="Agent" value={selectedSession.agent_id} /><MetaPill label="节点" value={selectedSession.assigned_node_id || "未绑定"} /><MetaPill label="槽位" value={selectedSession.assigned_slot_id || "未占用"} /><MetaPill label="路由" value={selectedSession.routing_mode === "manual" ? "手动切换" : "自动分配"} /><MetaPill label="状态" value={getSessionBadgeLabel(selectedSession)} />{!currentRoleIsWorker ? <button type="button" className="ghost-button session-switch-trigger" onClick={() => void switchSessionNode(selectedSession.session_id)} disabled={busy !== null}>{busy === "session-switch-node" ? "切换中..." : "切换节点"}</button> : null}<button type="button" className="memory-inline-trigger" onClick={() => setInspectorOpen(true)}>会话记忆</button></div>
+                        <div className="stage-meta-row">
+                          <MetaPill label="Agent" value={selectedSession.agent_id} />
+                          <MetaPill label="节点" value={selectedSession.assigned_node_id || "未绑定"} />
+                          <MetaPill label="槽位" value={selectedSession.assigned_slot_id || "未占用"} />
+                          <MetaPill label="路由" value={selectedSession.routing_mode === "manual" ? "指定节点" : "自动分配"} />
+                          <MetaPill label="状态" value={getSessionBadgeLabel(selectedSession)} />
+                          {!currentRoleIsWorker ? (
+                            <div className="session-routing-controls">
+                              <label className="session-routing-select">
+                                <span>路由策略</span>
+                                <select value={sessionRoutingModeDraft} onChange={(event) => setSessionRoutingModeDraft(event.target.value as RoutingMode)} disabled={busy !== null}>
+                                  <option value="auto">系统自动分配</option>
+                                  <option value="manual">指定节点</option>
+                                </select>
+                              </label>
+                              {sessionRoutingModeDraft === "manual" ? (
+                                <label className="session-routing-select">
+                                  <span>目标节点</span>
+                                  <select value={sessionTargetNodeDraft} onChange={(event) => setSessionTargetNodeDraft(event.target.value)} disabled={busy !== null}>
+                                    <option value="">请选择节点</option>
+                                    {sessionSwitchableNodes.map((node) => (
+                                      <option key={node.node_id} value={node.node_id}>
+                                        {node.hostname || node.node_id} · {node.node_id}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              ) : null}
+                              <button type="button" className="ghost-button session-switch-trigger" onClick={() => void switchSessionNode(selectedSession.session_id)} disabled={busy !== null || (sessionRoutingModeDraft === "manual" && !sessionTargetNodeDraft.trim())}>
+                                {busy === "session-switch-node" ? "应用中..." : sessionRoutingModeDraft === "manual" ? "绑定节点" : "恢复自动"}
+                              </button>
+                            </div>
+                          ) : null}
+                          <button type="button" className="memory-inline-trigger" onClick={() => setInspectorOpen(true)}>会话记忆</button>
+                        </div>
                       </div>
                       <div className="header-status-line"><span>上下文版本 v{selectedSession.context_version}</span><span>最后调度 {formatTimeLabel(selectedSession.last_dispatch_at || selectedSession.updated_at, true)}</span><span>{typingState || channelReleaseHint || "当前没有活跃任务"}</span></div>
                     </>

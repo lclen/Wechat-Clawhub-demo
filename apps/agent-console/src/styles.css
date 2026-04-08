@@ -953,6 +953,27 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   border-radius: 999px;
   padding: 10px 14px;
 }
+.session-routing-controls {
+  display: inline-flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.session-routing-select {
+  display: grid;
+  gap: 6px;
+  min-width: 160px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.session-routing-select select {
+  min-width: 160px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(19, 28, 48, 0.12);
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text);
+}
 .dispatch-warning {
   margin-top: 14px;
   background: rgba(255, 245, 230, 0.9);

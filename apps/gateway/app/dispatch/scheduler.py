@@ -18,8 +18,9 @@ class DispatchScheduler:
         session: SessionRecord,
         *,
         exclude_node_ids: set[str] | None = None,
+        preferred_node_id: str | None = None,
     ) -> NodeRecord | None:
-        ranked = await self.rank_nodes(session, exclude_node_ids=exclude_node_ids)
+        ranked = await self.rank_nodes(session, exclude_node_ids=exclude_node_ids, preferred_node_id=preferred_node_id)
         return ranked[0] if ranked else None
 
     async def rank_nodes(
@@ -27,10 +28,13 @@ class DispatchScheduler:
         session: SessionRecord,
         *,
         exclude_node_ids: set[str] | None = None,
+        preferred_node_id: str | None = None,
     ) -> list[NodeRecord]:
         nodes = await self._node_registry.list_nodes()
         if self._settings.dispatch_mode_enabled:
             nodes = [node for node in nodes if node.node_id != self._settings.local_node_id]
+        if preferred_node_id is not None:
+            nodes = [node for node in nodes if node.node_id == preferred_node_id]
         if exclude_node_ids:
             nodes = [node for node in nodes if node.node_id not in exclude_node_ids]
         if not nodes:
@@ -40,8 +44,9 @@ class DispatchScheduler:
         seen_node_ids: set[str] = set()
 
         preferred = None
-        if session.assigned_node_id:
-            preferred = next((item for item in nodes if item.node_id == session.assigned_node_id), None)
+        preferred_candidate_id = preferred_node_id or session.assigned_node_id
+        if preferred_candidate_id:
+            preferred = next((item for item in nodes if item.node_id == preferred_candidate_id), None)
             if preferred and self._can_assign(preferred):
                 ordered.append(preferred)
                 seen_node_ids.add(preferred.node_id)

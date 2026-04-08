@@ -103,6 +103,8 @@ class InboundMessageResponse(BaseModel):
 
 class SessionSwitchRequest(BaseModel):
     reason: str = Field(default="manual_switch", min_length=1, max_length=128)
+    routing_mode: RoutingMode = RoutingMode.AUTO
+    target_node_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class SessionSwitchResponse(BaseModel):

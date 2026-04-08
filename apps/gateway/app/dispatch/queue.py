@@ -305,19 +305,25 @@ class DispatchQueue:
         *,
         requested_by: str,
         reason: str,
+        routing_mode: RoutingMode = RoutingMode.MANUAL,
+        target_node_id: str | None = None,
     ) -> tuple[SessionRecord, str]:
         session = await self._switch_session(
             session_id,
             requested_by=requested_by,
             reason=reason,
-            routing_mode=RoutingMode.MANUAL,
+            routing_mode=routing_mode,
             exclude_node_ids=None,
             allow_active_task_cleanup=True,
+            target_node_id=target_node_id,
         )
         if session.assigned_node_id and session.assigned_slot_id:
-            detail = f"已切换到 {session.assigned_node_id} / {session.assigned_slot_id}"
+            if routing_mode == RoutingMode.MANUAL and target_node_id:
+                detail = f"已绑定到 {session.assigned_node_id} / {session.assigned_slot_id}"
+            else:
+                detail = f"已切换到 {session.assigned_node_id} / {session.assigned_slot_id}"
         else:
-            detail = "当前没有可用 claw 节点或可分配通道。"
+            detail = f"指定节点 {target_node_id} 当前不可用或没有空闲通道。" if routing_mode == RoutingMode.MANUAL and target_node_id else "当前没有可用 claw 节点或可分配通道。"
         return session, detail
 
     async def _switch_session(
@@ -329,8 +335,10 @@ class DispatchQueue:
         routing_mode: RoutingMode,
         exclude_node_ids: set[str] | None,
         allow_active_task_cleanup: bool,
+        target_node_id: str | None = None,
     ) -> SessionRecord:
         session = await self._session_manager.get_session(session_id)
+        preferred_target_node_id = (target_node_id or "").strip() or None
         self._transcript_writer.append_event(
             session_id=session_id,
             event_type="dispatch_switch_requested",
@@ -342,6 +350,7 @@ class DispatchQueue:
                 "from_node_id": session.assigned_node_id,
                 "from_slot_id": session.assigned_slot_id,
                 "routing_mode": routing_mode.value,
+                "target_node_id": preferred_target_node_id or "",
             },
         )
         if allow_active_task_cleanup and session.active_task_id:
@@ -354,18 +363,19 @@ class DispatchQueue:
             clear_assigned_node=False,
         )
         excluded = set(exclude_node_ids or set())
-        if released.assigned_node_id:
+        if preferred_target_node_id is None and released.assigned_node_id:
             excluded.add(released.assigned_node_id)
         allocation = await self._ensure_slot_assignment(
             released,
             routing_mode=routing_mode,
             exclude_node_ids=excluded or None,
             allow_existing_slot=False,
+            preferred_node_id=preferred_target_node_id,
         )
         if allocation is None:
             return await self._session_manager.set_dispatch_state(
                 session_id=released.session_id,
-                assigned_node_id=released.assigned_node_id,
+                assigned_node_id=preferred_target_node_id if preferred_target_node_id is not None else released.assigned_node_id,
                 assigned_slot_id=None,
                 active_task_id=None,
                 queue_status=QueueStatus.NONE,
@@ -388,6 +398,7 @@ class DispatchQueue:
                 "to_node_id": switched.assigned_node_id,
                 "to_slot_id": switched.assigned_slot_id,
                 "routing_mode": routing_mode.value,
+                "target_node_id": preferred_target_node_id or switched.assigned_node_id or "",
             },
         )
         return switched
@@ -581,6 +592,7 @@ class DispatchQueue:
         routing_mode: RoutingMode,
         exclude_node_ids: set[str] | None = None,
         allow_existing_slot: bool = True,
+        preferred_node_id: str | None = None,
     ) -> tuple[SessionRecord, str | None, str | None] | None:
         previous_node_id = session.assigned_node_id
         previous_slot_id = session.assigned_slot_id
@@ -602,7 +614,11 @@ class DispatchQueue:
                 )
                 return updated, previous_node_id, previous_slot_id
 
-        candidates = await self._scheduler.rank_nodes(session, exclude_node_ids=exclude_node_ids)
+        candidates = await self._scheduler.rank_nodes(
+            session,
+            exclude_node_ids=exclude_node_ids,
+            preferred_node_id=preferred_node_id,
+        )
         for candidate in candidates:
             slot_id = await self._acquire_free_slot(candidate.node_id, candidate.channel_capacity, session.session_id)
             if slot_id is None:

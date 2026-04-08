@@ -92,6 +92,17 @@ class DispatchSchedulerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([node.node_id for node in ranked], ["local-node", "remote-node"])
 
+    async def test_scheduler_honors_explicit_preferred_node_only(self) -> None:
+        settings = Settings(_env_file=None, dispatch_mode_enabled=False, local_node_id="local-node")
+        scheduler = DispatchScheduler(
+            FakeNodeRegistry([build_node("local-node"), build_node("remote-node")]),
+            settings,
+        )
+
+        ranked = await scheduler.rank_nodes(build_session(), preferred_node_id="remote-node")
+
+        self.assertEqual([node.node_id for node in ranked], ["remote-node"])
+
 
 if __name__ == "__main__":
     unittest.main()
