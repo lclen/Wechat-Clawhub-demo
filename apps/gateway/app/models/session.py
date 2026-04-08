@@ -83,6 +83,8 @@ class SessionMessagesResponse(BaseModel):
     messages: list[MessageRecord]
     next_cursor: int = 0
     replace_messages: bool = True
+    history_start: int | None = None
+    has_more_before: bool | None = None
 
 
 class InboundMessageRequest(BaseModel):
@@ -131,4 +133,3 @@ class SessionReleaseResponse(BaseModel):
     ok: bool = True
     session: SessionRecord
     detail: str = ""
-

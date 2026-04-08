@@ -14,7 +14,7 @@ from app.core.deps import (
     get_setup_service,
 )
 from app.dispatch.queue import DispatchQueue, DispatchQueueError, DispatchTaskNotFoundError
-from app.models.dispatch import PullTaskResponse, TaskFailureRequest, TaskResultRequest
+from app.models.dispatch import ChannelReleasedRequest, PullTaskResponse, TaskFailureRequest, TaskResultRequest
 from app.models.node import (
     NodeDiagnosticsRecord,
     NodeDiagnosticsResponse,
@@ -356,6 +356,35 @@ async def stream_node_tasks(
                 except DispatchQueueError:
                     await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "dispatch_error"})
 
+            elif event_type == "channel_released":
+                if not event.get("session_id") or not event.get("slot_id"):
+                    await websocket.send_json({"type": "error", "reason": "invalid_channel_released"})
+                    continue
+                try:
+                    payload = ChannelReleasedRequest(
+                        session_id=str(event["session_id"]),
+                        node_id=node_id,
+                        slot_id=str(event["slot_id"]),
+                        reason=str(event.get("reason") or "idle_timeout"),
+                        last_active_at=event.get("last_active_at"),
+                        released_at=event.get("released_at"),
+                    )
+                    await dispatch_queue.release_channel_from_node(payload)
+                    websocket.app.state.setup_service.record_channel_event(
+                        node_id,
+                        result="released",
+                        message=f"节点已释放空闲通道 {payload.slot_id}",
+                        reason=payload.reason,
+                        session_id=payload.session_id,
+                        slot_id=payload.slot_id,
+                        last_active_at=payload.last_active_at.isoformat() if payload.last_active_at else "",
+                        released_at=payload.released_at.isoformat() if payload.released_at else "",
+                    )
+                    await websocket.app.state.gateway_summary_service.publish_if_needed()
+                    await websocket.send_json({"type": "ack", "event": "channel_released"})
+                except DispatchQueueError:
+                    await websocket.send_json({"type": "error", "reason": "dispatch_error"})
+
             elif event_type == "heartbeat":
                 # Node heartbeat
                 await websocket.send_json({"type": "pong"})
@@ -426,6 +455,41 @@ async def submit_task_failure(
         return NodeOperationResponse(node=node)
     except DispatchTaskNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except DispatchQueueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except NodeRegistryError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+
+
+@router.post("/{node_id}/channel-released", response_model=NodeOperationResponse)
+async def submit_channel_released(
+    request: Request,
+    node_id: str,
+    payload: ChannelReleasedRequest,
+    store: RedisStore = Depends(get_redis_store),
+    registry: NodeRegistry = Depends(get_node_registry),
+    dispatch_queue: DispatchQueue = Depends(get_dispatch_queue),
+    node_auth: NodeAuthService = Depends(get_node_auth),
+) -> NodeOperationResponse:
+    await ensure_redis_available(store)
+    node_auth.verify_request(request, node_id)
+    if payload.node_id != node_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="node_id mismatch")
+    try:
+        await dispatch_queue.release_channel_from_node(payload)
+        request.app.state.setup_service.record_channel_event(
+            node_id,
+            result="released",
+            message=f"节点已释放空闲通道 {payload.slot_id}",
+            reason=payload.reason,
+            session_id=payload.session_id,
+            slot_id=payload.slot_id,
+            last_active_at=payload.last_active_at.isoformat() if payload.last_active_at else "",
+            released_at=payload.released_at.isoformat() if payload.released_at else "",
+        )
+        await request.app.state.gateway_summary_service.publish_if_needed()
+        node = await registry.get(node_id)
+        return NodeOperationResponse(node=node)
     except DispatchQueueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except NodeRegistryError as exc:

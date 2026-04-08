@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 from collections.abc import Mapping
 from typing import Any
@@ -95,6 +96,16 @@ class GatewayClient:
         data = response.json()
         return data.get("task")
 
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        client = self._get_client()
+        response = await client.get("/api/sessions")
+        response.raise_for_status()
+        data = response.json()
+        sessions = data.get("sessions")
+        if not isinstance(sessions, list):
+            return []
+        return [item for item in sessions if isinstance(item, dict)]
+
     async def submit_result(
         self,
         *,
@@ -147,18 +158,46 @@ class GatewayClient:
         response.raise_for_status()
         return response.json()
 
+    async def submit_channel_released(
+        self,
+        *,
+        session_id: str,
+        slot_id: str,
+        reason: str,
+        last_active_at: str | None = None,
+        released_at: str | None = None,
+    ) -> dict[str, Any]:
+        client = self._get_client()
+        payload = {
+            "session_id": session_id,
+            "node_id": self._settings.node_id,
+            "slot_id": slot_id,
+            "reason": reason,
+            "last_active_at": last_active_at,
+            "released_at": released_at,
+        }
+        response = await client.post(
+            f"/api/nodes/{self._settings.node_id}/channel-released",
+            json=payload,
+        )
+        response.raise_for_status()
+        return response.json()
+
     def task_stream_connection(self) -> Connect:
         headers = self._build_gateway_headers()
+        connect_kwargs = {
+            self._websocket_headers_keyword(): headers,
+            "open_timeout": 30,
+            "ping_interval": 20,
+            "ping_timeout": 20,
+            "max_size": 4_000_000,
+        }
         return websockets.connect(
             self._build_websocket_url(
                 f"/api/nodes/{self._settings.node_id}/ws",
                 {"wait_seconds": str(self._settings.pull_wait_seconds)},
             ),
-            extra_headers=headers,
-            open_timeout=30,
-            ping_interval=20,
-            ping_timeout=20,
-            max_size=4_000_000,
+            **connect_kwargs,
         )
 
     def _ensure_client(self) -> None:
@@ -206,3 +245,12 @@ class GatewayClient:
         scheme = "wss" if parts.scheme == "https" else "ws"
         query_string = urlencode(query or {})
         return urlunsplit((scheme, parts.netloc, path, query_string, ""))
+
+    def _websocket_headers_keyword(self) -> str:
+        try:
+            parameters = inspect.signature(websockets.connect).parameters
+        except (TypeError, ValueError):
+            return "extra_headers"
+        if "additional_headers" in parameters:
+            return "additional_headers"
+        return "extra_headers"

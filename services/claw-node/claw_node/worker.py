@@ -6,6 +6,8 @@ import logging
 import time
 from collections import deque
 from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -24,22 +26,34 @@ from claw_node.openai_compatible_client import OpenAICompatibleClient
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ChannelLeaseState:
+    session_id: str
+    slot_id: str
+    user_id: str
+    last_active_at: datetime
+    inflight_task_id: str | None = None
+
+
 class Worker:
     def __init__(self, settings: NodeSettings) -> None:
         self._settings = settings
         self._pending_diagnostics_events: deque[dict[str, Any]] = deque(maxlen=100)
         self._diagnostics = NodeDiagnostics(settings, event_hook=self._enqueue_diagnostics_event)
         self._gateway = GatewayClient(settings)
-        self._inference, self._inference_error = create_inference_client(settings)
-        self._discovery = DiscoveryService(settings, self._handle_pair_request)
         self._local_cache = LocalCache(settings)
+        self._inference, self._inference_error = create_inference_client(settings, local_cache=self._local_cache)
+        self._discovery = DiscoveryService(settings, self._handle_pair_request)
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
         self._active_tasks: set[asyncio.Task] = set()
+        self._channel_states: dict[str, ChannelLeaseState] = {}
+        self._channel_states_lock = asyncio.Lock()
         self._shutdown = asyncio.Event()
         self._last_error: str | None = None
         self._auth_failed = False
         self._heartbeat_task: asyncio.Task | None = None
         self._polling_task: asyncio.Task | None = None
+        self._channel_maintenance_task: asyncio.Task | None = None
         self._task_stream_websocket: WebSocketClientProtocol | None = None
         self._task_stream_send_lock = asyncio.Lock()
 
@@ -51,7 +65,7 @@ class Worker:
         )
         self._publish_inference_status()
         logger.info(
-            "[worker] starting node_id=%s gateway=%s provider=%s model=%s thinking=%s concurrency=%s pull_interval_ms=%s pull_wait_s=%s task_stream=%s heartbeat_s=%s hostname=%s lan_ip=%s advertised=%s",
+            "[worker] starting node_id=%s gateway=%s provider=%s model=%s thinking=%s concurrency=%s pull_interval_ms=%s pull_wait_s=%s task_stream=%s heartbeat_s=%s idle_timeout_s=%s hostname=%s lan_ip=%s advertised=%s",
             self._settings.node_id,
             self._settings.gateway_base_url,
             self._settings.model_provider,
@@ -62,6 +76,7 @@ class Worker:
             self._settings.pull_wait_seconds,
             self._settings.task_stream_enabled,
             self._settings.heartbeat_interval_seconds,
+            self._settings.channel_idle_timeout_seconds,
             self._gateway.identity.hostname,
             self._gateway.identity.lan_ip or "-",
             self._gateway.identity.advertised_address or "-",
@@ -213,6 +228,7 @@ class Worker:
             task.get("user_id"),
             self._preview_text(((task.get("message") or {}).get("content") or "")),
         )
+        await self._mark_channel_task_started(task)
         await self._semaphore.acquire()
         worker_task = asyncio.create_task(self._handle_task(task))
         self._active_tasks.add(worker_task)
@@ -256,6 +272,7 @@ class Worker:
                             task.get("user_id"),
                             self._preview_text(((task.get("message") or {}).get("content") or "")),
                         )
+                        await self._mark_channel_task_started(task)
                         await self._semaphore.acquire()
                         worker_task = asyncio.create_task(self._handle_task(task))
                         self._active_tasks.add(worker_task)
@@ -346,7 +363,12 @@ class Worker:
             "节点已完成 register，并开始 heartbeat / pull loop。",
             trace_id=self._settings.pairing_trace_id.strip(),
         )
+        await self._sync_channel_states_from_gateway()
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop(), name="heartbeat-loop")
+        self._channel_maintenance_task = asyncio.create_task(
+            self._channel_maintenance_loop(),
+            name="channel-maintenance-loop",
+        )
         poll_loop = self._task_stream_loop if self._settings.task_stream_enabled else self._poll_loop
         poll_task_name = "task-stream-loop" if self._settings.task_stream_enabled else "poll-loop"
         self._polling_task = asyncio.create_task(poll_loop(), name=poll_task_name)
@@ -389,7 +411,11 @@ class Worker:
         logger.info("[worker] node registered successfully: %s", self._settings.node_id)
 
     async def _stop_gateway_loops(self) -> None:
-        tasks = [task for task in (self._heartbeat_task, self._polling_task) if task is not None]
+        tasks = [
+            task
+            for task in (self._heartbeat_task, self._polling_task, self._channel_maintenance_task)
+            if task is not None
+        ]
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -397,6 +423,7 @@ class Worker:
                 await task
         self._heartbeat_task = None
         self._polling_task = None
+        self._channel_maintenance_task = None
         self._task_stream_websocket = None
 
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:
@@ -576,15 +603,17 @@ class Worker:
                 context_summary=task.get("context_summary", ""),
                 recent_messages=recent_messages,
             )
+            result_metadata = self._stringify_mapping(usage or {})
             submit_started_at = time.perf_counter()
             await self._submit_task_result(
                 task_id=task["task_id"],
                 session_id=task["session_id"],
                 context_version=task["context_version"],
                 content=answer,
-                metadata=self._stringify_mapping(usage or {}),
-                usage=self._stringify_mapping(usage or {}),
+                metadata=result_metadata,
+                usage=result_metadata,
             )
+            await self._mark_channel_task_completed(task)
             total_ms = (time.perf_counter() - started_at) * 1000
             submit_ms = (time.perf_counter() - submit_started_at) * 1000
             logger.info(
@@ -599,7 +628,7 @@ class Worker:
             await self._local_cache.store_last_answer(
                 task["session_id"],
                 answer,
-                self._stringify_mapping(usage or {}),
+                result_metadata,
             )
         except Exception as exc:
             logger.exception("Task execution failed: %s", exc)
@@ -620,6 +649,8 @@ class Worker:
                     error_message=str(exc),
                     retryable=False,
                 )
+            with suppress(Exception):
+                await self._mark_channel_task_completed(task)
 
     async def _submit_task_result(
         self,
@@ -678,6 +709,33 @@ class Worker:
             error_code=error_code,
             error_message=error_message,
             retryable=retryable,
+        )
+
+    async def _submit_channel_released(
+        self,
+        *,
+        session_id: str,
+        slot_id: str,
+        reason: str,
+        last_active_at: datetime,
+        released_at: datetime,
+    ) -> None:
+        event = {
+            "type": "channel_released",
+            "session_id": session_id,
+            "slot_id": slot_id,
+            "reason": reason,
+            "last_active_at": last_active_at.isoformat(),
+            "released_at": released_at.isoformat(),
+        }
+        if await self._try_send_task_stream_event(event):
+            return
+        await self._gateway.submit_channel_released(
+            session_id=session_id,
+            slot_id=slot_id,
+            reason=reason,
+            last_active_at=last_active_at.isoformat(),
+            released_at=released_at.isoformat(),
         )
 
     async def _try_send_task_stream_event(self, event: dict[str, Any]) -> bool:
@@ -746,8 +804,139 @@ class Worker:
                 logger.warning("[worker] failed to send diagnostics event: %s", exc)
                 self._pending_diagnostics_events.popleft()
 
+    async def _mark_channel_task_started(self, task: dict[str, Any]) -> None:
+        session_id = str(task.get("session_id") or "").strip()
+        slot_id = str(task.get("slot_id") or "").strip()
+        task_id = str(task.get("task_id") or "").strip()
+        user_id = str(task.get("user_id") or "").strip()
+        if not session_id or not slot_id:
+            return
+        async with self._channel_states_lock:
+            self._channel_states[session_id] = ChannelLeaseState(
+                session_id=session_id,
+                slot_id=slot_id,
+                user_id=user_id,
+                last_active_at=self._utcnow(),
+                inflight_task_id=task_id or None,
+            )
+
+    async def _mark_channel_task_completed(self, task: dict[str, Any]) -> None:
+        session_id = str(task.get("session_id") or "").strip()
+        if not session_id:
+            return
+        async with self._channel_states_lock:
+            current = self._channel_states.get(session_id)
+            if current is None:
+                return
+            current.last_active_at = self._utcnow()
+            current.inflight_task_id = None
+
+    async def _channel_maintenance_loop(self) -> None:
+        while not self._shutdown.is_set():
+            try:
+                await self._release_idle_channels_if_needed()
+            except Exception as exc:
+                logger.warning("[worker] channel maintenance failed: %s", exc)
+            await asyncio.sleep(self._settings.channel_idle_check_interval_seconds)
+
+    async def _release_idle_channels_if_needed(self) -> None:
+        now = self._utcnow()
+        timeout_seconds = self._settings.channel_idle_timeout_seconds
+        releasable: list[ChannelLeaseState] = []
+        async with self._channel_states_lock:
+            for state in self._channel_states.values():
+                if state.inflight_task_id is not None:
+                    continue
+                idle_seconds = (now - state.last_active_at).total_seconds()
+                if idle_seconds < timeout_seconds:
+                    continue
+                releasable.append(
+                    ChannelLeaseState(
+                        session_id=state.session_id,
+                        slot_id=state.slot_id,
+                        user_id=state.user_id,
+                        last_active_at=state.last_active_at,
+                        inflight_task_id=None,
+                    )
+                )
+
+        for state in releasable:
+            released_at = self._utcnow()
+            logger.info(
+                "[dispatch] releasing idle channel session=%s slot=%s last_active_at=%s idle_timeout_s=%s",
+                state.session_id,
+                state.slot_id,
+                state.last_active_at.isoformat(),
+                timeout_seconds,
+            )
+            await self._submit_channel_released(
+                session_id=state.session_id,
+                slot_id=state.slot_id,
+                reason="idle_timeout",
+                last_active_at=state.last_active_at,
+                released_at=released_at,
+            )
+            async with self._channel_states_lock:
+                current = self._channel_states.get(state.session_id)
+                if current is None:
+                    continue
+                if current.slot_id != state.slot_id or current.inflight_task_id is not None:
+                    continue
+                if current.last_active_at != state.last_active_at:
+                    continue
+                self._channel_states.pop(state.session_id, None)
+
+    async def _sync_channel_states_from_gateway(self) -> None:
+        try:
+            sessions = await self._gateway.list_sessions()
+        except Exception as exc:
+            logger.warning("[worker] failed to recover channel leases from gateway: %s", exc)
+            return
+
+        recovered: dict[str, ChannelLeaseState] = {}
+        for session in sessions:
+            assigned_node_id = str(session.get("assigned_node_id") or "").strip()
+            assigned_slot_id = str(session.get("assigned_slot_id") or "").strip()
+            session_id = str(session.get("session_id") or "").strip()
+            user_id = str(session.get("user_id") or "").strip()
+            if assigned_node_id != self._settings.node_id or not assigned_slot_id or not session_id:
+                continue
+            last_active_at = self._parse_runtime_datetime(
+                session.get("last_message_at"),
+                fallback=self._parse_runtime_datetime(session.get("last_dispatch_at"), fallback=self._utcnow()),
+            )
+            inflight_task_id = str(session.get("active_task_id") or "").strip() or None
+            recovered[session_id] = ChannelLeaseState(
+                session_id=session_id,
+                slot_id=assigned_slot_id,
+                user_id=user_id,
+                last_active_at=last_active_at,
+                inflight_task_id=inflight_task_id,
+            )
+
+        async with self._channel_states_lock:
+            self._channel_states.update(recovered)
+
+        if recovered:
+            logger.info(
+                "[worker] recovered channel leases from gateway node_id=%s lease_count=%s",
+                self._settings.node_id,
+                len(recovered),
+            )
+
     def _stringify_mapping(self, payload: dict[str, Any]) -> dict[str, str]:
         return {str(k): str(v) for k, v in payload.items()}
+
+    def _utcnow(self) -> datetime:
+        return datetime.now(UTC)
+
+    def _parse_runtime_datetime(self, value: Any, *, fallback: datetime) -> datetime:
+        if isinstance(value, str) and value.strip():
+            try:
+                return datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                return fallback
+        return fallback
 
     def _preview_text(self, text: str, max_len: int = 80) -> str:
         one_line = " ".join(text.split())

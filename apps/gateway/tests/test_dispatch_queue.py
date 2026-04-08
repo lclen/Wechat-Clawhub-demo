@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueue
+from app.models.dispatch import ChannelReleasedRequest
 from app.models.session import MessageRecord, MessageRole, RoutingMode, SessionRecord, SessionStatus
 
 
@@ -244,6 +245,40 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
             self.session_manager.append_bot_message.await_args.kwargs["metadata"]["notice_kind"],
             "dispatch_failed",
         )
+
+    async def test_release_channel_from_node_clears_assignment_for_idle_session(self) -> None:
+        session = self._build_session(session_id="session-6", assigned_node_id="node-1", assigned_slot_id="slot-01")
+        self.session_manager.get_session.return_value = session
+        self.queue._release_slot = AsyncMock(return_value=self._build_session(session_id="session-6", assigned_node_id=None, assigned_slot_id=None))  # type: ignore[method-assign]
+        payload = ChannelReleasedRequest(
+            session_id="session-6",
+            node_id="node-1",
+            slot_id="slot-01",
+            reason="idle_timeout",
+        )
+
+        released = await self.queue.release_channel_from_node(payload)
+
+        self.assertIsNotNone(released)
+        self.queue._release_slot.assert_awaited_once()
+        self.assertTrue(self.queue._release_slot.await_args.kwargs["clear_assigned_node"])
+
+    async def test_release_channel_from_node_ignores_busy_session(self) -> None:
+        session = self._build_session(session_id="session-7", assigned_node_id="node-1", assigned_slot_id="slot-01")
+        session = session.model_copy(update={"active_task_id": "task-7", "queue_status": "inflight"})
+        self.session_manager.get_session.return_value = session
+        self.queue._release_slot = AsyncMock()  # type: ignore[method-assign]
+        payload = ChannelReleasedRequest(
+            session_id="session-7",
+            node_id="node-1",
+            slot_id="slot-01",
+            reason="idle_timeout",
+        )
+
+        released = await self.queue.release_channel_from_node(payload)
+
+        self.assertEqual(released, session)
+        self.queue._release_slot.assert_not_awaited()
 
 
 if __name__ == "__main__":

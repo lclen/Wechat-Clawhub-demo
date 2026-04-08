@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 
 from claw_node.config import NodeSettings
-from claw_node.worker import Worker
+from claw_node.worker import ChannelLeaseState, Worker
 
 
 class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -215,8 +215,8 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("401", str(payload["detail"]))
 
     async def test_pairing_persists_to_configured_env_file(self) -> None:
-        with TemporaryDirectory() as temp_dir:
-            env_path = Path(temp_dir) / "node.env"
+        env_path = Path(__file__).resolve().parent / ".tmp-node.env"
+        try:
             env_path.write_text("CLAW_NODE_ID=stale-node\nCLAW_NODE_TOKEN=\n", encoding="utf-8")
             settings = NodeSettings(
                 CLAW_NODE_ID="node-local-1",
@@ -237,6 +237,8 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("CLAW_GATEWAY_BASE_URL=http://127.0.0.1:8300", persisted)
             self.assertIn("CLAW_NODE_TOKEN=stale-token", persisted)
             self.assertIn("CLAW_LOCAL_DIRECT_AUTH=false", persisted)
+        finally:
+            env_path.unlink(missing_ok=True)
 
     async def test_submit_task_result_prefers_task_stream_event(self) -> None:
         settings = NodeSettings(
@@ -325,6 +327,138 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         websocket.send.assert_awaited_once()
         self.assertEqual(len(worker._pending_diagnostics_events), 0)
+
+    async def test_handle_task_submits_dify_conversation_id_in_metadata(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        worker._inference = MagicMock()
+        worker._inference.ask = AsyncMock(
+            return_value=("hello", {"completion_tokens": 12, "dify_conversation_id": "conv-42"})
+        )
+        worker._submit_task_result = AsyncMock()
+        worker._local_cache.store_context_snapshot = AsyncMock()
+        worker._local_cache.store_last_answer = AsyncMock()
+
+        task = {
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "slot_id": "slot-01",
+            "user_id": "user-1",
+            "agent_id": "agent-1",
+            "context_version": 2,
+            "message": {"content": "hi"},
+            "recent_messages": [],
+            "context_summary": "",
+        }
+
+        await worker._mark_channel_task_started(task)
+        await worker._handle_task(task)
+
+        worker._submit_task_result.assert_awaited_once()
+        metadata = worker._submit_task_result.await_args.kwargs["metadata"]
+        self.assertEqual(metadata["dify_conversation_id"], "conv-42")
+        self.assertEqual(metadata["completion_tokens"], "12")
+
+    async def test_release_idle_channels_reports_channel_released(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_CHANNEL_IDLE_TIMEOUT_SECONDS=600,
+        )
+        worker = Worker(settings)
+        worker._submit_channel_released = AsyncMock()
+        past = datetime.now(UTC) - timedelta(seconds=601)
+        worker._channel_states["session-1"] = ChannelLeaseState(
+            session_id="session-1",
+            slot_id="slot-01",
+            user_id="user-1",
+            last_active_at=past,
+            inflight_task_id=None,
+        )
+
+        await worker._release_idle_channels_if_needed()
+
+        worker._submit_channel_released.assert_awaited_once()
+        self.assertNotIn("session-1", worker._channel_states)
+
+    async def test_release_idle_channels_skips_inflight_tasks(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_CHANNEL_IDLE_TIMEOUT_SECONDS=600,
+        )
+        worker = Worker(settings)
+        worker._submit_channel_released = AsyncMock()
+        past = datetime.now(UTC) - timedelta(seconds=601)
+        worker._channel_states["session-2"] = ChannelLeaseState(
+            session_id="session-2",
+            slot_id="slot-02",
+            user_id="user-2",
+            last_active_at=past,
+            inflight_task_id="task-2",
+        )
+
+        await worker._release_idle_channels_if_needed()
+
+        worker._submit_channel_released.assert_not_awaited()
+        self.assertIn("session-2", worker._channel_states)
+
+    async def test_sync_channel_states_from_gateway_recovers_existing_leases(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="local-node",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        worker._gateway = MagicMock()
+        worker._gateway.list_sessions = AsyncMock(
+            return_value=[
+                {
+                    "session_id": "wechat:user-1",
+                    "user_id": "user-1",
+                    "assigned_node_id": "local-node",
+                    "assigned_slot_id": "slot-01",
+                    "active_task_id": None,
+                    "last_message_at": "2026-04-08T01:42:47.246504Z",
+                    "last_dispatch_at": "2026-04-08T01:42:42.244624Z",
+                },
+                {
+                    "session_id": "wechat:user-2",
+                    "user_id": "user-2",
+                    "assigned_node_id": "agent-1",
+                    "assigned_slot_id": "slot-02",
+                    "active_task_id": None,
+                    "last_message_at": "2026-04-08T01:42:47.246504Z",
+                },
+            ]
+        )
+
+        await worker._sync_channel_states_from_gateway()
+
+        self.assertIn("wechat:user-1", worker._channel_states)
+        recovered = worker._channel_states["wechat:user-1"]
+        self.assertEqual(recovered.slot_id, "slot-01")
+        self.assertEqual(recovered.user_id, "user-1")
+        self.assertIsNone(recovered.inflight_task_id)
+        self.assertNotIn("wechat:user-2", worker._channel_states)
 
     async def test_poll_once_skips_extra_sleep_after_empty_long_poll(self) -> None:
         settings = NodeSettings(

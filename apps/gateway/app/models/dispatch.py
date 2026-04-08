@@ -50,3 +50,12 @@ class TaskFailureRequest(BaseModel):
     error_message: str = Field(min_length=1, max_length=4000)
     retryable: bool = False
     metadata: dict[str, str] = Field(default_factory=dict)
+
+
+class ChannelReleasedRequest(BaseModel):
+    session_id: str
+    node_id: str
+    slot_id: str
+    reason: str = Field(default="idle_timeout", min_length=1, max_length=128)
+    last_active_at: datetime | None = None
+    released_at: datetime | None = None

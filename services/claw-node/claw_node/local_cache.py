@@ -63,8 +63,42 @@ class LocalCache:
             logger.warning("[cache] failed to write answer cache: %s", exc)
             self._available = False
 
+    async def store_dify_conversation_id(self, user_id: str, conversation_id: str) -> None:
+        normalized_user_id = str(user_id).strip()
+        normalized_conversation_id = str(conversation_id).strip()
+        if not normalized_user_id or not normalized_conversation_id:
+            return
+        if not self._available or self._client is None:
+            return
+        try:
+            await self._client.setex(
+                self._dify_conversation_key(normalized_user_id),
+                self._settings.local_cache_ttl_seconds,
+                normalized_conversation_id,
+            )
+        except Exception as exc:
+            logger.warning("[cache] failed to persist dify conversation id: %s", exc)
+            self._available = False
+
+    async def get_dify_conversation_id(self, user_id: str) -> str:
+        normalized_user_id = str(user_id).strip()
+        if not normalized_user_id:
+            return ""
+        if not self._available or self._client is None:
+            return ""
+        try:
+            value = await self._client.get(self._dify_conversation_key(normalized_user_id))
+        except Exception as exc:
+            logger.warning("[cache] failed to read dify conversation id: %s", exc)
+            self._available = False
+            return ""
+        return str(value or "").strip()
+
     def _context_key(self, session_id: str) -> str:
         return f"wch:node-cache:{self._settings.node_id}:context:{session_id}"
 
     def _answer_key(self, session_id: str) -> str:
         return f"wch:node-cache:{self._settings.node_id}:answer:{session_id}"
+
+    def _dify_conversation_key(self, user_id: str) -> str:
+        return f"wch:node-cache:{self._settings.node_id}:dify-conversation:{user_id}"

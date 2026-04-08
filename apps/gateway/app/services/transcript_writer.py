@@ -68,5 +68,46 @@ class TranscriptWriter:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def read_messages_before(
+        self,
+        session_id: str,
+        *,
+        before_count: int,
+        limit: int,
+    ) -> tuple[list[MessageRecord], int, bool]:
+        if before_count <= 0 or limit <= 0:
+            return [], 0, False
+        path = self._transcript_dir / f"{self._safe_filename(session_id)}.jsonl"
+        if not path.exists():
+            return [], 0, False
+
+        messages: list[MessageRecord] = []
+        with path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                raw_line = line.strip()
+                if not raw_line:
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if payload.get("session_id") != session_id:
+                    continue
+                if "message_id" not in payload or "role" not in payload or "content" not in payload:
+                    continue
+                try:
+                    messages.append(MessageRecord.model_validate(payload))
+                except Exception:
+                    continue
+
+        effective_before = min(before_count, len(messages))
+        if effective_before <= 0:
+            return [], 0, False
+        history_start = max(0, effective_before - limit)
+        return messages[history_start:effective_before], history_start, history_start > 0
+
     def _safe_filename(self, session_id: str) -> str:
         return session_id.replace(":", "__")

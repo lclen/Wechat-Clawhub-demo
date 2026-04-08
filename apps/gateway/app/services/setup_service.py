@@ -877,6 +877,38 @@ class SetupService:
         )
         self._schedule_node_diagnostics_publish(state.node_id)
 
+    def record_channel_event(
+        self,
+        node_id: str,
+        *,
+        result: str,
+        message: str,
+        reason: str,
+        session_id: str,
+        slot_id: str,
+        last_active_at: str = "",
+        released_at: str = "",
+        node_kind: str | None = None,
+        level: str = "info",
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        state.updated_at = utcnow()
+        self._append_diagnostic_timeline(
+            state,
+            category="channel",
+            result=result,
+            message=message,
+            metadata={
+                "reason": reason,
+                "session_id": session_id,
+                "slot_id": slot_id,
+                "last_active_at": last_active_at,
+                "released_at": released_at,
+            },
+            level=level,
+        )
+        self._schedule_node_diagnostics_publish(state.node_id)
+
     def ingest_node_diagnostics_event(self, node_id: str, payload: dict[str, object]) -> None:
         event = payload.get("event")
         snapshot = payload.get("snapshot")

@@ -47,6 +47,8 @@ class SessionStreamBroker:
         messages: list[MessageRecord],
         next_cursor: int,
         replace_messages: bool = True,
+        history_start: int | None = None,
+        has_more_before: bool | None = None,
     ) -> None:
         await websocket.send_json(
             {
@@ -55,6 +57,8 @@ class SessionStreamBroker:
                 "messages": [message.model_dump(mode="json") for message in messages],
                 "next_cursor": next_cursor,
                 "replace_messages": replace_messages,
+                "history_start": history_start,
+                "has_more_before": has_more_before,
             }
         )
 
@@ -72,6 +76,8 @@ class SessionStreamBroker:
             "messages": [message.model_dump(mode="json") for message in messages],
             "next_cursor": next_cursor,
             "replace_messages": False,
+            "history_start": None,
+            "has_more_before": None,
         }
         async with self._lock:
             subscribers = list(self._connections.get(session_id, set()))

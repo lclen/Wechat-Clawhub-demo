@@ -137,11 +137,12 @@ async def get_session(
 async def get_session_messages(
     session_id: str,
     after_count: int | None = Query(default=None, ge=0),
+    before_count: int | None = Query(default=None, ge=0),
     limit: int | None = Query(default=None, ge=1, le=200),
     store: RedisStore = Depends(get_redis_store),
     manager: SessionManager = Depends(get_session_manager),
 ) -> dict:
-    logger.info(f"=== get_session_messages START: session_id={session_id}, after_count={after_count}, limit={limit} ===")
+    logger.info(f"=== get_session_messages START: session_id={session_id}, after_count={after_count}, before_count={before_count}, limit={limit} ===")
 
     try:
         logger.info("Calling ensure_redis_available...")
@@ -160,13 +161,14 @@ async def get_session_messages(
         logger.info(f"Session retrieved: {session.session_id}")
 
         logger.info(f"Getting messages for session: {session_id}")
-        messages, next_cursor, replace_messages = await manager.get_messages(
+        messages, next_cursor, replace_messages, history_start, has_more_before = await manager.get_messages(
             session_id,
             session=session,
             after_count=after_count,
+            before_count=before_count,
             limit=limit,
         )
-        logger.info(f"Messages retrieved: count={len(messages)}, next_cursor={next_cursor}, replace={replace_messages}")
+        logger.info(f"Messages retrieved: count={len(messages)}, next_cursor={next_cursor}, replace={replace_messages}, history_start={history_start}, has_more_before={has_more_before}")
 
         logger.info("Creating response object...")
         response = SessionMessagesResponse(
@@ -174,6 +176,8 @@ async def get_session_messages(
             messages=messages,
             next_cursor=next_cursor,
             replace_messages=replace_messages,
+            history_start=history_start,
+            has_more_before=has_more_before,
         )
         logger.info(f"=== get_session_messages SUCCESS ===")
         # Return as dict to bypass Pydantic serialization issues
@@ -217,7 +221,7 @@ async def stream_session_messages(
 
     try:
         session = await manager.get_session(session_id)
-        messages, next_cursor, replace_messages = await manager.get_messages(
+        messages, next_cursor, replace_messages, history_start, has_more_before = await manager.get_messages(
             session_id,
             session=session,
             limit=50,
@@ -229,6 +233,8 @@ async def stream_session_messages(
             messages=messages,
             next_cursor=next_cursor,
             replace_messages=replace_messages,
+            history_start=history_start,
+            has_more_before=has_more_before,
         )
         await stream.subscribe(session_id, websocket)
         while True:

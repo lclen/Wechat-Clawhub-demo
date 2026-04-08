@@ -8,12 +8,12 @@ from redis.exceptions import RedisError
 
 from app.core.config import Settings
 from app.dispatch.scheduler import DispatchScheduler
-from app.models.dispatch import DispatchTask, TaskFailureRequest, TaskResultRequest
+from app.models.dispatch import ChannelReleasedRequest, DispatchTask, TaskFailureRequest, TaskResultRequest
 from app.models.session import MessageRecord, QueueStatus, RoutingMode, SessionRecord, SessionStatus
 from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.node_stream import NodeStreamBroker
 from app.services.redis_store import RedisStore
-from app.services.session_manager import SessionManager
+from app.services.session_manager import SessionManager, SessionNotFoundError
 from app.services.transcript_writer import TranscriptWriter
 
 logger = logging.getLogger(__name__)
@@ -319,6 +319,68 @@ class DispatchQueue:
         else:
             detail = "当前没有可用 claw 节点或可分配通道。"
         return session, detail
+
+    async def release_channel_from_node(self, payload: ChannelReleasedRequest) -> SessionRecord | None:
+        try:
+            session = await self._session_manager.get_session(payload.session_id)
+        except SessionNotFoundError:
+            logger.info(
+                "[dispatch] ignore node channel release because session is missing session=%s node=%s slot=%s",
+                payload.session_id,
+                payload.node_id,
+                payload.slot_id,
+            )
+            return None
+
+        if session.assigned_node_id != payload.node_id or session.assigned_slot_id != payload.slot_id:
+            logger.info(
+                "[dispatch] ignore node channel release due to slot mismatch session=%s node=%s slot=%s actual_node=%s actual_slot=%s",
+                payload.session_id,
+                payload.node_id,
+                payload.slot_id,
+                session.assigned_node_id,
+                session.assigned_slot_id,
+            )
+            return session
+        if session.active_task_id or session.queue_status != QueueStatus.NONE:
+            logger.info(
+                "[dispatch] ignore node channel release because session is busy session=%s node=%s slot=%s queue_status=%s active_task=%s",
+                payload.session_id,
+                payload.node_id,
+                payload.slot_id,
+                session.queue_status,
+                session.active_task_id,
+            )
+            return session
+
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type="dispatch_channel_release_reported",
+            actor_type="system",
+            actor_id=payload.node_id,
+            node_id=payload.node_id,
+            payload={
+                "slot_id": payload.slot_id,
+                "reason": payload.reason,
+                "last_active_at": payload.last_active_at.isoformat() if payload.last_active_at else "",
+                "released_at": payload.released_at.isoformat() if payload.released_at else "",
+            },
+        )
+        released = await self._release_slot(
+            session,
+            event_type="dispatch_slot_released",
+            actor_id=payload.node_id,
+            reason=payload.reason,
+            clear_assigned_node=True,
+        )
+        logger.info(
+            "[dispatch] node reported idle channel released session=%s node=%s slot=%s reason=%s",
+            payload.session_id,
+            payload.node_id,
+            payload.slot_id,
+            payload.reason,
+        )
+        return released
 
     async def _switch_session(
         self,
