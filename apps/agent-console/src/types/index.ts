@@ -5,6 +5,7 @@ export type WeChatStatus = { configured: boolean; running: boolean; base_url: st
 export type SessionStatus = "bot_active" | "handoff_pending" | "human_active" | "closing";
 export type QueueStatus = "none" | "pending" | "inflight";
 export type RoutingMode = "auto" | "manual";
+export type SessionSwitchAction = "auto" | "manual";
 export type SessionRecord = { session_id: string; channel: string; user_id: string; agent_id: string; status: SessionStatus; assigned_node_id: string | null; assigned_slot_id: string | null; active_task_id: string | null; queue_status: QueueStatus; context_summary: string; context_version: number; routing_mode: RoutingMode; slot_bound_at: string | null; slot_expires_at: string | null; reply_context_token: string | null; handoff_ticket_id: string | null; claimed_by: string | null; message_count: number; last_message_at: string; last_dispatch_at: string | null; created_at: string; updated_at: string; version: number };
 export type MessageRecord = { message_id: string; session_id: string; channel: string; user_id: string; role: "user" | "bot" | "human" | "system"; content: string; created_at: string; actor_id: string | null; node_id: string | null; metadata: Record<string, string> };
 export type NodeRecord = { node_id: string; base_url: string; advertised_address: string | null; lan_ip: string | null; max_concurrency: number; current_load: number; status: string; last_heartbeat_at: string; updated_at: string; last_error: string | null; load_ratio: number; node_version: string | null; platform: string | null; hostname: string | null; capabilities: string[]; channel_capacity: number; channel_in_use: number };
@@ -36,6 +37,7 @@ export type SessionMessageCacheEntry = {
   loaded: boolean;
   lastLoadedAt: number;
 };
+export type SessionSwitchRequest = { action: SessionSwitchAction; node_id?: string; reason: string };
 export type SessionSwitchResponse = { ok: boolean; session: SessionRecord; detail: string };
 export type QrStart = { qrcode: string; qrcode_url: string };
 export type PollResponse = { status: string; token?: string; base_url?: string; message?: string; bot_id?: string; user_id?: string };

@@ -1087,6 +1087,20 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   padding: 10px 14px;
   box-shadow: 0 12px 24px rgba(52, 100, 236, 0.16);
 }
+.session-switch-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.session-switch-select {
+  min-width: 220px;
+  border-radius: 999px;
+  border: 1px solid rgba(63, 92, 196, 0.18);
+  background: rgba(255, 255, 255, 0.92);
+  color: var(--text-primary);
+  padding: 10px 14px;
+}
 .session-switch-trigger {
   border-radius: 999px;
   padding: 10px 14px;

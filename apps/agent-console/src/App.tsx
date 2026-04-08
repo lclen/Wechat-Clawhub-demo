@@ -31,7 +31,22 @@ import { PairingStatusModal } from "./components/Workspaces/Connection/PairingSt
 import { RuntimeLogsPanel } from "./components/Workspaces/Connection/RuntimeLogsPanel";
 import { WeChatConfigCard } from "./components/Workspaces/Connection/WeChatConfigCard";
 import { LogsWorkspace } from "./components/Workspaces/Logs/LogsWorkspace";
-import { MessageContent } from "./components/Workspaces/Sessions/MessageContent";
+import { LauncherControlPanel } from "./components/Workspaces/QuickSetup/LauncherControlPanel";
+import { SessionsWorkspace } from "./components/Workspaces/Sessions/SessionsWorkspace";
+import {
+  formatDayLabel,
+  formatSessionName,
+  formatTimeAgo,
+  formatWechatIdentity,
+  getChannelReleaseHint,
+  getSessionBadgeLabel,
+  getTypingState,
+  roleLabel,
+  sessionBadgeTone,
+  sessionPreview,
+  showDateDivider,
+  truncateText,
+} from "./components/Workspaces/Sessions/sessionUi";
 import type {
   AppSummaryStateCache,
   AppUiStateCache,
@@ -94,6 +109,8 @@ import type {
   SessionRecord,
   SessionsResponse,
   SessionStreamEnvelope,
+  SessionSwitchAction,
+  SessionSwitchRequest,
   SessionSwitchResponse,
   SetupMode,
   SetupProfileResponse,
@@ -692,6 +709,7 @@ export function App() {
   const [selectedNodeDiagnostics, setSelectedNodeDiagnostics] = useState<NodeDiagnosticsRecord | null>(null);
   const [sessions, setSessions] = useState<SessionRecord[]>(initialSummaryState.sessions);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialUiState.selected_session_id);
+  const [sessionManualNodeId, setSessionManualNodeId] = useState("");
   const [activeSession, setActiveSession] = useState<SessionRecord | null>(
     initialUiState.selected_session_id
       ? initialSummaryState.sessions.find((item) => item.session_id === initialUiState.selected_session_id) ?? initialSummaryState.sessions[0] ?? null
@@ -1175,6 +1193,8 @@ export function App() {
     if (!current?.loaded) return false;
     if (!detail.replace_messages) return false;
     if (detail.next_cursor < current.cursor) return false;
+    const incomingHistoryStart = resolveHistoryStart(detail, current.cursor);
+    if (current.historyStart < incomingHistoryStart) return true;
     return current.messages.length > detail.messages.length;
   }
 
@@ -2568,7 +2588,7 @@ export function App() {
         return requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
           method: "POST",
           body: JSON.stringify(buildLauncherStartPayload(currentLauncherStatus, machineRole, {
-            dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
+            dispatchModeEnabled: currentLauncherStatus?.profile.dispatch_mode_enabled,
             enableNodeCacheRedis: currentLauncherStatus?.profile.node_cache_policy !== "disabled",
             localNodeId: machineRole === "node" ? workerSetup.node_id : undefined,
           })),
@@ -2687,13 +2707,24 @@ export function App() {
       setNotice(`读取组件日志失败：${(error as Error).message}`);
     }
   }
-  async function switchSessionNode(sessionId: string) {
+  async function switchSessionNode(sessionId: string, action: SessionSwitchAction, nodeId?: string) {
+    if (action === "manual" && !nodeId) {
+      setNotice("请先选择要绑定的节点。");
+      return;
+    }
     try {
+      const payload: SessionSwitchRequest = {
+        action,
+        reason: action === "manual" ? "console_manual_bind" : "console_restore_auto",
+      };
+      if (action === "manual" && nodeId) {
+        payload.node_id = nodeId;
+      }
       const result = await withBusy(
         "session-switch-node",
         () => requestJson<SessionSwitchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/switch-node`, {
           method: "POST",
-          body: JSON.stringify({ reason: "console_manual_switch" }),
+          body: JSON.stringify(payload),
         }),
       );
       upsertSessionInView(result.session);
@@ -2967,6 +2998,20 @@ export function App() {
 
   const selectedSession = useMemo(() => sessions.find((session) => session.session_id === selectedSessionId) ?? activeSession, [sessions, selectedSessionId, activeSession]);
   const selectedNode = useMemo(() => nodes.find((node) => node.node_id === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const sessionBindingOptions = useMemo(() => {
+    const visibleNodes = nodes.filter((node) => !gatewaySetup.dispatch_mode_enabled || node.node_id !== "local-node");
+    const options = visibleNodes.map((node) => ({
+      node_id: node.node_id,
+      label: `${node.node_id}${node.hostname ? ` · ${node.hostname}` : ""}`,
+    }));
+    if (selectedSession?.assigned_node_id && !options.some((item) => item.node_id === selectedSession.assigned_node_id)) {
+      options.unshift({
+        node_id: selectedSession.assigned_node_id,
+        label: `${selectedSession.assigned_node_id} · 当前绑定（暂不可用）`,
+      });
+    }
+    return options;
+  }, [gatewaySetup.dispatch_mode_enabled, nodes, selectedSession?.assigned_node_id]);
   const filteredSessions = useMemo(() => sessions.filter((session) => matchesFilter(session, sessionFilter, now)), [sessions, sessionFilter, now]);
   const counts = useMemo(() => ({ all: sessions.length, processing: sessions.filter((item) => item.queue_status !== "none" || Boolean(item.active_task_id)).length, human: sessions.filter((item) => item.status === "human_active" || item.status === "handoff_pending").length, recent: sessions.filter((item) => isRecent(item, now)).length }), [sessions, now]);
   const latestUserMessage = useMemo(() => [...messages].reverse().find((message) => message.role === "user") ?? null, [messages]);
@@ -2983,6 +3028,17 @@ export function App() {
     [setupProfile?.completed_roles, setupRole],
   );
   const currentNodeLanIp = launcherStatus?.local_lan_ip || setupTask?.metadata.lan_ip || "";
+  useEffect(() => {
+    if (!selectedSession) {
+      setSessionManualNodeId("");
+      return;
+    }
+    setSessionManualNodeId((current) => {
+      if (current && sessionBindingOptions.some((item) => item.node_id === current)) return current;
+      if (selectedSession.assigned_node_id) return selectedSession.assigned_node_id;
+      return sessionBindingOptions[0]?.node_id ?? "";
+    });
+  }, [selectedSession, sessionBindingOptions]);
   const workerGatewayConnection = useMemo(() => {
     const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
     const nodeId = workerSetup.node_id.trim();
@@ -3765,87 +3821,35 @@ export function App() {
 
               <div className="quick-setup-main">
                 {launcherAvailable && effectiveRole ? (
-                  <section className="surface surface-subsection">
-                    <div className="section-head">
-                      <div><div className="section-kicker">桌面启动器</div><h3>{currentRoleIsWorker ? "本机节点托管环境" : "单机一体化运行"}</h3></div>
-                      <div className="inline-actions">
-                        <button type="button" className="ghost-button" onClick={refreshLauncherStatus}>刷新</button>
-                        <button type="button" className="ghost-button" onClick={() => setLauncherExpanded(v => !v)}>{launcherExpanded ? "收起" : "展开详情"}</button>
-                      </div>
-                    </div>
-
-                    {/* 组件状态摘要行 — 始终可见 */}
-                    <div className="launcher-component-rows">
-                      {(launcherStatus?.components || []).filter(c => c.name !== "local-node" && !(currentRoleIsWorker && (c.name === "host-redis" || c.name === "gateway"))).map((component) => (
-                        <div key={component.name} className="launcher-row">
-                          <div className="launcher-row-left">
-                            <span className={`launcher-dot launcher-dot-${launcherBadgeTone(component.state)}`} />
-                            <span className="launcher-row-name">{launcherComponentName(component.name)}</span>
-                            <span className="launcher-row-detail">{component.detail || "等待启动"}</span>
-                          </div>
-                          <div className="launcher-row-right">
-                            <span className={`session-badge session-badge-${launcherBadgeTone(component.state)}`}>{launcherStateLabel(component.state)}</span>
-                            <button type="button" className="ghost-button launcher-row-btn" onClick={() => readLauncherLog(component.name)}>日志</button>
-                            {component.name !== "launcher" && component.name !== "console" ? (
-                              <button type="button" className="ghost-button launcher-row-btn" onClick={() => stopLauncherStack(component.name)} disabled={busy !== null}>停止</button>
-                            ) : null}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {launcherHostRedis?.state === "failed" || launcherGateway?.state === "failed" ? (
-                      <div className="topbar-notice dispatch-warning" style={{ marginTop: 12 }}>
-                        当前桌面启动器检测到主机 Redis 或主网关启动失败。下方“当前连接状态”会优先按这里的运行结果显示，请先查看对应日志并重新拉起。
-                      </div>
-                    ) : null}
-
-                    {/* 展开后的日志区 */}
-                    {Object.entries(launcherLogs).map(([name, content]) => content ? (
-                      <div key={name} className="launcher-log-block">
-                        <div className="launcher-log-label">{launcherComponentName(name)} 日志</div>
-                        <SnippetBlock label="" content={content} />
-                      </div>
-                    ) : null)}
-
-                    {/* 展开详情区 */}
-                    {launcherExpanded ? (
-                      <>
-                        <div className="info-stack" style={{marginTop: 14}}>
-                          <InfoRow label="机器角色" value={launcherMachineRoleLabel(launcherStatus)} />
-                          <InfoRow label="托管组件" value={launcherManagedComponentsLabel(launcherStatus)} multiline />
-                          <InfoRow label="存储库目录" value={launcherStatus?.layout.root || "尚未选择"} multiline />
-                          <InfoRow label="节点缓存策略" value={launcherStatus?.profile.node_cache_policy === "disabled" ? "关闭" : "已启用"} />
-                          <InfoRow label="本机节点策略" value={launcherLocalNodePolicyLabel(launcherStatus)} multiline />
-                          {!currentRoleIsWorker ? <InfoRow label="分发模式" value={gatewaySetup.dispatch_mode_enabled ? "已开启（主机只分发）" : "已关闭（本机节点可处理）"} /> : null}
-                        </div>
-
-                        <div className="launcher-env-head" onClick={() => setEnvExpanded(v => !v)}>
-                          <span className="section-kicker">环境检测</span>
-                          <span className={`launcher-env-status ${launcherStatus?.environment.ready ? "good" : "warn"}`}>
-                            {launcherStatus?.environment.ready ? "已就绪" : "存在缺失项"}
-                          </span>
-                          <span className="launcher-env-toggle">{envExpanded ? "▲" : "▼"}</span>
-                        </div>
-                        {envExpanded ? (
-                          <div className="info-stack">
-                            <InfoRow label="Python 版本" value={launcherStatus?.environment.python_version || "未检测到"} />
-                            {(launcherStatus?.environment.checks || []).map((item) => (
-                              <InfoRow key={item.name} label={launcherEnvironmentLabel(item.name)} value={`${item.ready ? "已就绪" : "缺失"} · ${item.detail}`} multiline />
-                            ))}
-                          </div>
-                        ) : null}
-                      </>
-                    ) : null}
-
-                    <div className="inline-actions quick-setup-actions" style={{marginTop: 14}}>
-                      {!currentRoleIsWorker ? <button type="button" onClick={() => installLauncherRedis("host", launcherStatus?.profile.redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-host" ? "下载中..." : launcherStatus?.host_redis.installed ? "重装主机 Redis" : "安装主机 Redis"}</button> : null}
-                      {!currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={() => applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button> : null}
-                      <button type="button" className="ghost-button" onClick={() => toggleLauncherNodeCache(launcherStatus?.profile.node_cache_policy === "disabled")} disabled={busy !== null}>{launcherStatus?.profile.node_cache_policy === "disabled" ? "启用节点缓存" : "关闭节点缓存"}</button>
-                      {launcherStatus?.profile.node_cache_policy !== "disabled" ? <button type="button" className="ghost-button" onClick={() => installLauncherRedis("node-cache", launcherStatus?.profile.node_cache_redis_source || "mirror")} disabled={busy !== null}>{busy === "launcher-install-node-cache" ? "下载中..." : launcherStatus?.node_cache_redis.installed ? "重装节点缓存 Redis" : "安装节点缓存 Redis"}</button> : null}
-                      {!currentRoleIsWorker ? <button type="button" onClick={() => void startLauncherStack()} disabled={busy !== null}>{busy === "launcher-start" ? "启动中..." : launcherHostRedis?.state === "failed" || launcherGateway?.state === "failed" ? "重新拉起" : "一键启动"}</button> : <button type="button" onClick={() => void startLauncherStack()} disabled={busy !== null}>{busy === "launcher-start" ? "启动中..." : "启动节点服务"}</button>}
-                      <button type="button" className="ghost-button" onClick={() => stopLauncherStack()} disabled={busy !== null}>{busy === "launcher-stop" ? "停止中..." : "停止全部"}</button>
-                    </div>
-                  </section>
+                  <LauncherControlPanel
+                    currentRoleIsWorker={currentRoleIsWorker}
+                    launcherExpanded={launcherExpanded}
+                    envExpanded={envExpanded}
+                    launcherStatus={launcherStatus}
+                    launcherLogs={launcherLogs}
+                    busyKey={busy}
+                    dispatchModeEnabled={gatewaySetup.dispatch_mode_enabled}
+                    hostRedisFailed={launcherHostRedis?.state === "failed"}
+                    gatewayFailed={launcherGateway?.state === "failed"}
+                    onRefreshLauncherStatus={refreshLauncherStatus}
+                    onToggleLauncherExpanded={() => setLauncherExpanded((value) => !value)}
+                    onReadLauncherLog={readLauncherLog}
+                    onStopComponent={(name) => void stopLauncherStack(name)}
+                    onToggleEnvExpanded={() => setEnvExpanded((value) => !value)}
+                    onInstallHostRedis={() => installLauncherRedis("host", launcherStatus?.profile.redis_source || "mirror")}
+                    onToggleDispatchMode={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)}
+                    onToggleNodeCache={() => toggleLauncherNodeCache(launcherStatus?.profile.node_cache_policy === "disabled")}
+                    onInstallNodeCacheRedis={() => installLauncherRedis("node-cache", launcherStatus?.profile.node_cache_redis_source || "mirror")}
+                    onStartLauncherStack={() => void startLauncherStack()}
+                    onStopLauncherStack={() => void stopLauncherStack()}
+                    launcherMachineRoleLabel={launcherMachineRoleLabel}
+                    launcherManagedComponentsLabel={launcherManagedComponentsLabel}
+                    launcherLocalNodePolicyLabel={launcherLocalNodePolicyLabel}
+                    launcherEnvironmentLabel={launcherEnvironmentLabel}
+                    launcherComponentName={launcherComponentName}
+                    launcherStateLabel={launcherStateLabel}
+                    launcherBadgeTone={launcherBadgeTone}
+                  />
                 ) : null}
 
                 {setupMode === "status" ? (
@@ -4422,132 +4426,42 @@ export function App() {
             onClearPairingDebugEntries={() => setPairingDebugEntries([])}
           />
         ) : (
-          <section className="workspace-frame session-workspace">
-            {/* console_only gateway status banner - req 4.2, 4.5 */}
-            {effectiveRole === "console_only" ? (
-              systemStatus !== null ? (
-                <div className="console-gateway-banner">
-                  <span>网关：{currentGatewayBaseUrl}</span>
-                  <span>Redis：{systemStatus.redis_ok ? "在线" : "不可用"}</span>
-                  <span>在线节点：{systemStatus.active_nodes}</span>
-                </div>
-              ) : sessionsLoaded ? (
-                <div className="console-gateway-banner-error">
-                  <span>目标网关不可达</span>
-                  <button type="button" className="ghost-button" onClick={() => setWorkspace("quick_setup")}>前往快速配置</button>
-                </div>
-              ) : null
-            ) : null}
-            <aside className="session-rail surface">
-              <div className="rail-channel-card">
-                <div className="rail-channel-top"><div><div className="section-kicker">微信通道</div><h3>默认 Agent 接入</h3></div><span className="count-badge">{sessions.length}</span></div>
-                <div className="rail-channel-meta"><span>{wechatRuntimeSummary.value}</span><span>{systemStatus?.active_nodes ?? 0} 节点</span></div>
-              </div>
-              <div className="rail-heading"><div><div className="section-kicker">筛选</div><h3>会话列表</h3></div><span className="small-note">{sessionsLoaded ? "实时" : "加载中"}</span></div>
-              <div className="filter-row" role="tablist" aria-label="Session filters">
-                {FILTERS.map((item) => <button key={item.key} type="button" className={`filter-chip ${sessionFilter === item.key ? "filter-chip-active" : ""}`} onClick={() => setSessionFilter(item.key)}>{item.label} {counts[item.key]}</button>)}
-              </div>
-              <div className="session-list">
-                {!sessionsLoaded ? <div className="empty-state">正在读取会话列表…</div> : !filteredSessions.length ? <div className="empty-state">当前筛选条件下还没有会话。</div> : filteredSessions.map((session) => (
-                  <button key={session.session_id} type="button" className={`session-card ${session.session_id === selectedSessionId ? "session-card-active" : ""}`} onClick={() => setSelectedSessionId(session.session_id)} title={`${session.user_id}\n${session.session_id}`}>
-                    <div className="session-card-top">
-                      <div className="session-card-title-wrap">
-                        <div className="session-card-title">{formatSessionName(session.user_id)}</div>
-                        <div className="session-card-channel">{session.channel}</div>
-                        <div className="session-card-id" title={session.user_id}>{formatWechatIdentity(session.user_id)}</div>
-                      </div>
-                      <span className={`session-badge session-badge-${sessionBadgeTone(session)}`}>{getSessionBadgeLabel(session)}</span>
-                    </div>
-                    <div className="session-card-preview">{sessionPreview(session)}</div>
-                    <div className="session-card-meta"><span>{formatTimeAgo(session.last_message_at, now)}</span><span>{session.assigned_node_id || "待分配节点"}</span></div>
-                    <div className="session-card-meta"><span>{session.message_count} 条消息</span><span className="truncate-inline">{truncateText(session.session_id, 12, 10)}</span></div>
-                  </button>
-                ))}
-              </div>
-            </aside>
-
-            <div className="chat-column">
-              <div className="chat-column-shell">
-                <div className="surface stage-header">
-                  {selectedSession ? (
-                    <>
-                      <div className="stage-header-main">
-                        <div><div className="section-kicker">当前会话</div><h2>{formatSessionName(selectedSession.user_id)}</h2><div className="subtitle-stack"><span title={selectedSession.user_id}>{selectedSession.user_id}</span><span>{selectedSession.channel}</span><span title={selectedSession.session_id}>{selectedSession.session_id}</span></div></div>
-                        <div className="stage-meta-row"><MetaPill label="Agent" value={selectedSession.agent_id} /><MetaPill label="节点" value={selectedSession.assigned_node_id || "未绑定"} /><MetaPill label="槽位" value={selectedSession.assigned_slot_id || "未占用"} /><MetaPill label="路由" value={selectedSession.routing_mode === "manual" ? "手动切换" : "自动分配"} /><MetaPill label="状态" value={getSessionBadgeLabel(selectedSession)} />{!currentRoleIsWorker ? <button type="button" className="ghost-button session-switch-trigger" onClick={() => void switchSessionNode(selectedSession.session_id)} disabled={busy !== null}>{busy === "session-switch-node" ? "切换中..." : "切换节点"}</button> : null}<button type="button" className="memory-inline-trigger" onClick={() => setInspectorOpen(true)}>会话记忆</button></div>
-                      </div>
-                      <div className="header-status-line"><span>上下文版本 v{selectedSession.context_version}</span><span>最后调度 {formatTimeLabel(selectedSession.last_dispatch_at || selectedSession.updated_at, true)}</span><span>{typingState || channelReleaseHint || "当前没有活跃任务"}</span></div>
-                    </>
-                  ) : <div className="empty-state empty-state-tall">选择一个会话，或先在微信里给机器人发一条消息。</div>}
-                </div>
-
-                <section className="surface transcript-surface">
-                  <div className="section-head compact-head"><div><div className="section-kicker">Transcript</div><h3>聊天时间线</h3></div>{typingState ? <div className="typing-status-inline">{typingState}</div> : null}</div>
-                  {selectedSession && messagesLoaded && (messageHistoryLoading || messageHasMoreBefore || messageHistoryStart > 0) ? (
-                    <div className="history-toolbar history-toolbar-passive">
-                      <div className="history-toolbar-copy">
-                        {messageHistoryLoading
-                          ? "正在回补更早历史消息…"
-                          : messageHasMoreBefore
-                            ? "继续上滑可自动加载更早消息"
-                            : "已加载完该会话的更早历史"}
-                      </div>
-                    </div>
-                  ) : null}
-                  <div ref={messagesRef} className="message-stream" onScroll={handleMessageStreamScroll}>
-                    {!selectedSession ? <div className="empty-state">选择一个会话后，这里会显示完整聊天内容。</div> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载聊天内容…</div> : !messages.length ? <div className="empty-state">当前会话还没有消息。</div> : messages.map((message, index) => (
-                      <div key={message.message_id}>
-                        {showDateDivider(messages, index) ? <div className="date-divider">{formatDayLabel(message.created_at)}</div> : null}
-                        <div className={`message-row message-row-${message.role === "user" ? "user" : "assistant"}`}>
-                          <div className={`message-bubble message-bubble-${message.role}`}>
-                            <div className="message-role-line"><span className="message-role">{roleLabel(message.role)}</span>{message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}<span>{formatTimeLabel(message.created_at, true)}</span></div>
-                            <div className="message-content"><MessageContent content={message.content} /></div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                    {typingState && selectedSession ? <div className="message-row message-row-assistant"><div className="message-bubble message-bubble-typing"><div className="typing-line"><span className="typing-dots" aria-hidden="true"><span /><span /><span /></span><span>{typingState}</span></div></div></div> : null}
-                  </div>
-                </section>
-
-                <div
-                  className={`drawer-overlay ${inspectorOpen ? "is-visible" : ""}`}
-                  onClick={() => setInspectorOpen(false)}
-                  aria-hidden={inspectorOpen ? "false" : "true"}
-                />
-                <aside className={`side-drawer ${inspectorOpen ? "is-visible" : ""}`} aria-hidden={inspectorOpen ? "false" : "true"}>
-                  <section className="drawer-panel">
-                    <div className="section-head compact-head">
-                      <div>
-                        <div className="section-kicker">右侧检查器</div>
-                        <h3>会话记忆</h3>
-                      </div>
-                      <button type="button" className="drawer-close" onClick={() => setInspectorOpen(false)}>
-                        收起
-                      </button>
-                    </div>
-                    <div className="inspector-collapsed-note">
-                      模型自动记录的会话记忆会在这里展示，不占用主聊天工作区宽度。
-                    </div>
-                    <div className="context-summary">
-                      {selectedSession?.context_summary || "当前还没有摘要，首版先依赖会话上下文版本与最近消息维持跨节点一致性。"}
-                    </div>
-                    <div className="memory-meta-block">
-                      <InfoRow label="当前用户" value={selectedSession ? formatWechatIdentity(selectedSession.user_id) : "未选中会话"} multiline />
-                      <InfoRow label="会话 ID" value={selectedSession?.session_id || "-"} multiline />
-                      <InfoRow label="上下文版本" value={selectedSession ? `v${selectedSession.context_version}` : "-"} />
-                      <InfoRow label="当前节点" value={selectedSession?.assigned_node_id || "未绑定"} />
-                      <InfoRow label="当前槽位" value={selectedSession?.assigned_slot_id || "未占用"} />
-                      <InfoRow label="路由模式" value={selectedSession ? (selectedSession.routing_mode === "manual" ? "手动切换" : "自动分配") : "-"} />
-                      <InfoRow label="通道状态" value={channelReleaseHint || (selectedSession?.assigned_slot_id ? "通道租约有效" : "等待重新分配")} multiline />
-                      <InfoRow label="最近用户消息" value={latestUserMessage?.content || "暂无"} multiline />
-                      <InfoRow label="最近 Bot 回复" value={latestBotMessage?.content || "暂无"} multiline />
-                    </div>
-                  </section>
-                </aside>
-              </div>
-            </div>
-
-          </section>
+          <SessionsWorkspace
+            effectiveRole={effectiveRole}
+            systemStatus={systemStatus}
+            currentGatewayBaseUrl={currentGatewayBaseUrl}
+            sessionsLoaded={sessionsLoaded}
+            sessions={sessions}
+            filteredSessions={filteredSessions}
+            sessionFilter={sessionFilter}
+            filters={FILTERS}
+            counts={counts}
+            selectedSessionId={selectedSessionId}
+            selectedSession={selectedSession}
+            sessionManualNodeId={sessionManualNodeId}
+            sessionBindingOptions={sessionBindingOptions}
+            messages={messages}
+            messagesLoaded={messagesLoaded}
+            typingState={typingState}
+            channelReleaseHint={channelReleaseHint}
+            latestUserMessage={latestUserMessage}
+            latestBotMessage={latestBotMessage}
+            wechatRuntimeSummaryValue={wechatRuntimeSummary.value}
+            now={now}
+            inspectorOpen={inspectorOpen}
+            busyKey={busy}
+            currentRoleIsWorker={currentRoleIsWorker}
+            messagesRef={messagesRef}
+            onGoToQuickSetup={() => setWorkspace("quick_setup")}
+            onChangeFilter={setSessionFilter}
+            onSelectSession={setSelectedSessionId}
+            onMessageScroll={handleMessageStreamScroll}
+            onOpenInspector={() => setInspectorOpen(true)}
+            onCloseInspector={() => setInspectorOpen(false)}
+            onChangeSessionManualNodeId={setSessionManualNodeId}
+            onBindSessionNode={(sessionId) => void switchSessionNode(sessionId, "manual", sessionManualNodeId)}
+            onRestoreSessionAuto={(sessionId) => void switchSessionNode(sessionId, "auto")}
+          />
         )}
       </div>
       {(() => {
@@ -4609,8 +4523,6 @@ function syncNodeState(
 }
 function matchesFilter(session: SessionRecord, filter: SessionFilter, now: number) { return filter === "processing" ? session.queue_status !== "none" || Boolean(session.active_task_id) : filter === "human" ? session.status === "human_active" || session.status === "handoff_pending" : filter === "recent" ? isRecent(session, now) : true; }
 function isRecent(session: SessionRecord, now: number) { const updatedAt = new Date(session.updated_at).getTime(); return !Number.isNaN(updatedAt) && now - updatedAt <= 30 * 60 * 1000; }
-function formatSessionName(userId: string) { return truncateText(userId.replace(/^wechat:/, ""), 10, 8); }
-function formatWechatIdentity(userId: string) { return userId.startsWith("wechat:") ? userId : `微信ID ${userId}`; }
 function getNodeAddress(node: NodeRecord) {
   if (node.advertised_address) return node.advertised_address;
   if (node.base_url && /^https?:\/\//i.test(node.base_url)) return node.base_url;
@@ -4788,20 +4700,5 @@ function launcherEnvironmentLabel(name: string) {
 function launcherComponentName(name: string) { return name === "host-redis" ? "主机 Redis" : name === "node-cache-redis" ? "节点缓存 Redis" : name === "gateway" ? "主网关" : name === "local-node" ? "本机 Claw 节点" : name === "console" ? "控制台" : name === "launcher" ? "桌面启动器" : name; }
 function launcherStateLabel(state: LauncherState) { return state === "running" ? "运行中" : state === "starting" ? "启动中" : state === "degraded" ? "降级" : state === "failed" ? "失败" : "已停止"; }
 function launcherBadgeTone(state: LauncherState) { return state === "running" ? "human" : state === "starting" ? "typing" : state === "degraded" ? "queued" : state === "failed" ? "queued" : "idle"; }
-function sessionPreview(session: SessionRecord) { return session.status === "human_active" ? `人工已接管${session.claimed_by ? ` · ${session.claimed_by}` : ""}` : session.status === "handoff_pending" ? "用户请求转人工，等待坐席认领" : session.queue_status === "inflight" ? `${session.assigned_node_id || "节点"} 正在处理` : session.queue_status === "pending" ? "消息已入队，等待节点领取" : (session.context_summary || "当前没有新的处理事件"); }
-function sessionBadgeTone(session: SessionRecord) { return session.status === "human_active" || session.status === "handoff_pending" ? "human" : session.queue_status === "pending" ? "queued" : session.queue_status === "inflight" || session.active_task_id ? "typing" : "idle"; }
-function getSessionBadgeLabel(session: SessionRecord) { return session.queue_status === "inflight" ? "处理中" : session.queue_status === "pending" ? "排队中" : session.status === "human_active" ? "人工中" : session.status === "handoff_pending" ? "待接管" : "空闲"; }
-function getTypingState(session: SessionRecord | null, now: number) { if (!session) return ""; if (session.queue_status === "pending") return `消息已入队，等待 ${session.assigned_node_id || "可用节点"} 领取任务`; if (session.queue_status === "inflight" || session.active_task_id) { const elapsed = session.last_dispatch_at ? Math.max(1, Math.floor((now - new Date(session.last_dispatch_at).getTime()) / 1000)) : null; return `${session.assigned_node_id || "Agent"} 正在输入${elapsed ? `，已处理 ${elapsed}s` : ""}`; } return ""; }
-function getChannelReleaseHint(session: SessionRecord | null, now: number) {
-  if (!session || session.assigned_slot_id || !session.slot_expires_at) return "";
-  const releasedAt = new Date(session.slot_expires_at).getTime();
-  if (Number.isNaN(releasedAt) || now < releasedAt) return "";
-  return "当前通道已释放，等待下次消息自动重新分配。";
-}
 function shouldUseFastPolling(session: SessionRecord | null) { return !!session && (session.queue_status === "pending" || session.queue_status === "inflight" || Boolean(session.active_task_id)); }
-function roleLabel(role: MessageRecord["role"]) { return role === "user" ? "微信用户" : role === "bot" ? "Agent 回复" : role === "human" ? "人工坐席" : "系统事件"; }
-function truncateText(value: string, start = 6, end = 6) { return value.length <= start + end + 3 ? value : `${value.slice(0, start)}...${value.slice(-end)}`; }
 function formatTimeLabel(value: string, withSeconds = false) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "-" : date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: withSeconds ? "2-digit" : undefined }); }
-function formatDayLabel(value: string) { const date = new Date(value); return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("zh-CN", { year: "numeric", month: "numeric", day: "numeric" }); }
-function formatTimeAgo(value: string, now: number) { const time = new Date(value).getTime(); if (Number.isNaN(time)) return "-"; const diff = Math.max(0, now - time); const minutes = Math.floor(diff / 60000); if (minutes < 1) return "刚刚"; if (minutes < 60) return `${minutes} 分钟前`; const hours = Math.floor(minutes / 60); return hours < 24 ? `${hours} 小时前` : formatDayLabel(value); }
-function showDateDivider(messages: MessageRecord[], index: number) { if (!index) return true; return new Date(messages[index].created_at).toDateString() !== new Date(messages[index - 1].created_at).toDateString(); }
