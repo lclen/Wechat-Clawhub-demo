@@ -110,8 +110,46 @@ function Get-ServiceExecutablePath([string]$Name) {
         return ""
     }
 }
+function Wait-ForFileRelease([string]$Path, [int]$Attempts = 20, [int]$DelayMs = 500) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        $stream = $null
+        try {
+            $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            return
+        }
+        catch {
+            Start-Sleep -Milliseconds $DelayMs
+        }
+        finally {
+            if ($stream) {
+                $stream.Dispose()
+            }
+        }
+    }
+    throw "File remained locked after waiting: $Path"
+}
+function Copy-ItemWithRetry([string]$Source, [string]$Destination, [int]$Attempts = 20, [int]$DelayMs = 500) {
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force
+            return
+        }
+        catch {
+            if ($attempt -ge ($Attempts - 1)) {
+                throw
+            }
+            Start-Sleep -Milliseconds $DelayMs
+        }
+    }
+}
 function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
     if (-not (Test-ServiceInstalled $Name)) {
+        if (Test-Path -LiteralPath $ExecutablePath) {
+            Wait-ForFileRelease -Path $ExecutablePath
+        }
         return
     }
     Write-Step "Existing service detected; stopping it before replacing files"
@@ -158,6 +196,9 @@ function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
             return
         }
         Start-Sleep -Milliseconds 500
+    }
+    if (Test-Path -LiteralPath $ExecutablePath) {
+        Wait-ForFileRelease -Path $ExecutablePath
     }
     throw "Service '$Name' did not stop within the expected time."
 }
@@ -614,7 +655,10 @@ if (-not (Test-Path $ServiceExeSource)) {
     throw "WinSW executable not found in bundle. Put WinSW-x64.exe or WinSW.exe under infra/windows/winsw before building the bundle."
 }
 
-Copy-Item -LiteralPath $ServiceExeSource -Destination $ServiceExeTarget -Force
+if (Test-Path -LiteralPath $ServiceExeTarget) {
+    Wait-ForFileRelease -Path $ServiceExeTarget
+}
+Copy-ItemWithRetry -Source $ServiceExeSource -Destination $ServiceExeTarget
 Write-Utf8NoBomFile -Path $ServiceXmlTarget -Content $Rendered
 
 $ExistingServiceExecutablePath = Get-ServiceExecutablePath $ServiceName
