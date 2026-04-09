@@ -54,6 +54,7 @@ class Worker:
         self._heartbeat_task: asyncio.Task | None = None
         self._polling_task: asyncio.Task | None = None
         self._channel_maintenance_task: asyncio.Task | None = None
+        self._register_retry_task: asyncio.Task | None = None
         self._task_stream_websocket: WebSocketClientProtocol | None = None
         self._task_stream_send_lock = asyncio.Lock()
 
@@ -306,7 +307,7 @@ class Worker:
         self._semaphore.release()
 
     async def _ensure_gateway_loops_started(self) -> None:
-        if self._heartbeat_task is not None and self._polling_task is not None:
+        if self._heartbeat_task is not None and (self._polling_task is not None or self._inference is None):
             return
         if (
             (not self._settings.node_token.strip() and not self._settings.local_direct_auth)
@@ -346,7 +347,10 @@ class Worker:
                 trace_id=self._settings.pairing_trace_id.strip(),
                 level="error",
             )
+            if not self._is_auth_error(exc):
+                self._schedule_register_retry()
             return
+        self._cancel_register_retry_task()
         self._last_error = None
         if self._inference is None:
             # Registered but no inference backend: heartbeat only, no task polling
@@ -372,6 +376,40 @@ class Worker:
         poll_loop = self._task_stream_loop if self._settings.task_stream_enabled else self._poll_loop
         poll_task_name = "task-stream-loop" if self._settings.task_stream_enabled else "poll-loop"
         self._polling_task = asyncio.create_task(poll_loop(), name=poll_task_name)
+
+    def _schedule_register_retry(self) -> None:
+        if self._shutdown.is_set() or self._auth_failed:
+            return
+        if self._register_retry_task is not None and not self._register_retry_task.done():
+            return
+        self._register_retry_task = asyncio.create_task(
+            self._register_retry_loop(),
+            name="register-retry-loop",
+        )
+
+    async def _register_retry_loop(self) -> None:
+        delay_seconds = max(1, self._settings.task_stream_reconnect_seconds)
+        while not self._shutdown.is_set() and not self._auth_failed:
+            await asyncio.sleep(delay_seconds)
+            if self._heartbeat_task is not None and (self._polling_task is not None or self._inference is None):
+                return
+            try:
+                await self._ensure_gateway_loops_started()
+            except Exception:
+                logger.exception("[worker] register retry loop encountered an unexpected error")
+
+    def _cancel_register_retry_task(self) -> None:
+        task = self._register_retry_task
+        if task is None:
+            return
+        if task.done():
+            self._register_retry_task = None
+            return
+        task.cancel()
+        self._register_retry_task = None
+
+    def _is_auth_error(self, exc: Exception) -> bool:
+        return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 401
 
     async def _register_with_gateway(self) -> None:
         trace_id = self._settings.pairing_trace_id.strip()
@@ -413,7 +451,7 @@ class Worker:
     async def _stop_gateway_loops(self) -> None:
         tasks = [
             task
-            for task in (self._heartbeat_task, self._polling_task, self._channel_maintenance_task)
+            for task in (self._heartbeat_task, self._polling_task, self._channel_maintenance_task, self._register_retry_task)
             if task is not None
         ]
         for task in tasks:
@@ -424,6 +462,7 @@ class Worker:
         self._heartbeat_task = None
         self._polling_task = None
         self._channel_maintenance_task = None
+        self._register_retry_task = None
         self._task_stream_websocket = None
 
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:

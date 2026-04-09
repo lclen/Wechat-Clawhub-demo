@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class SessionStatus(StrEnum):
@@ -27,6 +27,11 @@ class QueueStatus(StrEnum):
 
 
 class RoutingMode(StrEnum):
+    AUTO = "auto"
+    MANUAL = "manual"
+
+
+class SessionSwitchAction(StrEnum):
     AUTO = "auto"
     MANUAL = "manual"
 
@@ -104,7 +109,17 @@ class InboundMessageResponse(BaseModel):
 
 
 class SessionSwitchRequest(BaseModel):
+    action: SessionSwitchAction = SessionSwitchAction.AUTO
+    node_id: str | None = Field(default=None, min_length=1, max_length=128)
     reason: str = Field(default="manual_switch", min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_action_payload(self) -> "SessionSwitchRequest":
+        if self.action == SessionSwitchAction.MANUAL and not self.node_id:
+            raise ValueError("node_id is required when action=manual")
+        if self.action == SessionSwitchAction.AUTO:
+            self.node_id = None
+        return self
 
 
 class SessionSwitchResponse(BaseModel):

@@ -262,6 +262,8 @@ async def switch_session_node(
         await manager.get_session(session_id)
         session, detail = await dispatch_queue.switch_session_target(
             session_id,
+            action=payload.action,
+            node_id=payload.node_id,
             requested_by="console",
             reason=payload.reason,
         )

@@ -202,6 +202,15 @@ class SessionManager:
         stored_window_size = min(current_session.message_count, self._settings.recent_message_limit)
         stored_window_offset = max(0, current_session.message_count - stored_window_size)
 
+        def transcript_recent(window_limit: int) -> tuple[list[MessageRecord], int, bool]:
+            return self._transcript_writer.read_recent_messages(session_id, limit=window_limit)
+
+        def transcript_after(cursor: int) -> tuple[list[MessageRecord], int, bool]:
+            return self._transcript_writer.read_messages_after(session_id, after_count=cursor)
+
+        def transcript_all() -> list[MessageRecord]:
+            return self._transcript_writer.read_all_messages(session_id)
+
         if before_count is not None:
             older_limit = limit if limit is not None and limit > 0 else self._settings.recent_message_limit
             older_messages, history_start, has_more_before = self._transcript_writer.read_messages_before(
@@ -224,6 +233,9 @@ class SessionManager:
                 except RedisError as exc:
                     raise SessionManagerError("Failed to fetch messages") from exc
                 all_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+                if not all_messages and current_session.message_count > 0:
+                    all_messages, history_start, has_more_before = transcript_recent(self._settings.recent_message_limit)
+                    return all_messages, next_cursor, True, history_start, has_more_before
                 return all_messages, next_cursor, True, stored_window_offset, stored_window_offset > 0
 
             # Redis 列表只保留最近窗口，需要把绝对 message_count cursor 换算成窗口内偏移。
@@ -237,6 +249,9 @@ class SessionManager:
             except RedisError as exc:
                 raise SessionManagerError("Failed to fetch messages") from exc
             incremental_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+            if not incremental_messages and current_session.message_count > 0:
+                transcript_messages, history_start, has_more_before = transcript_after(after_count)
+                return transcript_messages, next_cursor, False, history_start, has_more_before
             return incremental_messages, next_cursor, False, stored_window_offset, stored_window_offset > 0
 
         # 初始加载：如果指定了 limit，只获取当前保留窗口内最近的 N 条消息。
@@ -252,6 +267,9 @@ class SessionManager:
             except RedisError as exc:
                 raise SessionManagerError("Failed to fetch messages") from exc
             limited_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+            if not limited_messages and current_session.message_count > 0:
+                transcript_messages, history_start, has_more_before = transcript_recent(limit)
+                return transcript_messages, next_cursor, True, history_start, has_more_before
             history_start = max(0, next_cursor - len(limited_messages))
             return limited_messages, next_cursor, True, history_start, history_start > 0
 
@@ -261,6 +279,10 @@ class SessionManager:
         except RedisError as exc:
             raise SessionManagerError("Failed to fetch messages") from exc
         all_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
+        if not all_messages and current_session.message_count > 0:
+            transcript_messages = transcript_all()
+            history_start = max(0, next_cursor - len(transcript_messages))
+            return transcript_messages, next_cursor, True, history_start, history_start > 0
         return all_messages, next_cursor, True, stored_window_offset, stored_window_offset > 0
 
     async def set_dispatch_state(

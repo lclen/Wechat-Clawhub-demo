@@ -77,9 +77,37 @@ class TranscriptWriter:
     ) -> tuple[list[MessageRecord], int, bool]:
         if before_count <= 0 or limit <= 0:
             return [], 0, False
+        messages = self.read_all_messages(session_id)
+
+        effective_before = min(before_count, len(messages))
+        if effective_before <= 0:
+            return [], 0, False
+        history_start = max(0, effective_before - limit)
+        return messages[history_start:effective_before], history_start, history_start > 0
+
+    def read_recent_messages(self, session_id: str, *, limit: int) -> tuple[list[MessageRecord], int, bool]:
+        if limit <= 0:
+            return [], 0, False
+        messages = self.read_all_messages(session_id)
+        if not messages:
+            return [], 0, False
+        history_start = max(0, len(messages) - limit)
+        return messages[history_start:], history_start, history_start > 0
+
+    def read_messages_after(self, session_id: str, *, after_count: int) -> tuple[list[MessageRecord], int, bool]:
+        if after_count < 0:
+            return [], 0, False
+        messages = self.read_all_messages(session_id)
+        if not messages:
+            return [], 0, False
+        effective_after = min(after_count, len(messages))
+        history_start = max(0, len(messages) - effective_after)
+        return messages[effective_after:], history_start, effective_after > 0
+
+    def read_all_messages(self, session_id: str) -> list[MessageRecord]:
         path = self._transcript_dir / f"{self._safe_filename(session_id)}.jsonl"
         if not path.exists():
-            return [], 0, False
+            return []
 
         messages: list[MessageRecord] = []
         with path.open("r", encoding="utf-8") as fh:
@@ -102,12 +130,7 @@ class TranscriptWriter:
                     messages.append(MessageRecord.model_validate(payload))
                 except Exception:
                     continue
-
-        effective_before = min(before_count, len(messages))
-        if effective_before <= 0:
-            return [], 0, False
-        history_start = max(0, effective_before - limit)
-        return messages[history_start:effective_before], history_start, history_start > 0
+        return messages
 
     def _safe_filename(self, session_id: str) -> str:
         return session_id.replace(":", "__")

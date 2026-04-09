@@ -167,6 +167,64 @@ class SessionMessageWindowTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(history_start, 0)
             self.assertFalse(has_more_before)
 
+    async def test_initial_load_falls_back_to_transcript_when_redis_window_is_empty(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            transcript_writer = TranscriptWriter(Path(temp_dir))
+            for encoded in build_encoded_messages(87):
+                transcript_writer.append_message(MessageRecord.model_validate_json(encoded))
+
+            store = AsyncMock()
+            store.lrange.return_value = []
+            manager = SessionManager(
+                store,
+                transcript_writer,
+                Mock(),
+                Settings(_env_file=None, recent_message_limit=20),
+            )
+
+            messages, next_cursor, replace_messages, history_start, has_more_before = await manager.get_messages(
+                "wechat:test-user",
+                session=build_session(message_count=87),
+                limit=50,
+            )
+
+            self.assertEqual(len(messages), 50)
+            self.assertEqual(messages[0].message_id, "msg-37")
+            self.assertEqual(messages[-1].message_id, "msg-86")
+            self.assertEqual(next_cursor, 87)
+            self.assertTrue(replace_messages)
+            self.assertEqual(history_start, 37)
+            self.assertTrue(has_more_before)
+
+    async def test_incremental_load_falls_back_to_transcript_when_redis_window_is_empty(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            transcript_writer = TranscriptWriter(Path(temp_dir))
+            for encoded in build_encoded_messages(87):
+                transcript_writer.append_message(MessageRecord.model_validate_json(encoded))
+
+            store = AsyncMock()
+            store.lrange.return_value = []
+            manager = SessionManager(
+                store,
+                transcript_writer,
+                Mock(),
+                Settings(_env_file=None, recent_message_limit=20),
+            )
+
+            messages, next_cursor, replace_messages, history_start, has_more_before = await manager.get_messages(
+                "wechat:test-user",
+                session=build_session(message_count=87),
+                after_count=80,
+            )
+
+            self.assertEqual(len(messages), 7)
+            self.assertEqual(messages[0].message_id, "msg-80")
+            self.assertEqual(messages[-1].message_id, "msg-86")
+            self.assertEqual(next_cursor, 87)
+            self.assertFalse(replace_messages)
+            self.assertEqual(history_start, 7)
+            self.assertTrue(has_more_before)
+
 
 if __name__ == "__main__":
     unittest.main()

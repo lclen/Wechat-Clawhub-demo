@@ -9,7 +9,7 @@ from redis.exceptions import RedisError
 from app.core.config import Settings
 from app.dispatch.scheduler import DispatchScheduler
 from app.models.dispatch import ChannelReleasedRequest, DispatchTask, TaskFailureRequest, TaskResultRequest
-from app.models.session import MessageRecord, QueueStatus, RoutingMode, SessionRecord, SessionStatus
+from app.models.session import MessageRecord, QueueStatus, RoutingMode, SessionRecord, SessionStatus, SessionSwitchAction
 from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.node_stream import NodeStreamBroker
 from app.services.redis_store import RedisStore
@@ -303,21 +303,38 @@ class DispatchQueue:
         self,
         session_id: str,
         *,
+        action: SessionSwitchAction,
+        node_id: str | None,
         requested_by: str,
         reason: str,
     ) -> tuple[SessionRecord, str]:
-        session = await self._switch_session(
+        if action == SessionSwitchAction.AUTO:
+            session = await self._restore_session_auto_assignment(
+                session_id,
+                requested_by=requested_by,
+                reason=reason,
+            )
+            if session.assigned_node_id and session.assigned_slot_id:
+                detail = f"已恢复自动分配，当前节点 {session.assigned_node_id} / {session.assigned_slot_id}"
+            else:
+                detail = "已恢复自动分配，当前暂无可用节点或可分配通道。"
+            return session, detail
+
+        if not node_id:
+            raise DispatchQueueError("Manual session binding requires node_id")
+
+        session = await self._bind_session_to_node(
             session_id,
+            node_id=node_id,
             requested_by=requested_by,
             reason=reason,
-            routing_mode=RoutingMode.MANUAL,
-            exclude_node_ids=None,
-            allow_active_task_cleanup=True,
         )
-        if session.assigned_node_id and session.assigned_slot_id:
-            detail = f"已切换到 {session.assigned_node_id} / {session.assigned_slot_id}"
+        if session.assigned_node_id == node_id and session.assigned_slot_id:
+            detail = f"已绑定到 {session.assigned_node_id} / {session.assigned_slot_id}"
+        elif session.assigned_node_id == node_id:
+            detail = f"已绑定到 {session.assigned_node_id}，当前该节点暂无可分配通道。"
         else:
-            detail = "当前没有可用 claw 节点或可分配通道。"
+            detail = f"节点 {node_id} 当前不可用，未完成绑定。"
         return session, detail
 
     async def release_channel_from_node(self, payload: ChannelReleasedRequest) -> SessionRecord | None:
@@ -450,6 +467,145 @@ class DispatchQueue:
                 "to_node_id": switched.assigned_node_id,
                 "to_slot_id": switched.assigned_slot_id,
                 "routing_mode": routing_mode.value,
+            },
+        )
+        return switched
+
+    async def _restore_session_auto_assignment(
+        self,
+        session_id: str,
+        *,
+        requested_by: str,
+        reason: str,
+    ) -> SessionRecord:
+        session = await self._session_manager.get_session(session_id)
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="dispatch_switch_requested",
+            actor_type="system",
+            actor_id=requested_by,
+            node_id=session.assigned_node_id,
+            payload={
+                "reason": reason,
+                "from_node_id": session.assigned_node_id,
+                "from_slot_id": session.assigned_slot_id,
+                "routing_mode": RoutingMode.AUTO.value,
+                "switch_action": SessionSwitchAction.AUTO.value,
+            },
+        )
+        if session.active_task_id:
+            session = await self._abandon_active_task(session, requested_by=requested_by, reason=reason)
+        released = await self._release_slot(
+            session,
+            event_type="dispatch_slot_released",
+            actor_id=requested_by,
+            reason=reason,
+            clear_assigned_node=True,
+        )
+        allocation = await self._ensure_slot_assignment(
+            released,
+            routing_mode=RoutingMode.AUTO,
+            allow_existing_slot=False,
+        )
+        if allocation is None:
+            return await self._session_manager.set_dispatch_state(
+                session_id=released.session_id,
+                assigned_node_id=None,
+                assigned_slot_id=None,
+                active_task_id=None,
+                queue_status=QueueStatus.NONE,
+                last_dispatch_at=released.last_dispatch_at,
+                routing_mode=RoutingMode.AUTO,
+                slot_bound_at=None,
+                slot_expires_at=None,
+            )
+        switched, previous_node_id, previous_slot_id = allocation
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="dispatch_node_switched",
+            actor_type="system",
+            actor_id=requested_by,
+            node_id=switched.assigned_node_id,
+            payload={
+                "reason": reason,
+                "from_node_id": previous_node_id,
+                "from_slot_id": previous_slot_id,
+                "to_node_id": switched.assigned_node_id,
+                "to_slot_id": switched.assigned_slot_id,
+                "routing_mode": RoutingMode.AUTO.value,
+                "switch_action": SessionSwitchAction.AUTO.value,
+            },
+        )
+        return switched
+
+    async def _bind_session_to_node(
+        self,
+        session_id: str,
+        *,
+        node_id: str,
+        requested_by: str,
+        reason: str,
+    ) -> SessionRecord:
+        session = await self._session_manager.get_session(session_id)
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="dispatch_switch_requested",
+            actor_type="system",
+            actor_id=requested_by,
+            node_id=session.assigned_node_id,
+            payload={
+                "reason": reason,
+                "from_node_id": session.assigned_node_id,
+                "from_slot_id": session.assigned_slot_id,
+                "routing_mode": RoutingMode.MANUAL.value,
+                "switch_action": SessionSwitchAction.MANUAL.value,
+                "target_node_id": node_id,
+            },
+        )
+        if session.active_task_id:
+            session = await self._abandon_active_task(session, requested_by=requested_by, reason=reason)
+        released = await self._release_slot(
+            session,
+            event_type="dispatch_slot_released",
+            actor_id=requested_by,
+            reason=reason,
+            clear_assigned_node=True,
+        )
+        bound = await self._session_manager.set_dispatch_state(
+            session_id=released.session_id,
+            assigned_node_id=node_id,
+            assigned_slot_id=None,
+            active_task_id=None,
+            queue_status=QueueStatus.NONE,
+            last_dispatch_at=released.last_dispatch_at,
+            routing_mode=RoutingMode.MANUAL,
+            slot_bound_at=None,
+            slot_expires_at=None,
+        )
+        allocation = await self._ensure_slot_assignment(
+            bound,
+            routing_mode=RoutingMode.MANUAL,
+            target_node_id=node_id,
+            allow_existing_slot=False,
+        )
+        if allocation is None:
+            return bound
+        switched, previous_node_id, previous_slot_id = allocation
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="dispatch_node_switched",
+            actor_type="system",
+            actor_id=requested_by,
+            node_id=switched.assigned_node_id,
+            payload={
+                "reason": reason,
+                "from_node_id": previous_node_id,
+                "from_slot_id": previous_slot_id,
+                "to_node_id": switched.assigned_node_id,
+                "to_slot_id": switched.assigned_slot_id,
+                "routing_mode": RoutingMode.MANUAL.value,
+                "switch_action": SessionSwitchAction.MANUAL.value,
+                "target_node_id": node_id,
             },
         )
         return switched
@@ -643,6 +799,7 @@ class DispatchQueue:
         routing_mode: RoutingMode,
         exclude_node_ids: set[str] | None = None,
         allow_existing_slot: bool = True,
+        target_node_id: str | None = None,
     ) -> tuple[SessionRecord, str | None, str | None] | None:
         previous_node_id = session.assigned_node_id
         previous_slot_id = session.assigned_slot_id
@@ -665,6 +822,11 @@ class DispatchQueue:
                 return updated, previous_node_id, previous_slot_id
 
         candidates = await self._scheduler.rank_nodes(session, exclude_node_ids=exclude_node_ids)
+        preferred_node_id = target_node_id
+        if preferred_node_id is None and routing_mode == RoutingMode.MANUAL:
+            preferred_node_id = session.assigned_node_id
+        if preferred_node_id:
+            candidates = [candidate for candidate in candidates if candidate.node_id == preferred_node_id]
         for candidate in candidates:
             slot_id = await self._acquire_free_slot(candidate.node_id, candidate.channel_capacity, session.session_id)
             if slot_id is None:
