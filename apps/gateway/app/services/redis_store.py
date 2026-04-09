@@ -9,11 +9,15 @@ class RedisStore:
     """Thin async Redis wrapper used by gateway services."""
 
     def __init__(self, redis_url: str) -> None:
-        self._client = Redis.from_url(
-            redis_url,
+        self._redis_url = redis_url
+        self._client = self._build_client(socket_timeout=5)
+
+    def _build_client(self, *, socket_timeout: int) -> Redis:
+        return Redis.from_url(
+            self._redis_url,
             decode_responses=True,
             socket_connect_timeout=5,
-            socket_timeout=5,
+            socket_timeout=socket_timeout,
             socket_keepalive=True,
             health_check_interval=30,
         )
@@ -123,7 +127,14 @@ class RedisStore:
         return await self._client.lpop(key)
 
     async def blpop(self, key: str, timeout_seconds: int) -> tuple[str, str] | None:
-        return await self._client.blpop(key, timeout=timeout_seconds)
+        if timeout_seconds <= 0:
+            return await self._client.blpop(key, timeout=timeout_seconds)
+        # Blocking pop must be allowed to wait longer than the default 5s socket timeout.
+        blocking_client = self._build_client(socket_timeout=timeout_seconds + 5)
+        try:
+            return await blocking_client.blpop(key, timeout=timeout_seconds)
+        finally:
+            await blocking_client.aclose()
 
     async def delete(self, *keys: str) -> int:
         if not keys:

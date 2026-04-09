@@ -6,6 +6,13 @@ type NodeModelConfigPanelProps = {
   busyKey: string | null;
   status: LocalNodeStatusResponse | null;
   runtimeSummary: { label: string; detail: string };
+  gatewayControl?: {
+    managed: boolean;
+    state: string;
+    onRestart: () => void;
+    disabled: boolean;
+    busy: boolean;
+  } | null;
   eventPreview: string;
   draft: LocalNodeModelConfigRequest;
   onChange: <K extends keyof LocalNodeModelConfigRequest>(key: K, value: LocalNodeModelConfigRequest[K]) => void;
@@ -20,6 +27,7 @@ export function NodeModelConfigPanel({
   busyKey,
   status,
   runtimeSummary,
+  gatewayControl,
   eventPreview,
   draft,
   onChange,
@@ -60,7 +68,7 @@ export function NodeModelConfigPanel({
     applyState === "saving"
       ? "正在保存"
       : applyState === "restarting"
-        ? "正在重启节点服务"
+        ? "正在重启节点"
         : applyState === "applied"
           ? "已应用"
           : applyState === "failed"
@@ -73,13 +81,29 @@ export function NodeModelConfigPanel({
         <div>
           <div className="section-kicker">节点与模型参数</div>
           <h3>本机内置节点与推理后端</h3>
+          {gatewayControl ? (
+            <div className="connection-host-inline-meta">
+              <span className="connection-host-inline-pill">主网关 {gatewayControl.managed ? "托管中" : "未托管"}</span>
+              <span className="connection-host-inline-detail">状态 {gatewayControl.state}</span>
+            </div>
+          ) : null}
         </div>
         <div className="inline-actions">
+          {gatewayControl ? (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={gatewayControl.onRestart}
+              disabled={gatewayControl.disabled}
+            >
+              {gatewayControl.busy ? "网关重启中..." : "重启网关"}
+            </button>
+          ) : null}
           <button type="button" className="ghost-button" onClick={onRefresh} disabled={busyKey !== null}>
-            刷新
+            刷新节点状态
           </button>
           <button type="button" className="ghost-button" onClick={onRestart} disabled={busyKey !== null || applyBusy}>
-            {busyKey === "local-node-restart" || applyBusy ? "重启中..." : "重启服务"}
+            {busyKey === "local-node-restart" || applyBusy ? "重启中..." : "重启节点"}
           </button>
           <button type="button" className="ghost-button" onClick={onExport} disabled={busyKey !== null}>
             {busyKey === "local-node-export" ? "导出中..." : "导出诊断包"}
@@ -91,7 +115,7 @@ export function NodeModelConfigPanel({
       </div>
 
       <div className="inline-tip">
-        这里展示的是网关当前机器自带的内置节点，不是局域网中其它远端工作节点。模型配置以节点自己的 `node.env` 为准，保存后会在后台重启节点服务。
+        这里展示的是网关当前机器自带的内置节点，不是局域网中其它远端工作节点。模型配置以节点自己的 `node.env` 为准，保存后会在后台重启节点。
       </div>
 
       <div className="connection-fact-grid connection-fact-grid-wide">
@@ -255,12 +279,12 @@ export function NodeModelConfigPanel({
           </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={draft.restart_service} onChange={(event) => onChange("restart_service", event.target.checked)} />
-            <span>保存后自动重启服务</span>
+            <span>保存后自动重启节点</span>
           </label>
         </div>
       </details>
 
-      <SnippetBlock label="本机节点事件日志" content={eventPreview} />
+      {eventPreview ? <SnippetBlock label="本机节点事件日志" content={eventPreview} /> : null}
     </section>
   );
 }

@@ -1,6 +1,71 @@
 # Changelog
 
-> **Status**: Active | **Last Updated**: 2026-04-07 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+> **Status**: Active | **Last Updated**: 2026-04-08 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+
+---
+
+## 2026-04-08 — Dify 会话 ID 持久化 + 节点侧空闲通道释放
+
+### 背景
+
+前一轮只完成了“Dify 上下文按微信用户隔离”，但还有两个直接影响后续调度闭环的问题没有收口：
+
+1. `dify_conversation_id` 仍主要依赖节点内存和 recent messages 恢复，节点重启后不够稳。
+2. 通道空闲释放还主要靠网关在刷新或新消息进入时顺手回收，不是真正的节点侧自治。
+
+### 本次调整
+
+- `services/claw-node/claw_node/local_cache.py`
+  - 新增 `store_dify_conversation_id()` / `get_dify_conversation_id()`
+  - 将 Dify 会话 ID 落到节点本地 Redis 缓存，键粒度仍按微信 `user_id`
+
+- `services/claw-node/claw_node/dify_client.py`
+  - 读取顺序改为：内存缓存 → 本地缓存 → recent messages 元数据
+  - 每次 Dify 返回新的 `conversation_id` 后立即写回本地缓存
+  - 结果 metadata 中显式附带 `dify_conversation_id`，确保一路透传到网关消息元数据
+
+- `services/claw-node/claw_node/worker.py`
+  - 新增节点侧 `ChannelLeaseState`
+  - 节点接单时记录 `last_active_at`
+  - 任务完成后更新 `last_active_at` 并清空 inflight 标记
+  - 新增空闲巡检循环；默认 10 分钟无 inflight 即上报 `channel_released`
+
+- `services/claw-node/claw_node/gateway_client.py`
+  - 新增 `submit_channel_released()` HTTP 降级接口
+
+- `apps/gateway/app/models/dispatch.py`
+  - 新增 `ChannelReleasedRequest`
+
+- `apps/gateway/app/api/routes/nodes.py`
+  - 节点 WebSocket 事件流新增 `channel_released`
+  - 新增 HTTP 降级接口 `POST /api/nodes/{node_id}/channel-released`
+
+- `apps/gateway/app/dispatch/queue.py`
+  - 新增 `release_channel_from_node()`
+  - 只有在当前 session 仍绑定该 `node_id/slot_id` 且没有活跃任务时才真正释放
+  - 节点侧空闲释放默认会清空 `assigned_node_id`，为后续“随机派发到任意空闲节点”铺路
+
+### 测试覆盖
+
+- `services/claw-node/tests/test_dify_client.py`
+  - 新增本地缓存恢复 `conversation_id` 测试
+  - 验证返回 metadata 中包含 `dify_conversation_id`
+
+- `services/claw-node/tests/test_worker.py`
+  - 验证任务结果 metadata 会透传 `dify_conversation_id`
+  - 验证空闲超时后会发出 `channel_released`
+  - 验证 inflight 状态下不会误释放
+
+- `apps/gateway/tests/test_dispatch_queue.py`
+  - 验证节点上报空闲释放后，网关会在空闲 session 上清理槽位并清空节点绑定
+  - 验证 busy session 不会被误释放
+
+### 收益
+
+- Dify 上下文恢复不再只依赖进程内存，节点重启后的连续性更稳
+- `dify_conversation_id` 现在会真正写进 bot message metadata，后续排障和回填更直接
+- 通道空闲释放的责任开始下放到节点侧，网关只做最终裁决和状态收口
+- 为下一步做“节点优先维护空闲通道池，网关随机派发到空闲节点”打好了真实链路基础
 
 ---
 

@@ -4,6 +4,7 @@ import contextlib
 import asyncio
 import inspect
 import json
+import time
 import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -51,6 +52,34 @@ def create_app() -> FastAPI:
     app.state.dist_dir = repo_root / "apps" / "agent-console" / "dist"
     app.state.state_path = default_state_path()
     app.state.local_node_apply_task = None
+    app.state.bootstrap_status_cache = {"expires_at": 0.0, "value": None}
+    app.state.bootstrap_status_lock = asyncio.Lock()
+    app.state.local_node_status_cache = {"expires_at": 0.0, "value": None}
+    app.state.local_node_status_lock = asyncio.Lock()
+
+    async def load_cached_response(
+        *,
+        cache_name: str,
+        lock_name: str,
+        ttl_seconds: float,
+        builder,
+    ):
+        cache = getattr(app.state, cache_name)
+        now = time.monotonic()
+        cached_value = cache.get("value")
+        if cached_value is not None and now < float(cache.get("expires_at", 0.0) or 0.0):
+            return cached_value.model_copy(deep=True) if hasattr(cached_value, "model_copy") else cached_value
+        lock = getattr(app.state, lock_name)
+        async with lock:
+            cache = getattr(app.state, cache_name)
+            now = time.monotonic()
+            cached_value = cache.get("value")
+            if cached_value is not None and now < float(cache.get("expires_at", 0.0) or 0.0):
+                return cached_value.model_copy(deep=True) if hasattr(cached_value, "model_copy") else cached_value
+            value = await builder()
+            cache["value"] = value
+            cache["expires_at"] = time.monotonic() + ttl_seconds
+            return value.model_copy(deep=True) if hasattr(value, "model_copy") else value
 
     async def restore_runtime_services() -> None:
         """Auto-restore services based on profile configuration."""
@@ -154,20 +183,30 @@ def create_app() -> FastAPI:
 
     @app.get("/local/bootstrap/status", response_model=LauncherStatusResponse)
     async def bootstrap_status() -> LauncherStatusResponse:
-        from launcher.network import detect_lan_ip
-        profile = app.state.profile
-        layout = build_layout(profile)
-        host_state = redis_state(Path(profile.workdir), "host-redis", profile.redis_source) if profile.workdir else redis_state(Path("."), "host-redis", profile.redis_source)
-        node_state = redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source) if profile.workdir else redis_state(Path("."), "node-cache-redis", profile.node_cache_redis_source)
-        return LauncherStatusResponse(
-            profile=profile,
-            runtime_model=derive_runtime_model(profile),
-            layout=layout,
-            host_redis=host_state,
-            node_cache_redis=node_state,
-            environment=detect_environment(app.state.repo_root),
-            components=app.state.manager.statuses(profile, layout),
-            local_lan_ip=detect_lan_ip() or "",
+        async def build_bootstrap_status() -> LauncherStatusResponse:
+            from launcher.network import detect_lan_ip
+
+            profile = app.state.profile
+            layout = build_layout(profile)
+            host_state = redis_state(Path(profile.workdir), "host-redis", profile.redis_source) if profile.workdir else redis_state(Path("."), "host-redis", profile.redis_source)
+            node_state = redis_state(Path(profile.workdir), "node-cache-redis", profile.node_cache_redis_source) if profile.workdir else redis_state(Path("."), "node-cache-redis", profile.node_cache_redis_source)
+            components = await asyncio.to_thread(app.state.manager.statuses, profile, layout)
+            return LauncherStatusResponse(
+                profile=profile,
+                runtime_model=derive_runtime_model(profile),
+                layout=layout,
+                host_redis=host_state,
+                node_cache_redis=node_state,
+                environment=detect_environment(app.state.repo_root),
+                components=components,
+                local_lan_ip=detect_lan_ip() or "",
+            )
+
+        return await load_cached_response(
+            cache_name="bootstrap_status_cache",
+            lock_name="bootstrap_status_lock",
+            ttl_seconds=1.5,
+            builder=build_bootstrap_status,
         )
 
     @app.get("/local/setup/profile")
@@ -403,93 +442,101 @@ def create_app() -> FastAPI:
 
     @app.get("/local/node/status", response_model=LocalNodeStatusResponse)
     async def local_node_status() -> LocalNodeStatusResponse:
-        profile = app.state.profile
-        layout = build_layout(profile)
-        ensure_layout(layout)
-        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
-        service_name = app.state.manager._local_node_service_name(profile)  # type: ignore[attr-defined]
-        config_path = install_dir / "config" / "node.env"
-        diagnostics_path = install_dir / "diagnostics" / "node-status.json"
-        apply_state_path = _local_node_apply_state_path(install_dir)
-        diagnostics: dict[str, object] = {}
-        if diagnostics_path.exists():
-            with contextlib.suppress(Exception):
-                diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
-        apply_state = _read_local_node_apply_state(apply_state_path)
-        model_settings = _read_local_node_model_config(config_path)
-        node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
-        status = app.state.manager.local_node_service_status(profile, layout)
-        runtime_state = str(diagnostics.get("current_state", "") or "").strip()
-        last_register_result = str(diagnostics.get("last_register_result", "") or "").strip()
-        last_register_error = str(diagnostics.get("last_error", "") or "").strip()
-        last_register_at_raw = diagnostics.get("last_register_at")
-        detail = status.detail
-        (
-            inferred_runtime_state,
-            inferred_detail,
-            inferred_register_result,
-            inferred_register_error,
-            inferred_register_at_raw,
-        ) = await _infer_local_node_runtime_status(
-            gateway_port=profile.gateway_port,
-            gateway_base_url=profile.gateway_base_url,
-            node_id=app.state.manager._resolved_local_node_id(profile),  # type: ignore[attr-defined]
-            node_kind=node_kind or "local",
-            service_state=status.state,
-            model_settings=model_settings,
-            current_detail=status.detail,
-        )
-        diagnostics_runtime_state = str(diagnostics.get("current_state", "") or "").strip()
-        configured_model_provider = str(diagnostics.get("configured_model_provider", "") or "").strip() or (model_settings.model_provider or "auto")
-        active_model_provider = str(diagnostics.get("effective_model_provider", "") or "").strip() or configured_model_provider
-        inference_ready = bool(diagnostics.get("inference_ready", False))
-        inference_detail = str(diagnostics.get("inference_detail", "") or "").strip()
-        diagnostics_last_heartbeat_at = _parse_optional_datetime(diagnostics.get("last_heartbeat_at"))
-        if (
-            inferred_runtime_state == "gateway_unreachable"
-            and diagnostics_runtime_state == "connected"
-            and isinstance(diagnostics_last_heartbeat_at, datetime)
-            and (datetime.now(UTC) - diagnostics_last_heartbeat_at.astimezone(UTC)).total_seconds() <= 30
-        ):
-            inferred_runtime_state = diagnostics_runtime_state
-            inferred_detail = "本机内置节点已注册到当前目标网关，并处于在线状态。"
-            inferred_register_result = str(diagnostics.get("last_register_result", "") or "succeeded").strip() or "succeeded"
-            inferred_register_error = str(diagnostics.get("last_error", "") or "").strip()
-            inferred_register_at_raw = diagnostics.get("last_heartbeat_at") or diagnostics.get("last_register_at")
-        if diagnostics_runtime_state == "needs_repair" and not inference_ready:
-            inferred_runtime_state = "needs_repair"
-            inferred_detail = inference_detail or str(diagnostics.get("detail", "") or "").strip() or "当前推理后端尚未准备好。"
-            inferred_register_result = str(diagnostics.get("last_register_result", "") or "blocked_by_inference").strip() or "blocked_by_inference"
-            inferred_register_error = inference_detail or str(diagnostics.get("last_error", "") or "").strip()
-            inferred_register_at_raw = diagnostics.get("last_register_at")
-        runtime_state = inferred_runtime_state or runtime_state
-        detail = inferred_detail or detail
-        last_register_result = inferred_register_result or last_register_result
-        last_register_error = inferred_register_error or last_register_error
-        last_register_at_raw = inferred_register_at_raw or last_register_at_raw
-        return LocalNodeStatusResponse(
-            service_name=service_name,
-            state=status.state,
-            pid=status.pid,
-            node_kind=node_kind or "local",
-            config_path=str(config_path),
-            diagnostics_path=str(diagnostics_path),
-            install_dir=str(install_dir),
-            detail=detail,
-            service_state=status.state,
-            runtime_state=runtime_state or ("service_running" if status.state == "running" else "stopped"),
-            last_register_result=last_register_result,
-            last_register_error=last_register_error,
-            last_register_at=_parse_optional_datetime(last_register_at_raw),
-            config_apply_state=str(apply_state.get("config_apply_state", "idle") or "idle"),
-            last_apply_error=str(apply_state.get("last_apply_error", "") or ""),
-            last_apply_at=_parse_optional_datetime(apply_state.get("last_apply_at")),
-            configured_model_provider=configured_model_provider,
-            active_model_provider=active_model_provider,
-            inference_ready=inference_ready,
-            inference_detail=inference_detail,
-            diagnostics=diagnostics,
-            model_settings=model_settings,
+        async def build_local_node_status() -> LocalNodeStatusResponse:
+            profile = app.state.profile
+            layout = build_layout(profile)
+            ensure_layout(layout)
+            install_dir = await asyncio.to_thread(app.state.manager.local_node_runtime_install_dir, profile, layout)  # type: ignore[attr-defined]
+            service_name = app.state.manager._local_node_service_name(profile)  # type: ignore[attr-defined]
+            config_path = install_dir / "config" / "node.env"
+            diagnostics_path = install_dir / "diagnostics" / "node-status.json"
+            apply_state_path = _local_node_apply_state_path(install_dir)
+            diagnostics: dict[str, object] = {}
+            if diagnostics_path.exists():
+                with contextlib.suppress(Exception):
+                    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            apply_state = _read_local_node_apply_state(apply_state_path)
+            model_settings = _read_local_node_model_config(config_path)
+            node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
+            status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
+            runtime_state = str(diagnostics.get("current_state", "") or "").strip()
+            last_register_result = str(diagnostics.get("last_register_result", "") or "").strip()
+            last_register_error = str(diagnostics.get("last_error", "") or "").strip()
+            last_register_at_raw = diagnostics.get("last_register_at")
+            detail = status.detail
+            (
+                inferred_runtime_state,
+                inferred_detail,
+                inferred_register_result,
+                inferred_register_error,
+                inferred_register_at_raw,
+            ) = await _infer_local_node_runtime_status(
+                gateway_port=profile.gateway_port,
+                gateway_base_url=profile.gateway_base_url,
+                node_id=app.state.manager._resolved_local_node_id(profile),  # type: ignore[attr-defined]
+                node_kind=node_kind or "local",
+                service_state=status.state,
+                model_settings=model_settings,
+                current_detail=status.detail,
+            )
+            diagnostics_runtime_state = str(diagnostics.get("current_state", "") or "").strip()
+            configured_model_provider = str(diagnostics.get("configured_model_provider", "") or "").strip() or (model_settings.model_provider or "auto")
+            active_model_provider = str(diagnostics.get("effective_model_provider", "") or "").strip() or configured_model_provider
+            inference_ready = bool(diagnostics.get("inference_ready", False))
+            inference_detail = str(diagnostics.get("inference_detail", "") or "").strip()
+            diagnostics_last_heartbeat_at = _parse_optional_datetime(diagnostics.get("last_heartbeat_at"))
+            if (
+                inferred_runtime_state == "gateway_unreachable"
+                and diagnostics_runtime_state == "connected"
+                and isinstance(diagnostics_last_heartbeat_at, datetime)
+                and (datetime.now(UTC) - diagnostics_last_heartbeat_at.astimezone(UTC)).total_seconds() <= 30
+            ):
+                inferred_runtime_state = diagnostics_runtime_state
+                inferred_detail = "本机内置节点已注册到当前目标网关，并处于在线状态。"
+                inferred_register_result = str(diagnostics.get("last_register_result", "") or "succeeded").strip() or "succeeded"
+                inferred_register_error = str(diagnostics.get("last_error", "") or "").strip()
+                inferred_register_at_raw = diagnostics.get("last_heartbeat_at") or diagnostics.get("last_register_at")
+            if diagnostics_runtime_state == "needs_repair" and not inference_ready:
+                inferred_runtime_state = "needs_repair"
+                inferred_detail = inference_detail or str(diagnostics.get("detail", "") or "").strip() or "当前推理后端尚未准备好。"
+                inferred_register_result = str(diagnostics.get("last_register_result", "") or "blocked_by_inference").strip() or "blocked_by_inference"
+                inferred_register_error = inference_detail or str(diagnostics.get("last_error", "") or "").strip()
+                inferred_register_at_raw = diagnostics.get("last_register_at")
+            runtime_state = inferred_runtime_state or runtime_state
+            detail = inferred_detail or detail
+            last_register_result = inferred_register_result or last_register_result
+            last_register_error = inferred_register_error or last_register_error
+            last_register_at_raw = inferred_register_at_raw or last_register_at_raw
+            return LocalNodeStatusResponse(
+                service_name=service_name,
+                state=status.state,
+                pid=status.pid,
+                node_kind=node_kind or "local",
+                config_path=str(config_path),
+                diagnostics_path=str(diagnostics_path),
+                install_dir=str(install_dir),
+                detail=detail,
+                service_state=status.state,
+                runtime_state=runtime_state or ("service_running" if status.state == "running" else "stopped"),
+                last_register_result=last_register_result,
+                last_register_error=last_register_error,
+                last_register_at=_parse_optional_datetime(last_register_at_raw),
+                config_apply_state=str(apply_state.get("config_apply_state", "idle") or "idle"),
+                last_apply_error=str(apply_state.get("last_apply_error", "") or ""),
+                last_apply_at=_parse_optional_datetime(apply_state.get("last_apply_at")),
+                configured_model_provider=configured_model_provider,
+                active_model_provider=active_model_provider,
+                inference_ready=inference_ready,
+                inference_detail=inference_detail,
+                diagnostics=diagnostics,
+                model_settings=model_settings,
+            )
+
+        return await load_cached_response(
+            cache_name="local_node_status_cache",
+            lock_name="local_node_status_lock",
+            ttl_seconds=2.0,
+            builder=build_local_node_status,
         )
 
     @app.get("/local/node/logs", response_model=LocalNodeLogsResponse)

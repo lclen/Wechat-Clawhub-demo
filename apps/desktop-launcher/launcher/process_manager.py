@@ -6,6 +6,7 @@ import sys
 import json
 import re
 import socket
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -25,9 +26,16 @@ from launcher.runtime import resource_root
 
 
 class ProcessManager:
+    _SERVICE_QUERY_TTL_SECONDS = 2.0
+    _PROCESS_COMMAND_LINE_TTL_SECONDS = 5.0
+    _LISTENING_PORT_SNAPSHOT_TTL_SECONDS = 1.0
+
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
         self._processes: dict[str, subprocess.Popen[str]] = {}
+        self._service_query_cache: dict[str, tuple[float, dict[str, Any] | None]] = {}
+        self._process_command_line_cache: dict[int, tuple[float, str]] = {}
+        self._listening_port_snapshot_cache: tuple[float, dict[int, int]] | None = None
         self._statuses: dict[str, LauncherComponentStatus] = {
             "launcher": LauncherComponentStatus(name="launcher", state=ComponentState.RUNNING, detail="桌面宿主已运行", pid=os.getpid(), started_at=datetime.now(UTC)),
             "host-redis": LauncherComponentStatus(name="host-redis", state=ComponentState.STOPPED),
@@ -433,6 +441,10 @@ class ProcessManager:
             subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
 
     def _query_windows_service(self, service_name: str) -> dict[str, Any] | None:
+        cached = self._service_query_cache.get(service_name)
+        now = time.monotonic()
+        if cached and (now - cached[0]) < self._SERVICE_QUERY_TTL_SECONDS:
+            return cached[1]
         result = subprocess.run(  # noqa: S603
             [
                 "powershell",
@@ -451,16 +463,20 @@ class ProcessManager:
             errors="ignore",
         )
         if result.returncode != 0:
+            self._service_query_cache[service_name] = (now, None)
             return None
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
+            self._service_query_cache[service_name] = (now, None)
             return None
-        return {
+        service = {
             "state": str(payload.get("State", "UNKNOWN") or "UNKNOWN"),
             "pid": int(payload["ProcessId"]) if payload.get("ProcessId") is not None else None,
             "path_name": str(payload.get("PathName", "") or ""),
         }
+        self._service_query_cache[service_name] = (now, service)
+        return service
 
     def _run_sync_command(self, command: list[str], *, cwd: Path, log_path: Path) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -598,6 +614,22 @@ class ProcessManager:
     def _find_listening_port_owner(self, port: int) -> dict[str, Any] | None:
         if not self._is_port_in_use(port):
             return None
+        snapshot = self._listening_port_snapshot()
+        pid = snapshot.get(port)
+        if pid is None:
+            return None
+        command_line = self._query_process_command_line(pid)
+        return {
+            "pid": pid,
+            "command_line": command_line,
+            "hint": self._classify_process_hint(command_line),
+        }
+
+    def _listening_port_snapshot(self) -> dict[int, int]:
+        now = time.monotonic()
+        cached = self._listening_port_snapshot_cache
+        if cached and (now - cached[0]) < self._LISTENING_PORT_SNAPSHOT_TTL_SECONDS:
+            return cached[1]
         try:
             result = subprocess.run(  # noqa: S603
                 ["netstat", "-ano", "-p", "tcp"],
@@ -608,9 +640,10 @@ class ProcessManager:
                 errors="ignore",
             )
         except Exception:
-            return None
+            return {}
         if result.returncode != 0:
-            return None
+            return {}
+        snapshot: dict[int, int] = {}
         for raw_line in result.stdout.splitlines():
             line = raw_line.strip()
             if not line:
@@ -620,19 +653,19 @@ class ProcessManager:
                 continue
             local_address = parts[1]
             state = parts[3].upper()
-            if state != "LISTENING" or not local_address.endswith(f":{port}"):
+            if state != "LISTENING":
+                continue
+            _, _, port_text = local_address.rpartition(":")
+            if not port_text:
                 continue
             try:
+                port_number = int(port_text)
                 pid = int(parts[4])
             except ValueError:
                 continue
-            command_line = self._query_process_command_line(pid)
-            return {
-                "pid": pid,
-                "command_line": command_line,
-                "hint": self._classify_process_hint(command_line),
-            }
-        return None
+            snapshot[port_number] = pid
+        self._listening_port_snapshot_cache = (now, snapshot)
+        return snapshot
 
     def _is_port_in_use(self, port: int) -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -649,6 +682,10 @@ class ProcessManager:
         return response.startswith(b"+PONG")
 
     def _query_process_command_line(self, pid: int) -> str:
+        cached = self._process_command_line_cache.get(pid)
+        now = time.monotonic()
+        if cached and (now - cached[0]) < self._PROCESS_COMMAND_LINE_TTL_SECONDS:
+            return cached[1]
         try:
             result = subprocess.run(  # noqa: S603
                 [
@@ -665,7 +702,9 @@ class ProcessManager:
             )
         except Exception:
             return ""
-        return result.stdout.strip()
+        command_line = result.stdout.strip()
+        self._process_command_line_cache[pid] = (now, command_line)
+        return command_line
 
     def _classify_process_hint(self, command_line: str) -> str:
         normalized = command_line.lower()

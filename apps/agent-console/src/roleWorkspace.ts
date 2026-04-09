@@ -3,7 +3,7 @@
 // 所有函数均为纯函数，支持属性测试
 
 type SetupRole = "gateway_host" | "gateway_host_console" | "worker_node" | "console_only";
-type WorkspaceTab = "quick_setup" | "sessions" | "connection";
+type WorkspaceTab = "quick_setup" | "sessions" | "connection" | "logs";
 type SetupTaskStatus = "pending" | "running" | "succeeded" | "failed";
 
 export type RoleBadge = {

@@ -37,6 +37,9 @@ class SessionCursorError(SessionManagerError):
     """Raised when an incremental messages cursor is invalid."""
 
 
+_UNSET = object()
+
+
 class SessionManager:
     ACTIVE_SESSIONS_KEY = "wch:sessions:active"
     logger = logging.getLogger(__name__)
@@ -139,7 +142,8 @@ class SessionManager:
             if not raw:
                 stale_ids.append(session_id)
                 continue
-            sessions.append(self._parse_session(raw, summary))
+            normalized = await self._repair_inconsistent_dispatch_binding(raw)
+            sessions.append(self._parse_session(normalized, summary))
 
         if stale_ids:
             try:
@@ -170,7 +174,8 @@ class SessionManager:
             raise SessionManagerError("Failed to fetch session") from exc
         if not raw:
             raise SessionNotFoundError(f"Session '{session_id}' not found")
-        return self._parse_session(raw, summary)
+        normalized = await self._repair_inconsistent_dispatch_binding(raw)
+        return self._parse_session(normalized, summary)
 
     async def get_messages(
         self,
@@ -178,46 +183,81 @@ class SessionManager:
         *,
         session: SessionRecord | None = None,
         after_count: int | None = None,
+        before_count: int | None = None,
         limit: int | None = None,
-    ) -> tuple[list[MessageRecord], int, bool]:
+    ) -> tuple[list[MessageRecord], int, bool, int, bool]:
         current_session = session or await self.get_session(session_id)
         if after_count is not None and after_count < 0:
             raise SessionCursorError("after_count must be greater than or equal to 0")
         if after_count is not None and after_count > current_session.message_count:
             raise SessionCursorError("after_count is ahead of the current session message count")
+        if before_count is not None and before_count < 0:
+            raise SessionCursorError("before_count must be greater than or equal to 0")
+        if before_count is not None and before_count > current_session.message_count:
+            raise SessionCursorError("before_count is ahead of the current session message count")
+        if after_count is not None and before_count is not None:
+            raise SessionCursorError("after_count and before_count cannot be used together")
 
         next_cursor = current_session.message_count
+        stored_window_size = min(current_session.message_count, self._settings.recent_message_limit)
+        stored_window_offset = max(0, current_session.message_count - stored_window_size)
+
+        def transcript_recent(window_limit: int) -> tuple[list[MessageRecord], int, bool]:
+            return self._transcript_writer.read_recent_messages(session_id, limit=window_limit)
+
+        def transcript_after(cursor: int) -> tuple[list[MessageRecord], int, bool]:
+            return self._transcript_writer.read_messages_after(session_id, after_count=cursor)
+
+        def transcript_all() -> list[MessageRecord]:
+            return self._transcript_writer.read_all_messages(session_id)
+
+        if before_count is not None:
+            older_limit = limit if limit is not None and limit > 0 else self._settings.recent_message_limit
+            older_messages, history_start, has_more_before = self._transcript_writer.read_messages_before(
+                session_id,
+                before_count=before_count,
+                limit=older_limit,
+            )
+            return older_messages, next_cursor, False, history_start, has_more_before
 
         # 增量加载：只获取新消息
         if after_count is not None and after_count > 0:
             delta = current_session.message_count - after_count
             if delta <= 0:
-                return [], next_cursor, False
+                return [], next_cursor, False, stored_window_offset, stored_window_offset > 0
 
-            # 如果增量消息数量超过限制，返回全部消息
-            if delta >= self._settings.recent_message_limit:
+            # cursor 已经落在当前保留窗口之前，只能回退到最新窗口快照。
+            if after_count < stored_window_offset:
                 try:
                     raw_messages = await self._store.lrange(self._session_messages_key(session_id), 0, -1)
                 except RedisError as exc:
                     raise SessionManagerError("Failed to fetch messages") from exc
                 all_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
-                return all_messages, next_cursor, True
+                if not all_messages and current_session.message_count > 0:
+                    all_messages, history_start, has_more_before = transcript_recent(self._settings.recent_message_limit)
+                    return all_messages, next_cursor, True, history_start, has_more_before
+                return all_messages, next_cursor, True, stored_window_offset, stored_window_offset > 0
 
-            # 只获取增量消息（从 after_count 位置开始）
+            # Redis 列表只保留最近窗口，需要把绝对 message_count cursor 换算成窗口内偏移。
+            start_index = max(0, after_count - stored_window_offset)
             try:
                 raw_messages = await self._store.lrange(
                     self._session_messages_key(session_id),
-                    after_count,
+                    start_index,
                     -1
                 )
             except RedisError as exc:
                 raise SessionManagerError("Failed to fetch messages") from exc
             incremental_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
-            return incremental_messages, next_cursor, False
+            if not incremental_messages and current_session.message_count > 0:
+                transcript_messages, history_start, has_more_before = transcript_after(after_count)
+                return transcript_messages, next_cursor, False, history_start, has_more_before
+            return incremental_messages, next_cursor, False, stored_window_offset, stored_window_offset > 0
 
-        # 初始加载：如果指定了 limit，只获取最近的 N 条消息
+        # 初始加载：如果指定了 limit，只获取当前保留窗口内最近的 N 条消息。
         if limit is not None and limit > 0:
-            start_index = max(0, current_session.message_count - limit)
+            desired_count = min(limit, stored_window_size)
+            start_index = max(0, stored_window_size - desired_count)
             try:
                 raw_messages = await self._store.lrange(
                     self._session_messages_key(session_id),
@@ -227,7 +267,11 @@ class SessionManager:
             except RedisError as exc:
                 raise SessionManagerError("Failed to fetch messages") from exc
             limited_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
-            return limited_messages, next_cursor, True
+            if not limited_messages and current_session.message_count > 0:
+                transcript_messages, history_start, has_more_before = transcript_recent(limit)
+                return transcript_messages, next_cursor, True, history_start, has_more_before
+            history_start = max(0, next_cursor - len(limited_messages))
+            return limited_messages, next_cursor, True, history_start, history_start > 0
 
         # 初始加载：获取全部消息
         try:
@@ -235,34 +279,38 @@ class SessionManager:
         except RedisError as exc:
             raise SessionManagerError("Failed to fetch messages") from exc
         all_messages = [MessageRecord.model_validate_json(item) for item in raw_messages]
-        return all_messages, next_cursor, True
+        if not all_messages and current_session.message_count > 0:
+            transcript_messages = transcript_all()
+            history_start = max(0, next_cursor - len(transcript_messages))
+            return transcript_messages, next_cursor, True, history_start, history_start > 0
+        return all_messages, next_cursor, True, stored_window_offset, stored_window_offset > 0
 
     async def set_dispatch_state(
         self,
         *,
         session_id: str,
         assigned_node_id: str | None,
-        assigned_slot_id: str | None = None,
+        assigned_slot_id: str | None | object = _UNSET,
         active_task_id: str | None,
         queue_status: str | QueueStatus,
         last_dispatch_at: datetime | None,
         routing_mode: str | RoutingMode | None = None,
-        slot_bound_at: datetime | None = None,
-        slot_expires_at: datetime | None = None,
+        slot_bound_at: datetime | None | object = _UNSET,
+        slot_expires_at: datetime | None | object = _UNSET,
     ) -> SessionRecord:
         session = await self.get_session(session_id)
         q = QueueStatus(queue_status)
         meta = self._build_session_meta(
             session,
             assigned_node_id=assigned_node_id,
-            assigned_slot_id=assigned_slot_id if assigned_slot_id is not None else session.assigned_slot_id,
+            assigned_slot_id=session.assigned_slot_id if assigned_slot_id is _UNSET else assigned_slot_id,
             active_task_id=active_task_id,
             queue_status=q,
             last_dispatch_at=last_dispatch_at or session.last_dispatch_at,
             updated_at=self._utcnow(),
             routing_mode=RoutingMode(routing_mode) if routing_mode is not None else session.routing_mode,
-            slot_bound_at=slot_bound_at if slot_bound_at is not None else session.slot_bound_at,
-            slot_expires_at=slot_expires_at if slot_expires_at is not None else session.slot_expires_at,
+            slot_bound_at=session.slot_bound_at if slot_bound_at is _UNSET else slot_bound_at,
+            slot_expires_at=session.slot_expires_at if slot_expires_at is _UNSET else slot_expires_at,
         )
         try:
             await self._store.hset_many(self._session_meta_key(session.session_id), meta)
@@ -403,6 +451,30 @@ class SessionManager:
         if not sessions:
             return "sessions:empty"
         return "|".join(f"{session.session_id}:{session.version}" for session in sessions)
+
+    async def _repair_inconsistent_dispatch_binding(self, raw: dict[str, str]) -> dict[str, str]:
+        assigned_node_id = raw.get("assigned_node_id") or ""
+        assigned_slot_id = raw.get("assigned_slot_id") or ""
+        slot_bound_at = raw.get("slot_bound_at") or ""
+        slot_expires_at = raw.get("slot_expires_at") or ""
+        if assigned_node_id or not (assigned_slot_id or slot_bound_at or slot_expires_at):
+            return raw
+
+        repaired = dict(raw)
+        repaired["assigned_slot_id"] = ""
+        repaired["slot_bound_at"] = ""
+        repaired["slot_expires_at"] = ""
+        repaired["updated_at"] = self._utcnow().isoformat()
+        try:
+            await self._store.hset_many(self._session_meta_key(raw["session_id"]), repaired)
+        except RedisError as exc:
+            raise SessionManagerError("Failed to repair inconsistent session binding") from exc
+        self.logger.warning(
+            "session_manager.repaired_inconsistent_binding session_id=%s assigned_slot_id=%s",
+            raw["session_id"],
+            assigned_slot_id,
+        )
+        return repaired
 
     def _parse_session(self, raw: dict[str, str], summary: str | None) -> SessionRecord:
         last_dispatch_raw = raw.get("last_dispatch_at") or None

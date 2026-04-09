@@ -22,7 +22,7 @@ from urllib.parse import unquote
 import httpx
 
 from app.core.config import Settings
-from app.models.session import InboundMessageRequest
+from app.models.session import InboundMessageRequest, SessionSwitchAction
 from app.models.wechat import WeChatStatusResponse
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager
@@ -730,6 +730,8 @@ class WeChatBotService:
         )
         session, detail = await self._dispatch_queue.switch_session_target(
             session.session_id,
+            action=SessionSwitchAction.AUTO,
+            node_id=None,
             requested_by="wechat-command",
             reason="wechat_command_switch",
         )

@@ -46,6 +46,8 @@ class NodeSettings(BaseSettings):
     local_cache_redis_url: str = Field(alias="CLAW_LOCAL_CACHE_REDIS_URL", default="")
     local_cache_ttl_seconds: int = Field(alias="CLAW_LOCAL_CACHE_TTL_SECONDS", default=900, ge=30, le=86400)
     channel_capacity: int = Field(alias="CLAW_CHANNEL_CAPACITY", default=12, ge=1, le=512)
+    channel_idle_timeout_seconds: int = Field(alias="CLAW_CHANNEL_IDLE_TIMEOUT_SECONDS", default=600, ge=60, le=86_400)
+    channel_idle_check_interval_seconds: int = Field(alias="CLAW_CHANNEL_IDLE_CHECK_INTERVAL_SECONDS", default=15, ge=1, le=300)
     model_provider: str = Field(alias="CLAW_MODEL_PROVIDER", default="auto")
     dify_base_url: str = Field(alias="CLAW_DIFY_BASE_URL", default="")
     dify_api_key: str = Field(alias="CLAW_DIFY_API_KEY", default="")

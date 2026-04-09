@@ -5,6 +5,8 @@ from collections import defaultdict
 
 from fastapi import WebSocket
 
+from app.models.node import NodeDiagnosticsRecord
+
 
 class NodeDiagnosticsStreamBroker:
     def __init__(self) -> None:
@@ -39,7 +41,7 @@ class NodeDiagnosticsStreamBroker:
             {
                 "type": "diagnostics_snapshot",
                 "node_id": node_id,
-                "diagnostics": diagnostics,
+                "diagnostics": self._serialize_diagnostics(diagnostics),
             }
         )
 
@@ -47,7 +49,7 @@ class NodeDiagnosticsStreamBroker:
         payload = {
             "type": "diagnostics_snapshot",
             "node_id": node_id,
-            "diagnostics": diagnostics,
+            "diagnostics": self._serialize_diagnostics(diagnostics),
         }
         async with self._lock:
             subscribers = list(self._connections.get(node_id, set()))
@@ -59,3 +61,6 @@ class NodeDiagnosticsStreamBroker:
                 stale.append(websocket)
         for websocket in stale:
             await self.unsubscribe(node_id, websocket)
+
+    def _serialize_diagnostics(self, diagnostics: dict[str, object]) -> dict[str, object]:
+        return NodeDiagnosticsRecord.model_validate(diagnostics).model_dump(mode="json")

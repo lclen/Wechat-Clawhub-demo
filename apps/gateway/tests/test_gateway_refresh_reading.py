@@ -130,6 +130,129 @@ class SessionManagerBatchReadTests(unittest.IsolatedAsyncioTestCase):
         assert snapshot is not None
         self.assertEqual([item.session_id for item in snapshot.sessions], ["wechat:user-a", "wechat:user-b"])
 
+    async def test_set_dispatch_state_allows_explicit_slot_clear(self) -> None:
+        now = datetime.now(UTC)
+        store = AsyncMock()
+        user_data_store = Mock()
+        manager = SessionManager(
+            store,
+            Mock(),
+            user_data_store,
+            Settings(_env_file=None),
+        )
+        session = build_session("wechat:user-a", last_message_at=now, version=2).model_copy(
+            update={
+                "assigned_node_id": "local-node",
+                "assigned_slot_id": "slot-01",
+                "slot_bound_at": now - timedelta(minutes=10),
+                "slot_expires_at": now + timedelta(minutes=10),
+            }
+        )
+        manager.get_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
+
+        updated = await manager.set_dispatch_state(
+            session_id=session.session_id,
+            assigned_node_id=None,
+            assigned_slot_id=None,
+            active_task_id=None,
+            queue_status=QueueStatus.NONE,
+            last_dispatch_at=session.last_dispatch_at,
+            slot_bound_at=None,
+            slot_expires_at=None,
+        )
+
+        meta = store.hset_many.await_args.args[1]
+        self.assertEqual(meta["assigned_node_id"], "")
+        self.assertEqual(meta["assigned_slot_id"], "")
+        self.assertEqual(meta["slot_bound_at"], "")
+        self.assertEqual(meta["slot_expires_at"], "")
+        self.assertIsNone(updated.assigned_node_id)
+        self.assertIsNone(updated.assigned_slot_id)
+        self.assertIsNone(updated.slot_bound_at)
+        self.assertIsNone(updated.slot_expires_at)
+        user_data_store.persist_session.assert_called_once()
+
+    async def test_set_dispatch_state_preserves_slot_fields_when_not_provided(self) -> None:
+        now = datetime.now(UTC)
+        store = AsyncMock()
+        manager = SessionManager(
+            store,
+            Mock(),
+            Mock(),
+            Settings(_env_file=None),
+        )
+        session = build_session("wechat:user-b", last_message_at=now, version=3).model_copy(
+            update={
+                "assigned_node_id": "local-node",
+                "assigned_slot_id": "slot-02",
+                "slot_bound_at": now - timedelta(minutes=5),
+                "slot_expires_at": now + timedelta(minutes=5),
+            }
+        )
+        manager.get_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
+
+        updated = await manager.set_dispatch_state(
+            session_id=session.session_id,
+            assigned_node_id="local-node",
+            active_task_id=None,
+            queue_status=QueueStatus.NONE,
+            last_dispatch_at=session.last_dispatch_at,
+        )
+
+        meta = store.hset_many.await_args.args[1]
+        self.assertEqual(meta["assigned_slot_id"], "slot-02")
+        self.assertEqual(meta["slot_bound_at"], session.slot_bound_at.isoformat())
+        self.assertEqual(meta["slot_expires_at"], session.slot_expires_at.isoformat())
+        self.assertEqual(updated.assigned_slot_id, "slot-02")
+        self.assertEqual(updated.slot_bound_at, session.slot_bound_at)
+        self.assertEqual(updated.slot_expires_at, session.slot_expires_at)
+
+    async def test_get_session_repairs_inconsistent_slot_binding_without_node_id(self) -> None:
+        now = datetime.now(UTC)
+        store = AsyncMock()
+        store.hgetall.return_value = {
+            "session_id": "wechat:user-c",
+            "channel": "wechat",
+            "user_id": "user-c",
+            "agent_id": "default-agent",
+            "status": "bot_active",
+            "assigned_node_id": "",
+            "assigned_slot_id": "slot-01",
+            "active_task_id": "",
+            "queue_status": "none",
+            "context_version": "1",
+            "routing_mode": "manual",
+            "slot_bound_at": (now - timedelta(minutes=10)).isoformat(),
+            "slot_expires_at": (now - timedelta(minutes=1)).isoformat(),
+            "reply_context_token": "",
+            "handoff_ticket_id": "",
+            "claimed_by": "",
+            "message_count": "1",
+            "last_message_at": now.isoformat(),
+            "last_dispatch_at": "",
+            "created_at": (now - timedelta(minutes=30)).isoformat(),
+            "updated_at": now.isoformat(),
+            "version": "2",
+        }
+        store.get.return_value = "summary"
+        manager = SessionManager(
+            store,
+            Mock(),
+            Mock(),
+            Settings(_env_file=None),
+        )
+
+        session = await manager.get_session("wechat:user-c")
+
+        repaired_meta = store.hset_many.await_args.args[1]
+        self.assertEqual(repaired_meta["assigned_slot_id"], "")
+        self.assertEqual(repaired_meta["slot_bound_at"], "")
+        self.assertEqual(repaired_meta["slot_expires_at"], "")
+        self.assertIsNone(session.assigned_node_id)
+        self.assertIsNone(session.assigned_slot_id)
+        self.assertIsNone(session.slot_bound_at)
+        self.assertIsNone(session.slot_expires_at)
+
 
 class NodeRegistryBatchReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_nodes_batches_reads_and_keeps_status_derivation(self) -> None:

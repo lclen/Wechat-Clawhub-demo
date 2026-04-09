@@ -827,6 +827,26 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostics["last_pairing_trace_id"], "trace-123")
         self.assertEqual(diagnostics["timeline"][-1]["category"], "register")
 
+    async def test_record_channel_event_appends_release_timeline(self) -> None:
+        self.service.record_channel_event(
+            "node-remote",
+            result="released",
+            message="节点已释放空闲通道 slot-01",
+            reason="idle_timeout",
+            session_id="session-1",
+            slot_id="slot-01",
+            last_active_at="2026-04-08T10:00:00+00:00",
+            released_at="2026-04-08T10:10:00+00:00",
+        )
+
+        diagnostics = self.service.get_node_diagnostics("node-remote")
+        timeline_item = diagnostics["timeline"][-1]
+        self.assertEqual(timeline_item["category"], "channel")
+        self.assertEqual(timeline_item["result"], "released")
+        self.assertEqual(timeline_item["metadata"]["reason"], "idle_timeout")
+        self.assertEqual(timeline_item["metadata"]["session_id"], "session-1")
+        self.assertEqual(timeline_item["metadata"]["slot_id"], "slot-01")
+
     async def test_load_persisted_node_diagnostics_restores_timeline(self) -> None:
         persisted_payload = {
             "node_id": "node-remote",

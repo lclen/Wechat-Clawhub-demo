@@ -1,14 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import {
   resolveInitialWorkspace,
   resolveWorkspaceOnTaskComplete,
   requiresRoleSwitchConfirmation,
   persistWorkspace,
+  clearPersistedWorkspace,
+  loadPersistedWorkspace,
   resolveRoleBadge,
   validateWorkerGatewayUrl,
   resolveTokenDisplayState,
 } from "./roleWorkspace";
+import { DiagnosticsConsole } from "./components/Workspaces/Connection/DiagnosticsConsole";
+import { NodeInventoryPanel } from "./components/Workspaces/Connection/NodeInventoryPanel";
+import { NodeModelConfigPanel } from "./components/Workspaces/Connection/NodeModelConfigPanel";
+import { OverviewPanel } from "./components/Workspaces/Connection/OverviewPanel";
+import { RuntimeLogsPanel } from "./components/Workspaces/Connection/RuntimeLogsPanel";
+import { WeChatConfigCard } from "./components/Workspaces/Connection/WeChatConfigCard";
 
 type ModelStatus = { configured: boolean; base_url: string; model: string };
 type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; gateway_bind_host: string; preferred_lan_ip: string | null; preferred_gateway_base_url: string; timestamp: string };
@@ -28,13 +36,26 @@ type NodeListResponse = { nodes: NodeRecord[]; inventory: NodeInventoryRecord[];
 type NodeDiagnosticsEvent = { timestamp: string; level: string; category: string; result: string; message: string; trace_id: string; metadata: Record<string, string> };
 type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; connection_state: NodeInventoryConnectionState; last_error: string; last_pairing_trace_id: string; last_pairing_status: string; last_pairing_at: string | null; last_register_result: string; last_register_at: string | null; last_heartbeat_result: string; last_heartbeat_at: string | null; last_auth_failure_at: string | null; last_auth_decision: string; last_auth_client_host: string; last_auth_path: string; expected_token_masked: string; provided_token_masked: string; timeline: NodeDiagnosticsEvent[] };
 type NodeDiagnosticsResponse = { node_id: string; diagnostics: NodeDiagnosticsRecord };
-type NodeMessageItem = { session_id: string; user_id: string; channel: string; role: MessageRecord["role"]; content: string; created_at: string; node_id: string | null };
+type NodeDiagnosticsStreamEnvelope = { type: "diagnostics_snapshot"; node_id: string; diagnostics: NodeDiagnosticsRecord };
 type SessionsResponse = { sessions: SessionRecord[] };
-type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean };
+type SessionMessagesResponse = {
+  session: SessionRecord;
+  messages: MessageRecord[];
+  next_cursor: number;
+  replace_messages: boolean;
+  history_start: number | null;
+  has_more_before: boolean | null;
+};
+type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
+type SessionOverviewEnvelope = { type: "sessions_snapshot"; sessions: SessionRecord[] };
+type GatewaySummaryResponse = { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse };
+type GatewaySummaryEnvelope = { type: "gateway_summary"; summary: { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse } };
 type SessionMessageCacheEntry = {
   session: SessionRecord | null;
   messages: MessageRecord[];
   cursor: number;
+  historyStart: number;
+  hasMoreBefore: boolean;
   loaded: boolean;
   lastLoadedAt: number;
 };
@@ -63,21 +84,25 @@ type ManualPairRequest = { host: string; pairing_port: number; pairing_key: stri
 type LauncherState = "stopped" | "starting" | "running" | "degraded" | "failed";
 type LauncherRedisSource = "github" | "mirror";
 type LauncherNodeCachePolicy = "disabled" | "optional" | "enabled";
+type LauncherMachineRole = "gateway" | "node" | "console" | "gateway_console";
 type LauncherComponentStatus = { name: string; state: LauncherState; pid: number | null; detail: string; error_code: string; started_at: string | null; log_path: string | null };
-type LauncherProfile = { workdir: string; gateway_port: number; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean };
+type LauncherProfile = { workdir: string; gateway_port: number; gateway_base_url?: string; launcher_port: number; host_redis_port: number; node_cache_redis_port: number; enable_local_node: boolean; enable_gateway: boolean; node_cache_policy: LauncherNodeCachePolicy; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; bootstrap_completed: boolean; local_node_id: string };
+type LauncherRuntimeModel = { machine_role: LauncherMachineRole; gateway_should_run: boolean; host_redis_should_run: boolean; local_node_should_run: boolean; node_cache_should_run: boolean; runtime_authority: string };
 type LauncherWorkdirLayout = { root: string; host_redis_dir: string; transcript_dir: string; identity_dir: string; memory_dir: string; log_dir: string; runtime_dir: string; config_dir: string; node_cache_dir: string };
 type LauncherRedisInstallState = { installed: boolean; source: LauncherRedisSource; archive_path: string; executable_path: string; version: string; detail: string };
 type LauncherEnvironmentCheck = { name: string; ready: boolean; detail: string };
 type LauncherEnvironmentStatus = { ready: boolean; python_version: string; checks: LauncherEnvironmentCheck[] };
-type LauncherStatusResponse = { profile: LauncherProfile; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[] };
+type LauncherStatusResponse = { profile: LauncherProfile; runtime_model: LauncherRuntimeModel; layout: LauncherWorkdirLayout; host_redis: LauncherRedisInstallState; node_cache_redis: LauncherRedisInstallState; environment: LauncherEnvironmentStatus; components: LauncherComponentStatus[]; local_lan_ip: string };
+type LauncherStartRequest = { machine_role?: LauncherMachineRole; enable_local_node?: boolean; enable_gateway?: boolean; enable_node_cache_redis: boolean; dispatch_mode_enabled: boolean; redis_source: LauncherRedisSource; node_cache_redis_source: LauncherRedisSource; local_node_id?: string };
 type LauncherLogResponse = { component: string; log_path: string | null; content: string };
-type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_model: string; openai_enable_thinking: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key_configured: boolean };
-type LocalNodeModelConfigRequest = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; dify_base_url: string; dify_api_key: string; restart_service: boolean };
-type LocalNodeStatusResponse = { service_name: string; state: string; pid: number | null; node_kind: NodeKind; config_path: string; diagnostics_path: string; install_dir: string; detail: string; service_state: string; runtime_state: string; last_register_result: string; last_register_error: string; last_register_at: string | null; diagnostics: Record<string, unknown>; model_settings: LocalNodeModelConfig };
+type LocalNodeModelConfig = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; openai_temperature: number; openai_top_p: number; openai_max_tokens: number; openai_seed: number; openai_thinking_budget: number; openai_stop: string; openai_enable_search: boolean; openai_search_forced: boolean; openai_search_strategy: string; openai_enable_search_extension: boolean; openai_multimodal_enabled: boolean; openai_api_key_configured: boolean; dify_base_url: string; dify_api_key: string; dify_api_key_configured: boolean };
+type LocalNodeModelConfigRequest = { model_provider: string; openai_base_url: string; openai_api_key: string; openai_model: string; openai_enable_thinking: boolean; openai_temperature: number; openai_top_p: number; openai_max_tokens: number; openai_seed: number; openai_thinking_budget: number; openai_stop: string; openai_enable_search: boolean; openai_search_forced: boolean; openai_search_strategy: string; openai_enable_search_extension: boolean; openai_multimodal_enabled: boolean; dify_base_url: string; dify_api_key: string; restart_service: boolean };
+type LocalNodeConfigApplyState = "idle" | "saving" | "restarting" | "applied" | "failed";
+type LocalNodeStatusResponse = { service_name: string; state: string; pid: number | null; node_kind: NodeKind; config_path: string; diagnostics_path: string; install_dir: string; detail: string; service_state: string; runtime_state: string; last_register_result: string; last_register_error: string; last_register_at: string | null; config_apply_state: LocalNodeConfigApplyState; last_apply_error: string; last_apply_at: string | null; configured_model_provider: string; active_model_provider: string; inference_ready: boolean; inference_detail: string; diagnostics: Record<string, unknown>; model_settings: LocalNodeModelConfig };
 type LocalNodeLogsResponse = { service_name: string; event_log_path: string | null; service_log_path: string | null; wrapper_log_path: string | null; event_log: string; service_log: string; wrapper_log: string };
 type LocalNodeActionResponse = { ok: boolean; detail: string; status: LocalNodeStatusResponse };
 type LocalNodeExportResponse = { ok: boolean; export_path: string; detail: string };
-type WorkspaceTab = "quick_setup" | "sessions" | "connection";
+type WorkspaceTab = "quick_setup" | "sessions" | "connection" | "logs";
 type SessionFilter = "all" | "processing" | "human" | "recent";
 type SetupMode = "status" | "role" | "config" | "preview" | "result";
 type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cache-redis";
@@ -100,10 +125,29 @@ type WorkerGatewayConnectionState =
   | "gateway_reachable_node_register_failed"
   | "gateway_reachable_node_connected";
 
+type AppUiStateCache = {
+  workspace: WorkspaceTab | null;
+  selected_session_id: string | null;
+  selected_node_id: string | null;
+};
+
+type AppSummaryStateCache = {
+  system_status: SystemStatus | null;
+  wechat_status: WeChatStatus | null;
+  node_list: NodeListResponse | null;
+  sessions: SessionRecord[];
+};
+
 const FAST_POLL_MS = 1200;
 const IDLE_POLL_MS = 3200;
+const SUMMARY_FALLBACK_POLL_MS = 10000; // summary WebSocket 降级时的 HTTP 轮询间隔（10 秒）
 const RETRY_POLL_MS = 1000; // backend unreachable — retry quickly
+const SUMMARY_RETRY_POLL_MS = 3000;
+const WS_RECONNECT_BASE_MS = 1500;
+const WS_RECONNECT_MAX_MS = 15000;
 const SETUP_DRAFT_KEY = "wechat-claw-hub.quick-setup.draft";
+const UI_STATE_CACHE_KEY = "wechat-claw-hub.ui-state";
+const SUMMARY_STATE_CACHE_KEY = "wechat-claw-hub.summary-state";
 const FILTERS: { key: SessionFilter; label: string }[] = [
   { key: "all", label: "全部" },
   { key: "processing", label: "处理中" },
@@ -154,10 +198,45 @@ const DEFAULT_LOCAL_NODE_MODEL_CONFIG: LocalNodeModelConfigRequest = {
   openai_api_key: "",
   openai_model: "",
   openai_enable_thinking: false,
+  openai_temperature: 0.3,
+  openai_top_p: 1,
+  openai_max_tokens: 0,
+  openai_seed: 0,
+  openai_thinking_budget: 0,
+  openai_stop: "",
+  openai_enable_search: false,
+  openai_search_forced: false,
+  openai_search_strategy: "turbo",
+  openai_enable_search_extension: false,
+  openai_multimodal_enabled: true,
   dify_base_url: "",
   dify_api_key: "",
   restart_service: true,
 };
+
+function buildLocalNodeModelDraftFromStatus(status: LocalNodeStatusResponse | null): LocalNodeModelConfigRequest {
+  return {
+    model_provider: status?.model_settings?.model_provider || "auto",
+    openai_base_url: status?.model_settings?.openai_base_url || "",
+    openai_api_key: status?.model_settings?.openai_api_key || "",
+    openai_model: status?.model_settings?.openai_model || "",
+    openai_enable_thinking: Boolean(status?.model_settings?.openai_enable_thinking),
+    openai_temperature: Number(status?.model_settings?.openai_temperature ?? 0.3),
+    openai_top_p: Number(status?.model_settings?.openai_top_p ?? 1),
+    openai_max_tokens: Number(status?.model_settings?.openai_max_tokens ?? 0),
+    openai_seed: Number(status?.model_settings?.openai_seed ?? 0),
+    openai_thinking_budget: Number(status?.model_settings?.openai_thinking_budget ?? 0),
+    openai_stop: status?.model_settings?.openai_stop || "",
+    openai_enable_search: Boolean(status?.model_settings?.openai_enable_search),
+    openai_search_forced: Boolean(status?.model_settings?.openai_search_forced),
+    openai_search_strategy: status?.model_settings?.openai_search_strategy || "turbo",
+    openai_enable_search_extension: Boolean(status?.model_settings?.openai_enable_search_extension),
+    openai_multimodal_enabled: status?.model_settings?.openai_multimodal_enabled !== false,
+    dify_base_url: status?.model_settings?.dify_base_url || "",
+    dify_api_key: status?.model_settings?.dify_api_key || "",
+    restart_service: true,
+  };
+}
 
 const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope OpenAI Compatible（默认 qwen3.5-plus）";
 const GATEWAY_NODE_TOKEN_LOCATION = "apps/gateway/.env → WCH_NODE_TOKENS";
@@ -188,7 +267,7 @@ function loadSetupDraft() {
       console?: ConsoleSetupConfig;
     };
     return {
-      role: parsed.role ?? null,
+      role: null,
       gateway: { ...DEFAULT_GATEWAY_SETUP, ...(parsed.gateway ?? {}) },
       worker: { ...DEFAULT_WORKER_SETUP, ...(parsed.worker ?? {}), node_token: "" },
       console: { ...DEFAULT_CONSOLE_SETUP, ...(parsed.console ?? {}) },
@@ -200,6 +279,58 @@ function loadSetupDraft() {
       worker: DEFAULT_WORKER_SETUP,
       console: DEFAULT_CONSOLE_SETUP,
     };
+  }
+}
+
+function clearQuickSetupCache() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(SETUP_DRAFT_KEY);
+  window.localStorage.removeItem(SUMMARY_STATE_CACHE_KEY);
+  clearPersistedWorkspace();
+  window.localStorage.removeItem(UI_STATE_CACHE_KEY);
+}
+
+function loadUiStateCache(): AppUiStateCache {
+  if (typeof window === "undefined") {
+    return { workspace: null, selected_session_id: null, selected_node_id: null };
+  }
+  try {
+    const raw = window.localStorage.getItem(UI_STATE_CACHE_KEY);
+    const parsed = raw ? JSON.parse(raw) as Partial<AppUiStateCache> : {};
+    const workspace =
+      parsed.workspace === "quick_setup" || parsed.workspace === "sessions" || parsed.workspace === "connection" || parsed.workspace === "logs"
+        ? parsed.workspace
+        : loadPersistedWorkspace();
+    return {
+      workspace,
+      selected_session_id: typeof parsed.selected_session_id === "string" ? parsed.selected_session_id : null,
+      selected_node_id: null,
+    };
+  } catch {
+    return {
+      workspace: loadPersistedWorkspace(),
+      selected_session_id: null,
+      selected_node_id: null,
+    };
+  }
+}
+
+function loadSummaryStateCache(): AppSummaryStateCache {
+  if (typeof window === "undefined") {
+    return { system_status: null, wechat_status: null, node_list: null, sessions: [] };
+  }
+  try {
+    const raw = window.localStorage.getItem(SUMMARY_STATE_CACHE_KEY);
+    if (!raw) return { system_status: null, wechat_status: null, node_list: null, sessions: [] };
+    const parsed = JSON.parse(raw) as Partial<AppSummaryStateCache>;
+    return {
+      system_status: parsed.system_status ?? null,
+      wechat_status: parsed.wechat_status ?? null,
+      node_list: parsed.node_list ?? null,
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+    };
+  } catch {
+    return { system_status: null, wechat_status: null, node_list: null, sessions: [] };
   }
 }
 
@@ -254,6 +385,69 @@ function isLauncherGatewayOwned(launcherStatus: LauncherStatusResponse | null) {
 function isExternalGatewayConflict(launcherStatus: LauncherStatusResponse | null) {
   const gateway = findLauncherComponent(launcherStatus, "gateway");
   return gateway?.error_code === "external_port_in_use";
+}
+
+function launcherMachineRoleValue(launcherStatus: LauncherStatusResponse | null): LauncherMachineRole | null {
+  return launcherStatus?.runtime_model?.machine_role ?? null;
+}
+
+function launcherShouldRunGateway(launcherStatus: LauncherStatusResponse | null) {
+  return launcherStatus?.runtime_model?.gateway_should_run ?? false;
+}
+
+function launcherShouldRunLocalNode(launcherStatus: LauncherStatusResponse | null) {
+  return launcherStatus?.runtime_model?.local_node_should_run ?? false;
+}
+
+function launcherMachineRoleLabel(launcherStatus: LauncherStatusResponse | null) {
+  switch (launcherMachineRoleValue(launcherStatus)) {
+    case "gateway":
+      return "网关";
+    case "node":
+      return "节点";
+    case "console":
+      return "控制台";
+    case "gateway_console":
+      return "网关 + 控制台";
+    default:
+      return "未识别";
+  }
+}
+
+function launcherManagedComponentsLabel(launcherStatus: LauncherStatusResponse | null) {
+  const runtime = launcherStatus?.runtime_model;
+  if (!runtime) return "等待 launcher 返回运行模型";
+  const parts: string[] = [];
+  if (runtime.host_redis_should_run) parts.push("host-redis");
+  if (runtime.gateway_should_run) parts.push("gateway");
+  if (runtime.local_node_should_run) {
+    parts.push(runtime.machine_role === "node" ? `worker-node(${launcherStatus?.profile.local_node_id || DEFAULT_WORKER_SETUP.node_id})` : "local-node");
+  }
+  if (runtime.node_cache_should_run) parts.push("node-cache-redis");
+  return parts.length ? parts.join(" / ") : "当前角色不托管本地后端组件";
+}
+
+function applyGatewaySummaryToState(
+  summary: GatewaySummaryResponse,
+  options: {
+    setSystemStatus: React.Dispatch<React.SetStateAction<SystemStatus | null>>;
+    setWechatStatus: React.Dispatch<React.SetStateAction<WeChatStatus | null>>;
+    setWechatBaseUrl: React.Dispatch<React.SetStateAction<string>>;
+    syncNodeStateView: (next: NodeListResponse) => void;
+  },
+) {
+  options.setSystemStatus(summary.system);
+  if (summary.wechat.base_url) options.setWechatBaseUrl(summary.wechat.base_url);
+  options.setWechatStatus(summary.wechat);
+  options.syncNodeStateView(summary.nodes);
+}
+
+function launcherLocalNodePolicyLabel(launcherStatus: LauncherStatusResponse | null) {
+  if (!launcherShouldRunLocalNode(launcherStatus)) return "当前角色不会托管任何本机节点服务";
+  if (launcherMachineRoleValue(launcherStatus) === "node") {
+    return `当前角色会托管工作节点 ${launcherStatus?.profile.local_node_id || DEFAULT_WORKER_SETUP.node_id}`;
+  }
+  return "当前角色会托管网关内置 local-node";
 }
 
 function summarizeWechatRuntime(launcherStatus: LauncherStatusResponse | null, wechatStatus: WeChatStatus | null, gatewaySetup: GatewaySetupConfig) {
@@ -391,11 +585,6 @@ function summarizeGatewayRuntime(
   };
 }
 
-function roleComponentsToStop(role: SetupRole): LauncherComponentName[] {
-  if (role === "console_only") return ["local-node", "gateway", "node-cache-redis", "host-redis"];
-  if (role === "worker_node") return ["gateway", "node-cache-redis", "host-redis"];
-  return [];
-}
 function resolveEffectiveRole(currentRole: SetupRole | null, completedRoles: SetupRole[]): SetupRole | null {
   if (currentRole) return currentRole;
   if (completedRoles.includes("worker_node")) return "worker_node";
@@ -413,6 +602,46 @@ function isWorkerRole(role: SetupRole | null) {
 function isConsoleRole(role: SetupRole | null) {
   return role === "console_only";
 }
+
+function setupRoleToLauncherMachineRole(role: SetupRole): LauncherMachineRole {
+  if (role === "gateway_host") return "gateway";
+  if (role === "gateway_host_console") return "gateway_console";
+  if (role === "worker_node") return "node";
+  return "console";
+}
+
+function launcherRoleUsesLocalNode(machineRole: LauncherMachineRole) {
+  return machineRole === "node" || machineRole === "gateway_console";
+}
+
+function buildLauncherStartPayload(
+  launcherStatus: LauncherStatusResponse | null,
+  machineRole: LauncherMachineRole,
+  options?: { dispatchModeEnabled?: boolean; enableNodeCacheRedis?: boolean; localNodeId?: string },
+): LauncherStartRequest {
+  const dispatchModeEnabled = options?.dispatchModeEnabled ?? (launcherStatus?.profile.dispatch_mode_enabled ?? false);
+  const enableNodeCacheRedis = options?.enableNodeCacheRedis
+    ?? ((launcherStatus?.profile.node_cache_policy !== "disabled") && launcherRoleUsesLocalNode(machineRole) && !dispatchModeEnabled);
+  const localNodeId = machineRole === "node"
+    ? (options?.localNodeId?.trim() || launcherStatus?.profile.local_node_id?.trim() || DEFAULT_WORKER_SETUP.node_id)
+    : "local-node";
+  return {
+    machine_role: machineRole,
+    enable_node_cache_redis: enableNodeCacheRedis,
+    dispatch_mode_enabled: dispatchModeEnabled,
+    redis_source: launcherStatus?.profile.redis_source || "mirror",
+    node_cache_redis_source: launcherStatus?.profile.node_cache_redis_source || "mirror",
+    local_node_id: localNodeId,
+  };
+}
+
+function resolveWorkerNodeId(currentValue: string, launcherProfile?: LauncherProfile | null) {
+  const trimmedCurrent = currentValue.trim();
+  if (trimmedCurrent && trimmedCurrent !== DEFAULT_WORKER_SETUP.node_id) return currentValue;
+  const launcherNodeId = launcherProfile?.local_node_id?.trim();
+  if (launcherNodeId && launcherNodeId !== "local-node") return launcherNodeId;
+  return currentValue;
+}
 function resolveWorkerGatewayBaseUrl(
   currentValue: string,
   profile?: Pick<SetupProfileResponse, "console" | "preferred_gateway_base_url" | "last_task"> | null,
@@ -425,14 +654,38 @@ function resolveWorkerGatewayBaseUrl(
   return resolvePreferredGatewayBaseUrl(profile, system);
 }
 
+function shouldUseOriginLocalGateway(launcherAvailable: boolean, localGatewayManaged: boolean | null) {
+  if (localGatewayManaged === true) return true;
+  if (localGatewayManaged === false) return false;
+  try {
+    const origin = new URL(window.location.origin);
+    const isLocalControlOrigin =
+      (origin.hostname === "127.0.0.1" || origin.hostname === "localhost")
+      && origin.port === "8765";
+    if (isLocalControlOrigin && !launcherAvailable) {
+      return false;
+    }
+  } catch {
+    // fall through to optimistic default
+  }
+  return true;
+}
+
+function getReconnectDelay(attempt: number) {
+  const safeAttempt = Math.max(0, attempt);
+  return Math.min(WS_RECONNECT_MAX_MS, WS_RECONNECT_BASE_MS * (2 ** safeAttempt));
+}
+
 export function App() {
   const initialDraft = loadSetupDraft();
-  const [workspace, setWorkspace] = useState<WorkspaceTab>("quick_setup");
+  const initialUiState = useMemo(() => loadUiStateCache(), []);
+  const initialSummaryState = useMemo(() => loadSummaryStateCache(), []);
+  const [workspace, setWorkspace] = useState<WorkspaceTab>(initialUiState.workspace ?? "quick_setup");
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [setupProfile, setSetupProfile] = useState<SetupProfileResponse | null>(null);
-  const [setupRole, setSetupRole] = useState<SetupRole | null>(initialDraft.role);
-  const [setupMode, setSetupMode] = useState<SetupMode>(initialDraft.role ? "config" : "role");
+  const [setupRole, setSetupRole] = useState<SetupRole | null>(null);
+  const [setupMode, setSetupMode] = useState<SetupMode>("role");
   const [gatewaySetup, setGatewaySetup] = useState<GatewaySetupConfig>(initialDraft.gateway);
   const [workerSetup, setWorkerSetup] = useState<WorkerNodeSetupConfig>(initialDraft.worker);
   const [consoleSetup, setConsoleSetup] = useState<ConsoleSetupConfig>(initialDraft.console);
@@ -449,37 +702,43 @@ export function App() {
   const [reconfigureConfirmOpen, setReconfigureConfirmOpen] = useState(false);
   const [launcherStatus, setLauncherStatus] = useState<LauncherStatusResponse | null>(null);
   const [launcherAvailable, setLauncherAvailable] = useState(false);
-  const [gatewayEnabled, setGatewayEnabled] = useState<boolean | null>(null); // null = 未知，等待 launcher 状态
   const [launcherLogs, setLauncherLogs] = useState<Record<string, string>>({});
   const [launcherExpanded, setLauncherExpanded] = useState(false);
   const [envExpanded, setEnvExpanded] = useState(false);
   const [nodeFormAdvanced, setNodeFormAdvanced] = useState(false);
   const [localNodeStatus, setLocalNodeStatus] = useState<LocalNodeStatusResponse | null>(null);
   const [localNodeLogs, setLocalNodeLogs] = useState<LocalNodeLogsResponse | null>(null);
+  const [runtimeLogsRefreshing, setRuntimeLogsRefreshing] = useState(false);
   const [localNodeModelDraft, setLocalNodeModelDraft] = useState<LocalNodeModelConfigRequest>(DEFAULT_LOCAL_NODE_MODEL_CONFIG);
   const [localNodeModelDirty, setLocalNodeModelDirty] = useState(false);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [modelCheck, setModelCheck] = useState<ModelCheck | null>(null);
-  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
-  const [wechatStatus, setWechatStatus] = useState<WeChatStatus | null>(null);
-  const [nodes, setNodes] = useState<NodeRecord[]>([]);
-  const [nodeInventory, setNodeInventory] = useState<NodeInventoryRecord[]>([]);
-  const [nodeInventorySummary, setNodeInventorySummary] = useState<NodeInventorySummary>({ paired_total: 0, online_total: 0, offline_total: 0 });
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(initialSummaryState.system_status);
+  const [wechatStatus, setWechatStatus] = useState<WeChatStatus | null>(initialSummaryState.wechat_status);
+  const [nodes, setNodes] = useState<NodeRecord[]>(initialSummaryState.node_list?.nodes ?? []);
+  const [nodeInventory, setNodeInventory] = useState<NodeInventoryRecord[]>(initialSummaryState.node_list?.inventory ?? []);
+  const [nodeInventorySummary, setNodeInventorySummary] = useState<NodeInventorySummary>(initialSummaryState.node_list?.summary ?? { paired_total: 0, online_total: 0, offline_total: 0 });
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(initialUiState.selected_node_id);
   const [selectedNodeDiagnostics, setSelectedNodeDiagnostics] = useState<NodeDiagnosticsRecord | null>(null);
-  const [nodeMessages, setNodeMessages] = useState<NodeMessageItem[]>([]);
-  const [nodeMessagesLoaded, setNodeMessagesLoaded] = useState(false);
-  const [sessions, setSessions] = useState<SessionRecord[]>([]);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [activeSession, setActiveSession] = useState<SessionRecord | null>(null);
+  const [sessions, setSessions] = useState<SessionRecord[]>(initialSummaryState.sessions);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialUiState.selected_session_id);
+  const [activeSession, setActiveSession] = useState<SessionRecord | null>(
+    initialUiState.selected_session_id
+      ? initialSummaryState.sessions.find((item) => item.session_id === initialUiState.selected_session_id) ?? initialSummaryState.sessions[0] ?? null
+      : initialSummaryState.sessions[0] ?? null,
+  );
   const [messages, setMessages] = useState<MessageRecord[]>([]);
-  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const [sessionsLoaded, setSessionsLoaded] = useState(initialSummaryState.sessions.length > 0);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messageCursor, setMessageCursor] = useState<number>(0);
+  const [messageHistoryStart, setMessageHistoryStart] = useState<number>(0);
+  const [messageHasMoreBefore, setMessageHasMoreBefore] = useState(false);
+  const [messageHistoryLoading, setMessageHistoryLoading] = useState(false);
+  const [gatewaySummaryStreamActive, setGatewaySummaryStreamActive] = useState(false);
   const [qr, setQr] = useState<QrStart | null>(null);
   const [qrImageSrc, setQrImageSrc] = useState("");
   const [pollState, setPollState] = useState<PollResponse | null>(null);
-  const [wechatBaseUrl, setWechatBaseUrl] = useState("https://ilinkai.weixin.qq.com");
+  const [wechatBaseUrl, setWechatBaseUrl] = useState(initialSummaryState.wechat_status?.base_url || "https://ilinkai.weixin.qq.com");
   const [manualToken, setManualToken] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState("正在读取主网关状态。");
@@ -491,9 +750,23 @@ export function App() {
   const workerGatewayAutoProbeKeyRef = useRef("");
   const shouldAutoFollowMessagesRef = useRef(true);
   const previousMessageSessionIdRef = useRef<string | null>(null);
+  const pendingHistoryRestoreRef = useRef<{ sessionId: string; scrollHeight: number; scrollTop: number } | null>(null);
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
-  const sessionRemoteGatewayBaseUrl = gatewayEnabled === false ? workerSetup.gateway_base_url.trim() : "";
-  const sessionRemoteNodeId = gatewayEnabled === false ? workerSetup.node_id.trim() : "";
+  const nodeDiagnosticsCacheRef = useRef<Map<string, NodeDiagnosticsRecord>>(new Map());
+  const effectiveRole = resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []);
+  const currentRoleIsWorker = isWorkerRole(effectiveRole);
+  const currentRoleIsConsole = isConsoleRole(effectiveRole);
+  const runtimeMachineRole = launcherMachineRoleValue(launcherStatus);
+  const localGatewayManaged = launcherAvailable ? launcherShouldRunGateway(launcherStatus) : null;
+  const shouldUseLocalGatewayApi = shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
+  const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+  const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
+  const sessionRemoteGatewayBaseUrl = currentRoleIsWorker
+    ? workerSetup.gateway_base_url.trim()
+    : currentRoleIsConsole
+      ? (consoleSetup.gateway_base_url.trim() || setupProfile?.console.gateway_base_url || "")
+      : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");
+  const sessionRemoteNodeId = currentRoleIsWorker ? workerSetup.node_id.trim() : "";
 
   function scrollMessagesToBottom() {
     const container = messagesRef.current;
@@ -509,6 +782,24 @@ export function App() {
 
   function handleMessageStreamScroll() {
     shouldAutoFollowMessagesRef.current = isMessageStreamNearBottom();
+    const container = messagesRef.current;
+    if (
+      container &&
+      container.scrollTop <= 24 &&
+      selectedSessionId &&
+      messageHasMoreBefore &&
+      !messageHistoryLoading
+    ) {
+      void loadOlderSessionMessages();
+    }
+  }
+
+  function resolveHistoryStart(detail: SessionMessagesResponse, fallbackCursor?: number) {
+    if (typeof detail.history_start === "number" && Number.isFinite(detail.history_start)) {
+      return Math.max(0, detail.history_start);
+    }
+    const basis = typeof fallbackCursor === "number" ? fallbackCursor : detail.next_cursor;
+    return Math.max(0, basis - detail.messages.length);
   }
 
   function syncNodeStateView(next: NodeListResponse, options?: { selectNode?: boolean }) {
@@ -522,37 +813,117 @@ export function App() {
     );
   }
 
+  async function refreshGatewaySummarySnapshot() {
+    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (usesRemoteGateway) {
+      if (!remoteGateway) return null;
+      const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`);
+      applyGatewaySummaryToState(summary, {
+        setSystemStatus,
+        setWechatStatus,
+        setWechatBaseUrl,
+        syncNodeStateView,
+      });
+      return summary;
+    }
+    if (localGatewayManaged === false) {
+      return null;
+    }
+    const summary = await requestJson<GatewaySummaryResponse>("/api/system/summary");
+    applyGatewaySummaryToState(summary, {
+      setSystemStatus,
+      setWechatStatus,
+      setWechatBaseUrl,
+      syncNodeStateView,
+    });
+    return summary;
+  }
+
+  function syncSetupProfileState(
+    profile: SetupProfileResponse,
+    preferredGatewayBaseUrl: string,
+    options?: { syncLastTask?: boolean; system?: SystemStatus | null },
+  ) {
+    setSetupProfile(profile);
+    if (options?.syncLastTask) {
+      setSetupTask(profile.last_task);
+    }
+    setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
+    setGatewaySetup(profile.gateway);
+    setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
+    setWorkerSetup((current) => ({
+      ...current,
+      node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
+      gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, options?.system ?? systemStatus),
+      dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
+      dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
+      node_token: "",
+    }));
+  }
+
+  function upsertSessionInView(nextSession: SessionRecord) {
+    setSessions((current) => {
+      const exists = current.some((item) => item.session_id === nextSession.session_id);
+      const next = exists
+        ? current.map((item) => (item.session_id === nextSession.session_id ? nextSession : item))
+        : [nextSession, ...current];
+      return next;
+    });
+    setSelectedSessionId((current) => current ?? nextSession.session_id);
+    setActiveSession((current) => (current?.session_id === nextSession.session_id ? nextSession : current));
+  }
+
   useEffect(() => {
     window.localStorage.setItem(
       SETUP_DRAFT_KEY,
       JSON.stringify({
-        role: setupRole,
         gateway: gatewaySetup,
         worker: workerSetup,
         console: consoleSetup,
       }),
     );
-  }, [setupRole, gatewaySetup, workerSetup, consoleSetup]);
+  }, [gatewaySetup, workerSetup, consoleSetup]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        UI_STATE_CACHE_KEY,
+        JSON.stringify({
+          workspace,
+          selected_session_id: selectedSessionId,
+          selected_node_id: null,
+        } satisfies AppUiStateCache),
+      );
+    } catch {
+      // ui state cache is best-effort
+    }
+    persistWorkspace(workspace);
+  }, [selectedNodeId, selectedSessionId, workspace]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        SUMMARY_STATE_CACHE_KEY,
+        JSON.stringify({
+          system_status: systemStatus,
+          wechat_status: wechatStatus,
+          node_list: { nodes, inventory: nodeInventory, summary: nodeInventorySummary },
+          sessions: sessions.slice(0, 50),
+        } satisfies AppSummaryStateCache),
+      );
+    } catch {
+      // summary cache is best-effort
+    }
+  }, [nodeInventory, nodeInventorySummary, nodes, sessions, systemStatus, wechatStatus]);
 
   useEffect(() => {
     if (!workerSetup.pairing_key.trim()) return;
     setManualPair((current) => (current.pairing_key.trim() ? current : { ...current, pairing_key: workerSetup.pairing_key.trim() }));
   }, [workerSetup.pairing_key]);
 
-  useEffect(() => {
-    if (!isWorkerRole(resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []))) return;
-    // 节点角色下 live poll 已自动更新探测状态，不需要单独触发
-    if (launcherStatus?.profile.enable_gateway === false) return;
-    const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
-    const nodeId = workerSetup.node_id.trim();
-    if (!gatewayBaseUrl || !nodeId || busy === "setup-gateway-probe") return;
-    const probeKey = `${gatewayBaseUrl}::${nodeId}`;
-    if (workerGatewayAutoProbeKeyRef.current === probeKey) return;
-    const timer = window.setTimeout(() => {
-      void probeWorkerGateway({ silent: true, reason: "auto" });
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [busy, launcherStatus?.profile.enable_gateway, setupProfile?.completed_roles, setupRole, workerSetup.gateway_base_url, workerSetup.node_id]);
+  // 移除自动探测 useEffect，统一使用 summary 轮询获取节点状态
+  // 节点角色下的探测状态由 summary 轮询自动构造（见 Line 1218-1257）
 
   useEffect(() => {
     let cancelled = false;
@@ -587,6 +958,22 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const pendingRestore = pendingHistoryRestoreRef.current;
+    if (!pendingRestore || pendingRestore.sessionId !== selectedSessionId) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const container = messagesRef.current;
+      if (container) {
+        const delta = container.scrollHeight - pendingRestore.scrollHeight;
+        container.scrollTop = pendingRestore.scrollTop + delta;
+      }
+      pendingHistoryRestoreRef.current = null;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length, selectedSessionId]);
+
+  useEffect(() => {
     const sessionChanged = previousMessageSessionIdRef.current !== selectedSessionId;
     previousMessageSessionIdRef.current = selectedSessionId;
     if (!sessionChanged && !shouldAutoFollowMessagesRef.current) {
@@ -600,35 +987,18 @@ export function App() {
   }, [messages.length, messagesLoaded, selectedSessionId, activeSession?.active_task_id, activeSession?.queue_status]);
 
   useEffect(() => {
-    let cancelled = false;
-    requestJson<LauncherStatusResponse>("/local/bootstrap/status")
-      .then((status) => {
-        if (cancelled) return;
-        setLauncherStatus(status);
-        setLauncherAvailable(true);
-      })
-      .catch(() => {
-        if (!cancelled) setLauncherAvailable(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
     // 只在接入中心工作区时轮询本地节点状态
     if (!launcherAvailable || workspace !== "connection") return;
     let cancelled = false;
     let timer = 0;
     const run = async () => {
       try {
-        const [status, logs] = await Promise.all([
-          requestJson<LocalNodeStatusResponse>("/local/node/status"),
-          requestJson<LocalNodeLogsResponse>("/local/node/logs"),
-        ]);
+        const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
         if (cancelled) return;
         setLocalNodeStatus(status);
-        setLocalNodeLogs(logs);
+        if (!localNodeModelDirty) {
+          setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(status));
+        }
       } catch {
         // keep local diagnostics polling best-effort
       } finally {
@@ -640,56 +1010,84 @@ export function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [launcherAvailable, workspace]);
+  }, [launcherAvailable, workspace, localNodeModelDirty]);
+
+  useEffect(() => {
+    if (!launcherAvailable || workspace !== "logs") return;
+    let cancelled = false;
+    let timer = 0;
+    const run = async () => {
+      await refreshRuntimeLogs({ silent: true });
+      if (!cancelled) {
+        timer = window.setTimeout(() => void run(), 4000);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [launcherAvailable, launcherStatus, workspace]);
 
   useEffect(() => {
     let cancelled = false;
     let retryTimer = 0;
     const init = async () => {
+      let launcherSt: LauncherStatusResponse | null = null;
       try {
         // 先检查 launcher 状态，按角色决定是否需要启动 gateway
-        let launcherSt: LauncherStatusResponse | null = null;
         try {
           launcherSt = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
         } catch { /* launcher 不可用时跳过 */ }
+        if (cancelled) return;
 
-        if (launcherSt && !cancelled) {
+        if (launcherSt) {
+          const launcherProfile = launcherSt.profile;
           setLauncherStatus(launcherSt);
           setLauncherAvailable(true);
-          const p = launcherSt.profile;
-          setGatewayEnabled(p.enable_gateway !== false);
-          // 节点角色 → 不请求 gateway，用 local setup profile 初始化
-          if (!p.enable_gateway) {
-            setGatewayEnabled(false);
-            try {
-              const localProfile = await requestJson<SetupProfileResponse>("/local/setup/profile");
-              if (!cancelled) {
-                setSetupProfile(localProfile);
-                const initialWorkspace = resolveInitialWorkspace(localProfile);
-                setWorkspace(initialWorkspace);
-                persistWorkspace(initialWorkspace);
-                setSetupMode(localProfile.setup_completed ? "status" : "role");
+          setWorkerSetup((current) => ({
+            ...current,
+            node_id: resolveWorkerNodeId(current.node_id, launcherProfile),
+            gateway_base_url: launcherProfile.gateway_base_url?.trim() || current.gateway_base_url,
+          }));
+          const runtimeRole = launcherMachineRoleValue(launcherSt);
+          const gatewayShouldRun = launcherShouldRunGateway(launcherSt);
+          // 无本地 gateway 的机器，不再继续请求本机 /api/*
+          if (!gatewayShouldRun) {
+            if (runtimeRole === "node") {
+              try {
+                const localProfile = await requestJson<SetupProfileResponse>("/local/setup/profile");
+                if (!cancelled) {
+                  setSetupProfile(localProfile);
+                  const initialWorkspace = localProfile.setup_completed
+                    ? (initialUiState.workspace ?? resolveInitialWorkspace(localProfile))
+                    : "quick_setup";
+                  setWorkspace(initialWorkspace);
+                  setSetupMode(localProfile.setup_completed ? "status" : "role");
+                }
+              } catch {
+                // ignore launcher-only setup bootstrap errors
               }
-            } catch { /* 忽略 */ }
-            setNotice("当前为节点角色，网关运行在远端机器上。");
+              setNotice("当前为节点角色，网关运行在远端机器上。");
+            } else {
+              setWorkspace(initialUiState.workspace ?? "quick_setup");
+              setSetupMode("role");
+              setNotice(runtimeRole === "console" ? "当前为控制台角色，本机不托管网关；请选择并连接目标网关。" : "当前机器未托管本地网关，请先选择角色并完成连接。");
+            }
             return;
           }
         }
 
-        const [system, model, wechat, nodeList, sessionList, profile] = await Promise.all([
-          requestJson<SystemStatus>("/api/system/status"),
-          requestJson<ModelStatus>("/api/models/builtin/status"),
-          requestJson<WeChatStatus>("/api/wechat/onboard/status"),
-          requestJson<NodeListResponse>("/api/nodes"),
-          requestJson<SessionsResponse>("/api/sessions"),
-          requestJson<SetupProfileResponse>("/api/setup/profile"),
-        ]);
+        const summaryPromise = requestJson<GatewaySummaryResponse>("/api/system/summary").catch(() => null);
+        const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
         if (cancelled) return;
-        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
+        const bootstrapSystem = initialSummaryState.system_status ?? systemStatus;
+        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, bootstrapSystem);
         setSetupProfile(profile);
-        const initialWorkspace = resolveInitialWorkspace(profile);
+        const initialWorkspace = profile.setup_completed
+          ? (initialUiState.workspace ?? resolveInitialWorkspace(profile))
+          : "quick_setup";
         setWorkspace(initialWorkspace);
-        persistWorkspace(initialWorkspace);
         setSetupTask(profile.last_task);
         setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
         setSetupMode(profile.setup_completed ? "status" : "role");
@@ -697,34 +1095,53 @@ export function App() {
         setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
         setWorkerSetup((current) => ({
           ...current,
-          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
+          node_id: resolveWorkerNodeId(current.node_id, launcherSt?.profile),
+          gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, bootstrapSystem),
           dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
           dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
         }));
-        setSystemStatus(system);
-        setModelStatus(model);
-        if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-        setWechatStatus(wechat);
-        syncNodeStateView(nodeList);
-        syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
-        setSessionsLoaded(true);
         setNotice(
           profile.recommended_workspace === "quick_setup"
             ? "检测到这是首次启动，先完成快速配置。"
-            : system.redis_ok
-              ? (sessionList.sessions.length ? "主网关在线。默认进入会话观察台。" : "主网关在线。可以先在接入中心做模型检测。")
-              : "主网关已启动，但 Redis 当前不可用。",
+            : bootstrapSystem
+              ? (bootstrapSystem.redis_ok
+                  ? "已从缓存恢复主网关摘要，正在同步最新状态。"
+                  : "已恢复上次主网关摘要，正在重新校验当前状态。")
+              : "正在同步主网关最新状态…",
         );
+
+        const summary = await summaryPromise;
+        if (!cancelled && summary) {
+          applyGatewaySummaryToState(summary, {
+            setSystemStatus,
+            setWechatStatus,
+            setWechatBaseUrl,
+            syncNodeStateView,
+          });
+          setWorkerSetup((current) => ({
+            ...current,
+            gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, summary.system),
+          }));
+          setNotice(
+            profile.recommended_workspace === "quick_setup"
+              ? "检测到这是首次启动，先完成快速配置。"
+              : summary.system.redis_ok
+                ? "主网关在线。微信、节点和会话概览会通过实时流持续更新。"
+                : "主网关已启动，但 Redis 当前不可用。",
+          );
+        }
+
+        void requestJson<ModelStatus>("/api/models/builtin/status").then((model) => {
+          if (cancelled) return;
+          setModelStatus(model);
+        });
       } catch (error) {
         if (!cancelled) {
-          // 检查是否是节点角色（gateway 不在本机）
-          let isNodeRole = false;
-          try {
-            const st = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
-            isNodeRole = st.profile.enable_gateway === false;
-          } catch { /* launcher 不可用 */ }
-          setNotice(isNodeRole ? "当前为节点角色，网关运行在远端机器上。" : `正在等待主网关启动…`);
-          if (!isNodeRole) retryTimer = window.setTimeout(() => void init(), RETRY_POLL_MS);
+          const runtimeRole = launcherMachineRoleValue(launcherSt);
+          const localGatewayManaged = launcherShouldRunGateway(launcherSt);
+          const isRemoteGatewayRole = runtimeRole === "node" || runtimeRole === "console" || localGatewayManaged === false;
+          setNotice(isRemoteGatewayRole ? (runtimeRole === "console" ? "当前为控制台角色，本机不托管网关。" : "当前为节点角色，网关运行在远端机器上。") : "正在等待主网关启动…");
+          if (!isRemoteGatewayRole) retryTimer = window.setTimeout(() => void init(), RETRY_POLL_MS);
         }
       }
     };
@@ -742,11 +1159,17 @@ export function App() {
 
   async function fetchSessionMessages(
     sessionId: string,
-    options?: { remoteGateway?: string | null; afterCount?: number; fallbackToFull?: boolean },
+    options?: { remoteGateway?: string | null; afterCount?: number; beforeCount?: number; limit?: number; fallbackToFull?: boolean },
   ) {
     const remoteGateway = options?.remoteGateway?.trim() || "";
     const afterCount = options?.afterCount ?? 0;
-    const query = afterCount > 0 ? `?after_count=${afterCount}` : "";
+    const beforeCount = options?.beforeCount;
+    const limit = options?.limit;
+    const params = new URLSearchParams();
+    if (afterCount > 0) params.append("after_count", String(afterCount));
+    if (beforeCount !== undefined && beforeCount > 0) params.append("before_count", String(beforeCount));
+    if (limit !== undefined && limit > 0) params.append("limit", String(limit));
+    const query = params.toString() ? `?${params.toString()}` : "";
     const url = remoteGateway
       ? `${remoteGateway}/api/sessions/${encodeURIComponent(sessionId)}/messages${query}`
       : `/api/sessions/${encodeURIComponent(sessionId)}/messages${query}`;
@@ -778,22 +1201,54 @@ export function App() {
     return sessionMessageCacheRef.current.get(sessionId) ?? null;
   }
 
+  function shouldPreserveSessionHistory(current: SessionMessageCacheEntry | undefined, detail: SessionMessagesResponse) {
+    if (!current?.loaded) return false;
+    if (!detail.replace_messages) return false;
+    if (detail.next_cursor < current.cursor) return false;
+    return current.messages.length > detail.messages.length;
+  }
+
   function syncSessionMessageCache(
     sessionId: string,
     detail: SessionMessagesResponse,
-    options?: { preserveExisting?: boolean },
+    options?: { preserveExisting?: boolean; mergeMode?: "replace" | "append" | "prepend" },
   ) {
     const current = sessionMessageCacheRef.current.get(sessionId);
+    const preserveHistory = shouldPreserveSessionHistory(current, detail);
+    const mergeMode = options?.mergeMode ?? (detail.replace_messages ? "replace" : "append");
     const nextMessages =
-      options?.preserveExisting && current?.loaded && !detail.replace_messages
-        ? mergeMessages(current.messages, detail.messages)
-        : detail.replace_messages
-          ? detail.messages
-          : mergeMessages(current?.messages ?? [], detail.messages);
+      preserveHistory
+        ? mergeMessages(current?.messages ?? [], detail.messages)
+        : mergeMode === "prepend"
+          ? mergeMessages(detail.messages, current?.messages ?? [])
+          : options?.preserveExisting && current?.loaded && !detail.replace_messages
+            ? mergeMessages(current.messages, detail.messages)
+            : detail.replace_messages
+              ? detail.messages
+              : mergeMessages(current?.messages ?? [], detail.messages);
+    const responseHistoryStart = resolveHistoryStart(detail, current?.cursor);
+    const responseHasMoreBefore =
+      typeof detail.has_more_before === "boolean"
+        ? detail.has_more_before
+        : responseHistoryStart > 0;
+    const nextHistoryStart =
+      preserveHistory
+        ? current?.historyStart ?? responseHistoryStart
+        : mergeMode === "append"
+          ? current?.historyStart ?? responseHistoryStart
+          : responseHistoryStart;
+    const nextHasMoreBefore =
+      preserveHistory
+        ? current?.hasMoreBefore ?? responseHasMoreBefore
+        : mergeMode === "append"
+          ? current?.hasMoreBefore ?? responseHasMoreBefore
+          : responseHasMoreBefore;
     const entry: SessionMessageCacheEntry = {
       session: detail.session,
       messages: nextMessages,
       cursor: detail.next_cursor,
+      historyStart: nextHistoryStart,
+      hasMoreBefore: nextHasMoreBefore,
       loaded: true,
       lastLoadedAt: Date.now(),
     };
@@ -806,31 +1261,256 @@ export function App() {
     setActiveSession(entry.session ?? null);
     setMessages(entry.messages);
     setMessageCursor(entry.cursor);
+    setMessageHistoryStart(entry.historyStart);
+    setMessageHasMoreBefore(entry.hasMoreBefore);
     setMessagesLoaded(entry.loaded);
   }
+
+  async function loadOlderSessionMessages() {
+    if (!selectedSessionId || messageHistoryLoading || !messageHasMoreBefore || messageHistoryStart <= 0) {
+      return;
+    }
+    const sessionId = selectedSessionId;
+    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus));
+    const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (usesRemoteGateway && !remoteGateway) {
+      return;
+    }
+    if (!usesRemoteGateway && !shouldUseLocalGatewayApi) {
+      return;
+    }
+
+    const current = getSessionMessageCache(sessionId);
+    const beforeCount = current?.historyStart ?? messageHistoryStart;
+    if (beforeCount <= 0) {
+      return;
+    }
+
+    const container = messagesRef.current;
+    if (container) {
+      pendingHistoryRestoreRef.current = {
+        sessionId,
+        scrollHeight: container.scrollHeight,
+        scrollTop: container.scrollTop,
+      };
+    } else {
+      pendingHistoryRestoreRef.current = null;
+    }
+    shouldAutoFollowMessagesRef.current = false;
+    setMessageHistoryLoading(true);
+    try {
+      const detail = await fetchSessionMessages(sessionId, {
+        remoteGateway,
+        beforeCount,
+        limit: Math.min(50, beforeCount),
+      });
+      if (selectedSessionId !== sessionId) {
+        return;
+      }
+      const entry = syncSessionMessageCache(sessionId, detail, { mergeMode: "prepend" });
+      applySessionMessageEntry(sessionId, entry);
+    } catch (error) {
+      pendingHistoryRestoreRef.current = null;
+      setNotice(`加载更早消息失败：${(error as Error).message}`);
+    } finally {
+      if (selectedSessionId === sessionId) {
+        setMessageHistoryLoading(false);
+      }
+    }
+  }
+
+  function getNodeDiagnosticsCache(nodeId: string | null) {
+    if (!nodeId) return null;
+    return nodeDiagnosticsCacheRef.current.get(nodeId) ?? null;
+  }
+
+  function syncNodeDiagnosticsCache(nodeId: string, diagnostics: NodeDiagnosticsRecord) {
+    nodeDiagnosticsCacheRef.current.set(nodeId, diagnostics);
+    return diagnostics;
+  }
+
+  function applyNodeDiagnosticsEntry(nodeId: string, diagnostics: NodeDiagnosticsRecord | null) {
+    if (selectedNodeId !== nodeId) return;
+    setSelectedNodeDiagnostics(diagnostics);
+  }
+
+  function clearNodeDiagnosticsCache(nodeId?: string | null) {
+    if (!nodeId) {
+      nodeDiagnosticsCacheRef.current.clear();
+      return;
+    }
+    nodeDiagnosticsCacheRef.current.delete(nodeId);
+  }
+
+  function buildSessionWebSocketUrl(sessionId: string, remoteGateway?: string | null) {
+    const baseUrl = remoteGateway?.trim() || window.location.origin;
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = `/api/sessions/${encodeURIComponent(sessionId)}/ws`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  function buildSessionOverviewWebSocketUrl(remoteGateway?: string | null) {
+    const baseUrl = remoteGateway?.trim() || window.location.origin;
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/api/sessions/overview/ws";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  function buildNodeDiagnosticsWebSocketUrl(nodeId: string, remoteGateway?: string | null) {
+    const baseUrl = remoteGateway?.trim() || window.location.origin;
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = `/api/nodes/${encodeURIComponent(nodeId)}/diagnostics/ws`;
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  function buildGatewaySummaryWebSocketUrl(remoteGateway?: string | null) {
+    const baseUrl = remoteGateway?.trim() || window.location.origin;
+    const url = new URL(baseUrl);
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+    url.pathname = "/api/system/summary/ws";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+    let reconnectAttempt = 0;
+    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (!shouldUseLocalGatewayApi && !usesRemoteGateway) {
+      setGatewaySummaryStreamActive(false);
+      return;
+    }
+    if (usesRemoteGateway && !remoteGateway) {
+      setGatewaySummaryStreamActive(false);
+      return;
+    }
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        socket = new WebSocket(buildGatewaySummaryWebSocketUrl(remoteGateway));
+      } catch {
+        setGatewaySummaryStreamActive(false);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+        return;
+      }
+
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
+
+      socket.onmessage = (event) => {
+        if (cancelled) return;
+        let payload: GatewaySummaryEnvelope;
+        try {
+          payload = JSON.parse(event.data) as GatewaySummaryEnvelope;
+        } catch {
+          return;
+        }
+        if (payload.type !== "gateway_summary") return;
+        setGatewaySummaryStreamActive(true);
+        reconnectAttempt = 0;
+        applyGatewaySummaryToState(payload.summary, {
+          setSystemStatus,
+          setWechatStatus,
+          setWechatBaseUrl,
+          syncNodeStateView,
+        });
+        if (currentRoleIsWorker) {
+          const nodeId = sessionRemoteNodeId;
+          const matched = payload.summary.nodes.nodes.find((item) => item.node_id === nodeId);
+          if (nodeId) {
+            setWorkerGatewayProbeTask({
+              task_id: "auto-stream",
+              kind: "gateway_probe",
+              status: "succeeded",
+              title: "检测节点目标网关",
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              summary: matched ? `目标网关可达，节点已连接：${nodeId}` : `目标网关可达，但节点未注册/未在线：${nodeId}`,
+              logs: [],
+              metadata: {
+                gateway_base_url: remoteGateway,
+                node_id: nodeId,
+                node_registered: matched ? "true" : "false",
+                node_connection_state: matched?.status || "",
+              },
+            });
+          }
+        }
+      };
+
+      socket.onerror = () => {
+        setGatewaySummaryStreamActive(false);
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        setGatewaySummaryStreamActive(false);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+      };
+    };
+
+    connect();
+    return () => {
+      cancelled = true;
+      setGatewaySummaryStreamActive(false);
+      window.clearTimeout(reconnectTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore teardown close errors
+      }
+    };
+  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi]);
 
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
     const run = async () => {
-      // 节点角色（enable_gateway=false）下直接请求远端网关，只显示本节点相关会话
-      if (gatewayEnabled === false) {
+      // WebSocket 连接成功时跳过 HTTP 轮询
+      if (gatewaySummaryStreamActive) {
+        return;
+      }
+      // 所有工作区都需要 summary 数据（节点状态、微信状态、系统状态）
+      // 移除 sessions 工作区的特殊处理，统一使用 WebSocket 优先 + HTTP 降级策略
+      if (currentRoleIsWorker) {
         const remoteGateway = sessionRemoteGatewayBaseUrl;
         const nodeId = sessionRemoteNodeId;
         if (!remoteGateway || !nodeId) return;
         let failed = false;
         try {
-          const [sessionList, nodeResp] = await Promise.all([
-            requestJson<SessionsResponse>(`${remoteGateway}/api/sessions`),
-            requestJson<NodeListResponse>(`${remoteGateway}/api/nodes`).catch(() => null),
-          ]);
+          const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null);
           if (cancelled) return;
-          // 更新节点连接状态
-          if (nodeResp) {
-            const allNodes: NodeRecord[] = nodeResp.nodes || nodeResp || [];
+          if (summary) {
+            applyGatewaySummaryToState(summary, {
+              setSystemStatus,
+              setWechatStatus,
+              setWechatBaseUrl,
+              syncNodeStateView,
+            });
+            const allNodes: NodeRecord[] = summary.nodes.nodes || [];
             const matched = allNodes.find((n: NodeRecord) => n.node_id === nodeId);
-            // Update nodes state so workerGatewayConnection.remoteNode gets populated
-            syncNodeStateView({ nodes: allNodes, inventory: [], summary: { paired_total: 0, online_total: allNodes.length, offline_total: 0 } });
             setWorkerGatewayProbeTask({
               task_id: "auto-poll",
               kind: "gateway_probe",
@@ -848,35 +1528,57 @@ export function App() {
               },
             });
           }
-          // 只显示分配给当前节点的会话
-          const nodeSessions = sessionList.sessions.filter(s => s.assigned_node_id === nodeId);
-          syncSessions(nodeSessions, setSessions, setSelectedSessionId, setActiveSession);
-          setSessionsLoaded(true);
         } catch { failed = true; }
         finally {
-          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
+          // summary 轮询作为 WebSocket 降级，使用较长间隔（10 秒）
+          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? SUMMARY_RETRY_POLL_MS : SUMMARY_FALLBACK_POLL_MS);
         }
         return;
       }
-      if (gatewayEnabled === null) { timer = window.setTimeout(() => void run(), 500); return; }
+      if (!shouldUseLocalGatewayApi && !shouldUseRemoteGatewayApi) {
+        if (!cancelled) timer = window.setTimeout(() => void run(), IDLE_POLL_MS);
+        return;
+      }
+      if (!launcherShouldRunGateway(launcherStatus) && currentRoleIsConsole) {
+        const remoteGateway = sessionRemoteGatewayBaseUrl;
+        if (!remoteGateway) return;
+        let failed = false;
+        try {
+          const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null);
+          if (cancelled) return;
+          if (summary) {
+            applyGatewaySummaryToState(summary, {
+              setSystemStatus,
+              setWechatStatus,
+              setWechatBaseUrl,
+              syncNodeStateView,
+            });
+          }
+        } catch {
+          failed = true;
+        } finally {
+          // summary 轮询作为 WebSocket 降级，使用较长间隔（10 秒）
+          if (!cancelled) timer = window.setTimeout(() => void run(), failed ? SUMMARY_RETRY_POLL_MS : SUMMARY_FALLBACK_POLL_MS);
+        }
+        return;
+      }
+      if (localGatewayManaged === null) { timer = window.setTimeout(() => void run(), 500); return; }
       let failed = false;
       try {
-        const [wechat, nodeList, sessionList] = await Promise.all([
-          requestJson<WeChatStatus>("/api/wechat/onboard/status"),
-          requestJson<NodeListResponse>("/api/nodes"),
-          requestJson<SessionsResponse>("/api/sessions"),
-        ]);
+        const summary = await requestJson<GatewaySummaryResponse>("/api/system/summary");
         if (cancelled) return;
-        if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-        setWechatStatus(wechat);
-        syncNodeStateView(nodeList);
-        syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
-        setSessionsLoaded(true);
+        applyGatewaySummaryToState(summary, {
+          setSystemStatus,
+          setWechatStatus,
+          setWechatBaseUrl,
+          syncNodeStateView,
+        });
       } catch {
         failed = true;
         // keep live polling resilient
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void run(), failed ? RETRY_POLL_MS : IDLE_POLL_MS);
+        // summary 轮询作为 WebSocket 降级，使用较长间隔（10 秒）
+        if (!cancelled) timer = window.setTimeout(() => void run(), failed ? SUMMARY_RETRY_POLL_MS : SUMMARY_FALLBACK_POLL_MS);
       }
     };
     void run();
@@ -887,14 +1589,127 @@ export function App() {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [gatewayEnabled, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId]);
+  }, [currentRoleIsConsole, currentRoleIsWorker, gatewaySummaryStreamActive, launcherStatus, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, workspace]);
+
+  useEffect(() => {
+    if (workspace !== "sessions") return;
+    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (usesRemoteGateway && !remoteGateway) return;
+    if (!usesRemoteGateway && !shouldUseLocalGatewayApi) return;
+
+    let cancelled = false;
+    let reconnectTimer = 0;
+    let httpTimer = 0;
+    let socket: WebSocket | null = null;
+    let socketReady = false;
+    let reconnectAttempt = 0;
+    const hasInitialSessions = sessionsLoaded;
+
+    const applyOverview = (allSessions: SessionRecord[]) => {
+      const nextSessions = currentRoleIsWorker
+        ? allSessions.filter((session) => session.assigned_node_id === sessionRemoteNodeId)
+        : allSessions;
+      syncSessions(nextSessions, setSessions, setSelectedSessionId, setActiveSession);
+      setSessionsLoaded(true);
+    };
+
+    const scheduleHttpPolling = (delay: number) => {
+      window.clearTimeout(httpTimer);
+      if (cancelled) return;
+      httpTimer = window.setTimeout(() => {
+        if (!socketReady) {
+          void loadOverview();
+        }
+      }, delay);
+    };
+
+    const loadOverview = async () => {
+      try {
+        const response = await requestJson<SessionsResponse>(
+          usesRemoteGateway ? `${remoteGateway}/api/sessions` : "/api/sessions",
+        );
+        if (cancelled) return;
+        applyOverview(response.sessions);
+        scheduleHttpPolling(IDLE_POLL_MS);
+      } catch {
+        if (cancelled) return;
+        scheduleHttpPolling(RETRY_POLL_MS);
+      }
+    };
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        socket = new WebSocket(buildSessionOverviewWebSocketUrl(remoteGateway));
+      } catch {
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+        return;
+      }
+
+      socket.onopen = () => {
+        if (cancelled) return;
+        socketReady = true;
+        reconnectAttempt = 0;
+        window.clearTimeout(httpTimer);
+      };
+
+      socket.onmessage = (event) => {
+        if (cancelled) return;
+        let payload: SessionOverviewEnvelope;
+        try {
+          payload = JSON.parse(event.data) as SessionOverviewEnvelope;
+        } catch {
+          return;
+        }
+        if (payload.type !== "sessions_snapshot" || !Array.isArray(payload.sessions)) return;
+        applyOverview(payload.sessions);
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        socketReady = false;
+        scheduleHttpPolling(hasInitialSessions ? IDLE_POLL_MS : RETRY_POLL_MS);
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+      };
+
+      socket.onerror = () => {
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
+      };
+    };
+
+    connect();
+    if (!hasInitialSessions) {
+      scheduleHttpPolling(RETRY_POLL_MS);
+    }
+    return () => {
+      cancelled = true;
+      window.clearTimeout(reconnectTimer);
+      window.clearTimeout(httpTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore teardown close errors
+      }
+    };
+  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi, sessionsLoaded, workspace]);
 
   useEffect(() => {
     shouldAutoFollowMessagesRef.current = true;
+    pendingHistoryRestoreRef.current = null;
+    setMessageHistoryLoading(false);
     if (!selectedSessionId) {
       setActiveSession(null);
       setMessages([]);
       setMessageCursor(0);
+      setMessageHistoryStart(0);
+      setMessageHasMoreBefore(false);
       setMessagesLoaded(true);
       return;
     }
@@ -903,12 +1718,16 @@ export function App() {
       setActiveSession(cached.session ?? sessions.find((item) => item.session_id === selectedSessionId) ?? null);
       setMessages(cached.messages);
       setMessageCursor(cached.cursor);
+      setMessageHistoryStart(cached.historyStart);
+      setMessageHasMoreBefore(cached.hasMoreBefore);
       setMessagesLoaded(true);
       return;
     }
     setActiveSession(sessions.find((item) => item.session_id === selectedSessionId) ?? null);
     setMessages([]);
     setMessageCursor(0);
+    setMessageHistoryStart(0);
+    setMessageHasMoreBefore(false);
     setMessagesLoaded(false);
   }, [selectedSessionId, sessions]);
 
@@ -916,10 +1735,16 @@ export function App() {
     if (workspace !== "sessions") return;
     if (!selectedSessionId) return;
     const remoteGateway = sessionRemoteGatewayBaseUrl;
-    if (gatewayEnabled === false && !remoteGateway) return;
+    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus));
+    if (usesRemoteGateway && !remoteGateway) return;
+    if (!usesRemoteGateway && !shouldUseLocalGatewayApi) return;
 
     let cancelled = false;
-    let timer = 0;
+    let httpTimer = 0;
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+    let socketReady = false;
+    let reconnectAttempt = 0;
     const sessionId = selectedSessionId;
 
     // 立即应用缓存（如果存在），避免 UI 闪烁
@@ -940,13 +1765,17 @@ export function App() {
         const detail = await fetchSessionMessages(sessionId, {
           remoteGateway,
           afterCount,
+          limit: !hasCache && !preferIncremental ? 50 : undefined,
           fallbackToFull: true,
         });
         if (cancelled || selectedSessionId !== sessionId) return;
-        const entry = syncSessionMessageCache(sessionId, detail, { preserveExisting: preferIncremental });
+        const entry = syncSessionMessageCache(sessionId, detail, {
+          preserveExisting: preferIncremental,
+          mergeMode: preferIncremental ? "append" : "replace",
+        });
         applySessionMessageEntry(sessionId, entry);
         const nextDelay = shouldUseFastPolling(detail.session) ? FAST_POLL_MS : IDLE_POLL_MS;
-        if (!cancelled) timer = window.setTimeout(() => void loadMessages(true), nextDelay);
+        if (!cancelled) httpTimer = window.setTimeout(() => void loadMessages(true), nextDelay);
       } catch (error) {
         if (cancelled || selectedSessionId !== sessionId) return;
         if (!hasCache) {
@@ -955,105 +1784,228 @@ export function App() {
           setMessagesLoaded(true);
         }
         setNotice(`读取会话消息失败：${(error as Error).message}`);
-        if (!cancelled) timer = window.setTimeout(() => void loadMessages(Boolean(getSessionMessageCache(sessionId)?.loaded)), RETRY_POLL_MS);
+        if (!cancelled) httpTimer = window.setTimeout(() => void loadMessages(Boolean(getSessionMessageCache(sessionId)?.loaded)), RETRY_POLL_MS);
       }
     };
 
-    void loadMessages(Boolean(getSessionMessageCache(sessionId)?.loaded));
+    const stopHttpPolling = () => {
+      window.clearTimeout(httpTimer);
+      httpTimer = 0;
+    };
+
+    const scheduleHttpPolling = (preferIncremental: boolean) => {
+      stopHttpPolling();
+      void loadMessages(preferIncremental);
+    };
+
+    const connectSessionSocket = () => {
+      if (cancelled) return;
+      const wsUrl = buildSessionWebSocketUrl(sessionId, remoteGateway);
+      let receivedPayload = false;
+      let receivedSnapshot = false;
+      let snapshotTimeout = 0;
+      try {
+        socket = new WebSocket(wsUrl);
+      } catch {
+        scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+        reconnectTimer = window.setTimeout(() => {
+          connectSessionSocket();
+        }, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+        return;
+      }
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
+      snapshotTimeout = window.setTimeout(() => {
+        if (cancelled || receivedPayload) return;
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors when falling back to HTTP polling
+        }
+        scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+      }, 2500);
+      socket.onmessage = (event) => {
+        if (cancelled || selectedSessionId !== sessionId) return;
+        let payload: SessionStreamEnvelope;
+        try {
+          payload = JSON.parse(event.data) as SessionStreamEnvelope;
+        } catch {
+          return;
+        }
+        receivedPayload = true;
+        if (payload.type === "snapshot") {
+          receivedSnapshot = true;
+        }
+        window.clearTimeout(snapshotTimeout);
+        stopHttpPolling();
+        socketReady = true;
+        reconnectAttempt = 0;
+        const entry = syncSessionMessageCache(
+          sessionId,
+          {
+            session: payload.session,
+            messages: payload.messages,
+            next_cursor: payload.next_cursor,
+            replace_messages: payload.replace_messages,
+            history_start: payload.history_start,
+            has_more_before: payload.has_more_before,
+          },
+          {
+            preserveExisting: payload.type === "messages_appended",
+            mergeMode: payload.type === "messages_appended" ? "append" : "replace",
+          },
+        );
+        applySessionMessageEntry(sessionId, entry);
+      };
+      socket.onerror = () => {
+        if (cancelled) return;
+        if (!receivedPayload) {
+          scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+        }
+      };
+      socket.onclose = () => {
+        window.clearTimeout(snapshotTimeout);
+        if (cancelled) return;
+        socket = null;
+        socketReady = false;
+        scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded || receivedSnapshot));
+        reconnectTimer = window.setTimeout(() => {
+          connectSessionSocket();
+        }, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+      };
+    };
+
+    connectSessionSocket();
 
     const onVisible = () => {
       if (document.hidden) return;
-      window.clearTimeout(timer);
-      void loadMessages(Boolean(getSessionMessageCache(sessionId)?.loaded));
+      window.clearTimeout(reconnectTimer);
+      if (socketReady) return;
+      scheduleHttpPolling(Boolean(getSessionMessageCache(sessionId)?.loaded));
+      connectSessionSocket();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
-      window.clearTimeout(timer);
+      stopHttpPolling();
+      window.clearTimeout(reconnectTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore teardown close errors
+      }
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [gatewayEnabled, selectedSessionId, sessionRemoteGatewayBaseUrl, workspace]);
+  }, [currentRoleIsConsole, currentRoleIsWorker, launcherStatus, localGatewayManaged, selectedSessionId, sessionRemoteGatewayBaseUrl, shouldUseLocalGatewayApi, workspace]);
 
   useEffect(() => {
     if (workspace !== "connection" || !selectedNodeId) {
       setSelectedNodeDiagnostics(null);
       return;
     }
-    // 节点角色下没有本机 gateway，跳过诊断轮询
-    if (launcherStatus?.profile.enable_gateway === false) return;
+    const useRemoteGateway = currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus);
+    const remoteGateway = useRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
+    if (useRemoteGateway && !remoteGateway) return;
+    if (!useRemoteGateway && !shouldUseLocalGatewayApi) return;
+    if (!useRemoteGateway && !launcherShouldRunGateway(launcherStatus)) return;
     let cancelled = false;
     let timer = 0;
-    const run = async () => {
-      try {
-        const detail = await requestJson<NodeDiagnosticsResponse>(`/api/nodes/${encodeURIComponent(selectedNodeId)}/diagnostics`);
-        if (!cancelled) setSelectedNodeDiagnostics(detail.diagnostics);
-      } catch {
-        if (!cancelled) setSelectedNodeDiagnostics(null);
-      } finally {
-        if (!cancelled) timer = window.setTimeout(() => void run(), 4000);
-      }
+    let reconnectTimer = 0;
+    let socket: WebSocket | null = null;
+    let reconnectAttempt = 0;
+    const nodeId = selectedNodeId;
+
+    const cached = getNodeDiagnosticsCache(nodeId);
+    if (cached) {
+      applyNodeDiagnosticsEntry(nodeId, cached);
+    } else {
+      setSelectedNodeDiagnostics(null);
+    }
+
+    const scheduleHttpFallback = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(async () => {
+        try {
+          const detail = await requestJson<NodeDiagnosticsResponse>(
+            useRemoteGateway
+              ? `${remoteGateway}/api/nodes/${encodeURIComponent(nodeId)}/diagnostics`
+              : `/api/nodes/${encodeURIComponent(nodeId)}/diagnostics`,
+          );
+          if (cancelled || selectedNodeId !== nodeId) return;
+          const entry = syncNodeDiagnosticsCache(nodeId, detail.diagnostics);
+          applyNodeDiagnosticsEntry(nodeId, entry);
+        } catch {
+          if (!cancelled && !cached) {
+            applyNodeDiagnosticsEntry(nodeId, null);
+          }
+        }
+      }, 200);
     };
-    void run();
+
+    const connect = () => {
+      if (cancelled) return;
+      try {
+        socket = new WebSocket(buildNodeDiagnosticsWebSocketUrl(nodeId, remoteGateway));
+      } catch {
+        scheduleHttpFallback();
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+        return;
+      }
+
+      socket.onopen = () => {
+        reconnectAttempt = 0;
+      };
+
+      socket.onmessage = (event) => {
+        if (cancelled) return;
+        let payload: NodeDiagnosticsStreamEnvelope;
+        try {
+          payload = JSON.parse(event.data) as NodeDiagnosticsStreamEnvelope;
+        } catch {
+          return;
+        }
+        if (payload.type !== "diagnostics_snapshot" || payload.node_id !== nodeId) return;
+        const entry = syncNodeDiagnosticsCache(nodeId, payload.diagnostics);
+        reconnectAttempt = 0;
+        applyNodeDiagnosticsEntry(nodeId, entry);
+      };
+
+      socket.onerror = () => {
+        scheduleHttpFallback();
+        try {
+          socket?.close();
+        } catch {
+          // ignore close errors
+        }
+      };
+
+      socket.onclose = () => {
+        if (cancelled) return;
+        reconnectTimer = window.setTimeout(connect, getReconnectDelay(reconnectAttempt));
+        reconnectAttempt += 1;
+      };
+    };
+
+    connect();
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      window.clearTimeout(reconnectTimer);
+      try {
+        socket?.close();
+      } catch {
+        // ignore teardown close errors
+      }
     };
-  }, [launcherStatus?.profile.enable_gateway, selectedNodeId, workspace]);
-
-  useEffect(() => {
-    if (workspace !== "connection" || !selectedNodeId) {
-      setNodeMessages([]);
-      setNodeMessagesLoaded(true);
-      return;
-    }
-
-    const targetSessions = sessions.filter((session) => session.assigned_node_id === selectedNodeId);
-    if (!targetSessions.length) {
-      setNodeMessages([]);
-      setNodeMessagesLoaded(true);
-      return;
-    }
-
-    let cancelled = false;
-    setNodeMessagesLoaded(false);
-
-    void Promise.all(
-      targetSessions.map(async (session) => {
-        const detail = await requestJson<SessionMessagesResponse>(
-          `/api/sessions/${encodeURIComponent(session.session_id)}/messages`,
-        );
-        return detail.messages
-          .filter((message) => (message.node_id || session.assigned_node_id) === selectedNodeId)
-          .map((message) => ({
-            session_id: session.session_id,
-            user_id: session.user_id,
-            channel: session.channel,
-            role: message.role,
-            content: message.content,
-            created_at: message.created_at,
-            node_id: message.node_id,
-          }));
-      }),
-    )
-      .then((groups) => {
-        if (cancelled) return;
-        const merged = groups.flat().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 30);
-        setNodeMessages(merged);
-        setNodeMessagesLoaded(true);
-      })
-      .catch(() => {
-        if (!cancelled) setNodeMessagesLoaded(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedNodeId, sessions, workspace]);
+  }, [currentRoleIsConsole, launcherStatus, selectedNodeId, sessionRemoteGatewayBaseUrl, shouldUseLocalGatewayApi, workspace]);
 
   useEffect(() => {
     if (!setupTask || (setupTask.status !== "pending" && setupTask.status !== "running")) return;
-    if (gatewayEnabled === false) return; // 节点角色下任务由 /local/node/install 同步完成，不需要轮询
-    if (launcherStatus?.profile.enable_gateway === false) return;
+    if (!launcherShouldRunGateway(launcherStatus)) return; // 无本地网关时任务由 /local 或远端链路处理
     let cancelled = false;
     const timer = window.setInterval(async () => {
       try {
@@ -1087,7 +2039,7 @@ export function App() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [setupRole, setupTask]);
+  }, [launcherStatus, setupRole, setupTask]);
 
   useEffect(() => {
     if (!setupTask || (!isPairingTaskKind(setupTask.kind) && setupTask.kind !== "node_install")) return;
@@ -1154,32 +2106,30 @@ export function App() {
   async function disconnectWeChat() { try { const status = await withBusy("wechat-disconnect", () => requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" })); setWechatStatus(status); setNotice("微信轮询已停止。"); } catch (error) { setNotice(`断开失败：${(error as Error).message}`); } }
   async function ensureLauncherRuntimeForQuickSetup(role: SetupRole) {
     if (!launcherAvailable || !launcherStatus?.profile.workdir) return;
-    if (role === "worker_node") return; // 节点角色不预启动任何组件
+    if (!isGatewayRole(role)) return; // 仅网关类角色在进入配置前预热本地组件
+    const targetMachineRole = setupRoleToLauncherMachineRole(role);
     const running = runningLauncherComponents(launcherStatus);
     const needsHost = true;
     const needsGateway = true;
-    const needsLocalNode = true;
+    const needsLocalNode = targetMachineRole === "gateway_console" && !gatewaySetup.dispatch_mode_enabled;
     const shouldStart =
+      launcherMachineRoleValue(launcherStatus) !== targetMachineRole ||
       (needsHost && !running.has("host-redis")) ||
       (needsGateway && !running.has("gateway")) ||
       (needsLocalNode && !running.has("local-node"));
     if (!shouldStart) return;
     try {
-      await withBusy(
+      const status = await withBusy(
         "launcher-start",
         () => requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
           method: "POST",
-          body: JSON.stringify({
-            enable_local_node: (role as string) !== "worker_node",
-            enable_gateway: (role as string) !== "worker_node",
-            enable_node_cache_redis: launcherStatus.profile.node_cache_policy !== "disabled",
-            dispatch_mode_enabled: false,
-            redis_source: launcherStatus.profile.redis_source || "mirror",
-            node_cache_redis_source: launcherStatus.profile.node_cache_redis_source || "mirror",
-          }),
+          body: JSON.stringify(buildLauncherStartPayload(launcherStatus, targetMachineRole, {
+            dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
+            localNodeId: targetMachineRole === "node" ? workerSetup.node_id : undefined,
+          })),
         }),
       );
-      await refreshLauncherStatus();
+      applyLauncherStatusState(status);
       setNotice(`已为${roleName(role)}预启动本地组件，便于立即配置网关与节点。`);
     } catch (error) {
       const failure = error as Error & { code?: string };
@@ -1188,51 +2138,22 @@ export function App() {
   }
   async function applyLauncherPolicyForRole(role: SetupRole) {
     if (!launcherAvailable) return;
-    // 网关角色：确保 gateway 和 host-redis 启动
-    if (isGatewayRole(role)) {
-      try {
-        await withBusy("launcher-start", () =>
-          requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
-            method: "POST",
-            body: JSON.stringify({
-              enable_local_node: launcherStatus?.profile.enable_local_node ?? true,
-              enable_gateway: true,
-              enable_node_cache_redis: launcherStatus?.profile.node_cache_policy !== "disabled",
-              dispatch_mode_enabled: gatewaySetup.dispatch_mode_enabled,
-              redis_source: launcherStatus?.profile.redis_source || "mirror",
-              node_cache_redis_source: launcherStatus?.profile.node_cache_redis_source || "mirror",
-            }),
-          }),
-        );
-        await refreshLauncherStatus();
-        setNotice(`已为${roleName(role)}启动网关组件。`);
-      } catch (error) {
-        setNotice(`启动网关组件失败：${(error as Error).message}`);
-      }
-      return;
-    }
-    // 节点/控制台角色：停掉不需要的组件
-    const stopTargets = roleComponentsToStop(role);
-    if (!stopTargets.length) {
-      await refreshLauncherStatus();
-      return;
-    }
-    const running = runningLauncherComponents(launcherStatus);
-    const targets = stopTargets.filter((item) => running.has(item));
-    if (!targets.length) return;
+    const targetMachineRole = setupRoleToLauncherMachineRole(role);
     try {
-      await withBusy("launcher-stop", async () => {
-        for (const component of targets) {
-          await requestJson<LauncherStatusResponse>("/local/bootstrap/stop", {
-            method: "POST",
-            body: JSON.stringify({ component }),
-          });
-        }
-      });
-      await refreshLauncherStatus();
-      setNotice(`已按${roleName(role)}收敛本地组件：${targets.map(launcherComponentName).join("、")}。`);
+      const status = await withBusy("launcher-start", () =>
+        requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
+          method: "POST",
+          body: JSON.stringify(buildLauncherStartPayload(launcherStatus, targetMachineRole, {
+            dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
+            localNodeId: targetMachineRole === "node" ? workerSetup.node_id : undefined,
+          })),
+        }),
+      );
+      applyLauncherStatusState(status);
+      setNotice(`已按${roleName(role)}收敛本地运行模型。`);
     } catch (error) {
-      setNotice(`按角色收敛本地组件失败：${(error as Error).message}`);
+      const failure = error as Error & { code?: string };
+      setNotice(failure.code === "external_port_in_use" ? `主网关端口被其它进程占用：${failure.message}` : `按角色收敛本地运行模型失败：${failure.message}`);
     }
   }
   function selectSetupRole(role: SetupRole) {
@@ -1264,6 +2185,7 @@ export function App() {
     setWorkerSetup((current) => ({
       ...DEFAULT_WORKER_SETUP,
       ...current,
+      node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
       gateway_base_url: setupProfile?.console.gateway_base_url || preferredGatewayBaseUrl,
       dify_base_url: setupProfile?.gateway.dify_base_url || DEFAULT_WORKER_SETUP.dify_base_url,
       dify_api_key: setupProfile?.gateway.dify_api_key || DEFAULT_WORKER_SETUP.dify_api_key,
@@ -1279,47 +2201,58 @@ export function App() {
     setNotice("已重置当前填写内容。");
   }
   async function refreshSetupProfile() {
-    const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
+    const profile = shouldUseLocalGatewayApi
+      ? await requestJson<SetupProfileResponse>("/api/setup/profile")
+      : await requestJson<SetupProfileResponse>("/local/setup/profile");
     const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, systemStatus);
-    setSetupProfile(profile);
-    setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
-    setGatewaySetup(profile.gateway);
-    setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
-    setWorkerSetup((current) => ({
-      ...current,
-      gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, systemStatus),
-      dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-      dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
-      node_token: "",
-    }));
+    syncSetupProfileState(profile, preferredGatewayBaseUrl, { system: systemStatus });
   }
   async function refreshQuickSetupStatus() {
     try {
-      const [profile, system, model, wechat, nodeList] = await Promise.all([
+      if (!shouldUseLocalGatewayApi) {
+        const remoteGateway = sessionRemoteGatewayBaseUrl.trim();
+        const [profile, remoteSummary] = await Promise.all([
+          requestJson<SetupProfileResponse>("/local/setup/profile"),
+          remoteGateway
+            ? requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null)
+            : Promise.resolve(null),
+        ]);
+        const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, remoteSummary?.system ?? systemStatus);
+        syncSetupProfileState(profile, preferredGatewayBaseUrl, {
+          syncLastTask: true,
+          system: remoteSummary?.system ?? systemStatus,
+        });
+        if (remoteSummary) {
+          applyGatewaySummaryToState(remoteSummary, {
+            setSystemStatus,
+            setWechatStatus,
+            setWechatBaseUrl,
+            syncNodeStateView,
+          });
+        }
+        if (launcherAvailable) {
+          await refreshLauncherStatus();
+        }
+        setNotice(
+          remoteGateway
+            ? currentRoleIsWorker
+              ? "已刷新当前节点状态与远端网关连接信息。"
+              : "已刷新当前连接状态。"
+            : "已刷新当前本机状态。",
+        );
+        return;
+      }
+      const [profile, summary, model] = await Promise.all([
         requestJson<SetupProfileResponse>("/api/setup/profile"),
-        requestJson<SystemStatus>("/api/system/status"),
+        refreshGatewaySummarySnapshot(),
         requestJson<ModelStatus>("/api/models/builtin/status"),
-        requestJson<WeChatStatus>("/api/wechat/onboard/status"),
-        requestJson<NodeListResponse>("/api/nodes"),
       ]);
-      const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, system);
-      setSetupProfile(profile);
-      setSetupTask(profile.last_task);
-      setWorkerGatewayProbeTask(profile.last_task?.kind === "gateway_probe" ? profile.last_task : null);
-      setGatewaySetup(profile.gateway);
-      setConsoleSetup({ ...profile.console, gateway_base_url: profile.console.gateway_base_url || preferredGatewayBaseUrl });
-      setWorkerSetup((current) => ({
-        ...current,
-        gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, system),
-        dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-        dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
-        node_token: "",
-      }));
-      setSystemStatus(system);
+      const preferredGatewayBaseUrl = resolvePreferredGatewayBaseUrl(profile, summary?.system ?? systemStatus);
+      syncSetupProfileState(profile, preferredGatewayBaseUrl, {
+        syncLastTask: true,
+        system: summary?.system ?? systemStatus,
+      });
       setModelStatus(model);
-      setWechatStatus(wechat);
-      if (wechat.base_url) setWechatBaseUrl(wechat.base_url);
-      syncNodeStateView(nodeList);
       if (launcherAvailable) {
         await refreshLauncherStatus();
       }
@@ -1329,8 +2262,8 @@ export function App() {
     }
   }
   async function refreshSystemStatus() {
-    const system = await requestJson<SystemStatus>("/api/system/status");
-    setSystemStatus(system);
+    if (!shouldUseLocalGatewayApi) return;
+    return (await refreshGatewaySummarySnapshot())?.system ?? null;
   }
   async function refreshSessionDetail(sessionId: string) {
     const remoteGateway = sessionRemoteGatewayBaseUrl;
@@ -1361,12 +2294,21 @@ export function App() {
   }
   async function runWorkerSetup(options?: { showResultScreen?: boolean }) {
     const showResultScreen = options?.showResultScreen ?? true;
-    const isWorkerRole = launcherStatus?.profile.enable_gateway === false;
     try {
+      if (launcherAvailable && runtimeMachineRole !== "node") {
+        await applyLauncherPolicyForRole("worker_node");
+      }
+      if (launcherAvailable && workerSetup.gateway_base_url.trim()) {
+        await requestJson<LauncherStatusResponse>("/local/bootstrap/set-gateway-url", {
+          method: "POST",
+          body: JSON.stringify({ gateway_base_url: workerSetup.gateway_base_url.trim() }),
+        });
+        await refreshLauncherStatus();
+      }
       const result = await withBusy(
         "setup-worker",
         () => requestJson<SetupTaskEnvelope>(
-          isWorkerRole ? "/local/node/install" : "/api/setup/node/install",
+          "/local/node/install",
           { method: "POST", body: JSON.stringify({ config: workerSetup }) }
         ),
       );
@@ -1378,7 +2320,7 @@ export function App() {
         node_token: "",
       }));
       workerGatewayAutoProbeKeyRef.current = "";
-      if (!isWorkerRole) await refreshSetupProfile();
+      await refreshSetupProfile();
       setNotice("节点安装任务已启动；本次不会生成 token，安装完成后请到网关角色下完成配对。");
     } catch (error) {
       setNotice(`启动工作节点安装失败：${(error as Error).message}`);
@@ -1453,6 +2395,12 @@ export function App() {
       setNotice(`搜索局域网节点失败：${(error as Error).message}`);
     }
   }
+  /**
+   * 手动触发网关探测（仅用于 quick_setup 工作区的"检测连接"按钮）
+   *
+   * 注意：节点角色和控制台角色的自动探测已统一到 summary 轮询中，
+   * 不再需要调用此函数进行自动探测。
+   */
   async function probeWorkerGateway(options?: { silent?: boolean; reason?: "manual" | "auto" | "post-install" }) {
     const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
     if (!gatewayBaseUrl) return setNotice("请先填写目标网关地址。");
@@ -1475,7 +2423,7 @@ export function App() {
         updated_at: new Date().toISOString(),
       });
       const payload: GatewayProbeRequest = { gateway_base_url: gatewayBaseUrl, node_id: nodeId || undefined, timeout_ms: 3000 };
-      const probeUrl = launcherStatus?.profile.enable_gateway === false ? "/local/gateway/probe" : "/api/setup/gateway/probe";
+      const probeUrl = shouldUseWorkerLocalApi || runtimeMachineRole === "node" ? "/local/gateway/probe" : "/api/setup/gateway/probe";
       const result = await withBusy(
         "setup-gateway-probe",
         () => requestJson<SetupTaskEnvelope>(probeUrl, { method: "POST", body: JSON.stringify(payload) }),
@@ -1493,38 +2441,78 @@ export function App() {
   function updateNodeState(next: NodeListResponse) {
     syncNodeStateView(next);
   }
+  function applyLauncherStatusState(status: LauncherStatusResponse) {
+    setLauncherStatus(status);
+    setLauncherAvailable(true);
+    setWorkerSetup((current) => ({
+      ...current,
+      node_id: resolveWorkerNodeId(current.node_id, status.profile),
+      gateway_base_url: status.profile.gateway_base_url?.trim() || current.gateway_base_url,
+    }));
+  }
   async function refreshLauncherStatus() {
     try {
       const status = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
-      setLauncherStatus(status);
-      setLauncherAvailable(true);
+      applyLauncherStatusState(status);
     } catch {
       setLauncherAvailable(false);
     }
   }
-  async function refreshLocalNodeDiagnostics() {
+  const refreshLocalNodeStatus = useCallback(async () => {
     if (!launcherAvailable) return;
     try {
-      const [status, logs] = await Promise.all([
-        requestJson<LocalNodeStatusResponse>("/local/node/status"),
-        requestJson<LocalNodeLogsResponse>("/local/node/logs"),
-      ]);
+      const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
       setLocalNodeStatus(status);
-      setLocalNodeLogs(logs);
       if (!localNodeModelDirty) {
-        setLocalNodeModelDraft({
-          model_provider: status.model_settings?.model_provider || "auto",
-          openai_base_url: status.model_settings?.openai_base_url || "",
-          openai_api_key: "",
-          openai_model: status.model_settings?.openai_model || "",
-          openai_enable_thinking: Boolean(status.model_settings?.openai_enable_thinking),
-          dify_base_url: status.model_settings?.dify_base_url || "",
-          dify_api_key: "",
-          restart_service: true,
-        });
+        setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(status));
       }
     } catch {
       // local diagnostics are best-effort
+    }
+  }, [launcherAvailable, localNodeModelDirty]);
+  async function refreshLocalNodeLogs() {
+    if (!launcherAvailable) return;
+    try {
+      const logs = await requestJson<LocalNodeLogsResponse>("/local/node/logs");
+      setLocalNodeLogs(logs);
+    } catch {
+      // local logs are best-effort
+    }
+  }
+  async function refreshLocalNodeDiagnostics() {
+    await Promise.all([refreshLocalNodeStatus(), refreshLocalNodeLogs()]);
+  }
+  async function refreshRuntimeLogs(options?: { silent?: boolean }) {
+    if (!launcherAvailable) return;
+    const trackedComponents = (launcherStatus?.components || []).filter((component) =>
+      ["gateway", "host-redis", "local-node", "node-cache-redis"].includes(component.name)
+        && (component.log_path || component.state !== "stopped" || component.error_code),
+    );
+    setRuntimeLogsRefreshing(true);
+    try {
+      const launcherLogResults = await Promise.all(
+        trackedComponents.map(async (component) => {
+          try {
+            const result = await requestJson<LauncherLogResponse>(`/local/bootstrap/logs/${encodeURIComponent(component.name)}`);
+            return [component.name, result.content || "暂无日志"] as const;
+          } catch {
+            return [component.name, "日志读取失败"] as const;
+          }
+        }),
+      );
+      setLauncherLogs((current) => ({
+        ...current,
+        ...Object.fromEntries(launcherLogResults),
+      }));
+      if (launcherStatus?.profile.enable_local_node) {
+        await refreshLocalNodeLogs();
+      }
+    } catch (error) {
+      if (!options?.silent) {
+        setNotice(`刷新运行日志失败：${(error as Error).message}`);
+      }
+    } finally {
+      setRuntimeLogsRefreshing(false);
     }
   }
   function updateLocalNodeModelDraft<K extends keyof LocalNodeModelConfigRequest>(key: K, value: LocalNodeModelConfigRequest[K]) {
@@ -1532,6 +2520,30 @@ export function App() {
     setLocalNodeModelDraft((current) => ({ ...current, [key]: value }));
   }
   async function saveLocalNodeModelConfig() {
+    if (localNodeModelDraft.model_provider === "openai") {
+      if (!localNodeModelDraft.openai_base_url.trim()) {
+        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Base URL。");
+        return;
+      }
+      if (!localNodeModelDraft.openai_api_key.trim()) {
+        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI API Key。");
+        return;
+      }
+      if (!localNodeModelDraft.openai_model.trim()) {
+        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Model。");
+        return;
+      }
+    }
+    if (localNodeModelDraft.model_provider === "dify") {
+      if (!localNodeModelDraft.dify_base_url.trim()) {
+        setNotice("当前 Provider 已切换为 Dify，请先填写 Dify Base URL。");
+        return;
+      }
+      if (!localNodeModelDraft.dify_api_key.trim()) {
+        setNotice("当前 Provider 已切换为 Dify，请先填写 Dify API Key。");
+        return;
+      }
+    }
     try {
       const result = await withBusy(
         "local-node-model-save",
@@ -1542,18 +2554,8 @@ export function App() {
       );
       setLocalNodeStatus(result.status);
       setLocalNodeModelDirty(false);
-      setLocalNodeModelDraft({
-        model_provider: result.status.model_settings?.model_provider || "auto",
-        openai_base_url: result.status.model_settings?.openai_base_url || "",
-        openai_api_key: "",
-        openai_model: result.status.model_settings?.openai_model || "",
-        openai_enable_thinking: Boolean(result.status.model_settings?.openai_enable_thinking),
-        dify_base_url: result.status.model_settings?.dify_base_url || "",
-        dify_api_key: "",
-        restart_service: true,
-      });
-      await refreshLauncherStatus();
-      await refreshLocalNodeDiagnostics();
+      setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(result.status));
+      void refreshLauncherStatus();
       setNotice(result.detail || "本机节点模型配置已保存。");
     } catch (error) {
       setNotice(`保存本机节点模型配置失败：${(error as Error).message}`);
@@ -1571,6 +2573,46 @@ export function App() {
       setNotice(result.detail || "本机节点服务已重启。");
     } catch (error) {
       setNotice(`重启本机节点服务失败：${(error as Error).message}`);
+    }
+  }
+  async function restartGatewayService() {
+    if (!launcherAvailable) {
+      setNotice("当前未检测到桌面启动器，无法重启主网关。");
+      return;
+    }
+    const currentLauncherStatus = launcherStatus;
+    const machineRole = effectiveRole
+      ? setupRoleToLauncherMachineRole(effectiveRole)
+      : (launcherMachineRoleValue(currentLauncherStatus) || "gateway_console");
+    if (!launcherShouldRunGateway(currentLauncherStatus)) {
+      setNotice("当前机器不是主网关托管角色，无法在本机重启主网关。");
+      return;
+    }
+
+    try {
+      const restarted = await withBusy("launcher-gateway-restart", async () => {
+        await requestJson<LauncherStatusResponse>("/local/bootstrap/stop", {
+          method: "POST",
+          body: JSON.stringify({ component: "gateway" }),
+        });
+        return requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
+          method: "POST",
+          body: JSON.stringify(buildLauncherStartPayload(currentLauncherStatus, machineRole, {
+            dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
+            enableNodeCacheRedis: currentLauncherStatus?.profile.node_cache_policy !== "disabled",
+            localNodeId: machineRole === "node" ? workerSetup.node_id : undefined,
+          })),
+        });
+      });
+      applyLauncherStatusState(restarted);
+      await Promise.all([
+        refreshLauncherStatus(),
+        refreshGatewaySummarySnapshot().catch(() => null),
+        refreshLocalNodeDiagnostics().catch(() => null),
+      ]);
+      setNotice("主网关已执行重启，当前状态已刷新。");
+    } catch (error) {
+      setNotice(`重启主网关失败：${(error as Error).message}`);
     }
   }
   async function exportLocalNodeDiagnostics() {
@@ -1592,10 +2634,11 @@ export function App() {
     setSetupTask(result.task);
   }
   async function toggleLauncherDispatchMode(enabled: boolean) {
-    await requestJson<LauncherStatusResponse>("/local/bootstrap/dispatch-mode", {
+    const status = await requestJson<LauncherStatusResponse>("/local/bootstrap/dispatch-mode", {
       method: "POST",
       body: JSON.stringify({ enabled }),
     });
+    applyLauncherStatusState(status);
   }
   async function applyDispatchMode(enabled: boolean) {
     try {
@@ -1607,7 +2650,7 @@ export function App() {
       });
       await Promise.all([
         refreshSetupProfile(),
-        refreshSystemStatus(),
+        refreshGatewaySummarySnapshot(),
         refreshLauncherStatus(),
       ]);
       setNotice(enabled ? "已开启分发模式：当前主机只负责分发，不再由本机节点处理消息。" : "已关闭分发模式：本机节点可重新参与调度。");
@@ -1619,34 +2662,30 @@ export function App() {
   async function installLauncherRedis(target: "host" | "node-cache", source: LauncherRedisSource) {
     try {
       setNotice(`正在下载 ${target === "host" ? "主机" : "节点缓存"} Redis，会自动尝试镜像源和官方源，请稍候（约 1-3 分钟）...`);
-      await withBusy(`launcher-install-${target}`, () => requestJson<LauncherStatusResponse>("/local/bootstrap/install-redis", { method: "POST", body: JSON.stringify({ target, source }) }));
-      await refreshLauncherStatus();
+      const status = await withBusy(`launcher-install-${target}`, () => requestJson<LauncherStatusResponse>("/local/bootstrap/install-redis", { method: "POST", body: JSON.stringify({ target, source }) }));
+      applyLauncherStatusState(status);
       setNotice(target === "host" ? "主机 Redis 已准备完成。" : "节点缓存 Redis 已准备完成。");
     } catch (error) {
       setNotice(`安装 Redis 失败：${(error as Error).message}`);
     }
   }
-  async function startLauncherStack(overrides?: { enableLocalNode?: boolean; enableNodeCacheRedis?: boolean }) {
+  async function startLauncherStack(overrides?: { enableNodeCacheRedis?: boolean }) {
     try {
+      const defaultMachineRole = effectiveRole ? setupRoleToLauncherMachineRole(effectiveRole) : (launcherMachineRoleValue(launcherStatus) || "gateway_console");
       const enableNodeCacheRedis = overrides?.enableNodeCacheRedis ?? (launcherStatus?.profile.node_cache_policy !== "disabled");
-      const enableLocalNode = overrides?.enableLocalNode ?? (launcherStatus?.profile.enable_local_node ?? true);
-      const enableGateway = !currentRoleIsWorker;
-      await withBusy(
+      const status = await withBusy(
         "launcher-start",
         () => requestJson<LauncherStatusResponse>("/local/bootstrap/start", {
           method: "POST",
-          body: JSON.stringify({
-            enable_local_node: enableLocalNode,
-            enable_node_cache_redis: enableNodeCacheRedis,
-            enable_gateway: enableGateway,
-            dispatch_mode_enabled: gatewaySetup.dispatch_mode_enabled,
-            redis_source: launcherStatus?.profile.redis_source || "mirror",
-            node_cache_redis_source: launcherStatus?.profile.node_cache_redis_source || "mirror",
-          }),
+          body: JSON.stringify(buildLauncherStartPayload(launcherStatus, defaultMachineRole, {
+            dispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
+            enableNodeCacheRedis,
+            localNodeId: defaultMachineRole === "node" ? workerSetup.node_id : undefined,
+          })),
         }),
       );
-      await refreshLauncherStatus();
-      setNotice(enableGateway ? "一体化组件启动命令已下发。" : "节点服务启动命令已下发。");
+      applyLauncherStatusState(status);
+      setNotice(defaultMachineRole === "node" ? "节点服务启动命令已下发。" : "本地运行模型启动命令已下发。");
     } catch (error) {
       const failure = error as Error & { code?: string };
       setNotice(failure.code === "external_port_in_use" ? `主网关端口被其它进程占用：${failure.message}` : `启动本地组件失败：${failure.message}`);
@@ -1654,8 +2693,8 @@ export function App() {
   }
   async function stopLauncherStack(component?: string) {
     try {
-      await withBusy("launcher-stop", () => requestJson<LauncherStatusResponse>("/local/bootstrap/stop", { method: "POST", body: JSON.stringify({ component: component || null }) }));
-      await refreshLauncherStatus();
+      const status = await withBusy("launcher-stop", () => requestJson<LauncherStatusResponse>("/local/bootstrap/stop", { method: "POST", body: JSON.stringify({ component: component || null }) }));
+      applyLauncherStatusState(status);
       setNotice(component ? `${component} 已停止。` : "已停止所有本地组件。");
     } catch (error) {
       setNotice(`停止组件失败：${(error as Error).message}`);
@@ -1663,8 +2702,8 @@ export function App() {
   }
   async function toggleLauncherNodeCache(enabled: boolean) {
     try {
-      await withBusy("launcher-node-cache-toggle", () => requestJson<LauncherStatusResponse>("/local/bootstrap/node-cache/toggle", { method: "POST", body: JSON.stringify({ enabled }) }));
-      await refreshLauncherStatus();
+      const status = await withBusy("launcher-node-cache-toggle", () => requestJson<LauncherStatusResponse>("/local/bootstrap/node-cache/toggle", { method: "POST", body: JSON.stringify({ enabled }) }));
+      applyLauncherStatusState(status);
       setNotice(enabled ? "已启用节点本地缓存 Redis。" : "已关闭节点本地缓存 Redis。");
     } catch (error) {
       setNotice(`更新节点缓存策略失败：${(error as Error).message}`);
@@ -1687,15 +2726,10 @@ export function App() {
           body: JSON.stringify({ reason: "console_manual_switch" }),
         }),
       );
-      setActiveSession(result.session);
+      upsertSessionInView(result.session);
       await Promise.all([
-        requestJson<SessionsResponse>("/api/sessions").then((sessionList) => {
-          syncSessions(sessionList.sessions, setSessions, setSelectedSessionId, setActiveSession);
-        }),
         refreshSessionDetail(sessionId),
-        requestJson<NodeListResponse>("/api/nodes").then((nodeList) => {
-          syncNodeStateView(nodeList);
-        }),
+        refreshGatewaySummarySnapshot(),
       ]);
       setNotice(result.detail || "已提交会话切换请求。");
     } catch (error) {
@@ -1736,8 +2770,7 @@ export function App() {
             if (envelope.task.status === "succeeded") {
               window.setTimeout(() => {
                 closePairingModal();
-                requestJson<NodeListResponse>("/api/nodes")
-                  .then((refreshed) => syncNodeStateView(refreshed))
+                refreshGatewaySummarySnapshot()
                   .catch(() => undefined);
               }, 2000);
             }
@@ -1783,8 +2816,7 @@ export function App() {
       setSetupTask(result.task);
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: result.pairing_status }));
       startPairingModal(result.task.task_id);
-      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeStateView(refreshedNodes);
+      await refreshGatewaySummarySnapshot();
     } catch (error) {
       setPairingStatuses((current) => ({ ...current, [discovered.discovery_id]: "offline" }));
       appendPairingClientError("扫描结果配对", target, error as Error);
@@ -1830,8 +2862,7 @@ export function App() {
         ...current,
         node_id: result.node_id || current.node_id,
       }));
-      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeStateView(refreshedNodes);
+      await refreshGatewaySummarySnapshot();
     } catch (error) {
       appendPairingClientError("按地址配对", target, error as Error);
       setNotice(`按地址配对失败：${(error as Error).message}`);
@@ -1845,14 +2876,29 @@ export function App() {
         `delete-node-${node.node_id}`,
         () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}`, { method: "DELETE" }),
       );
-      const refreshedNodes = await requestJson<NodeListResponse>("/api/nodes");
-      syncNodeStateView(refreshedNodes);
+      clearNodeDiagnosticsCache(node.node_id);
+      await refreshGatewaySummarySnapshot();
       setNotice(result.detail || `已删除节点 ${node.node_id}。`);
       if (workerSetup.node_id.trim() === node.node_id) {
         setWorkerGatewayProbeTask(null);
       }
     } catch (error) {
       setNotice(`删除节点失败：${(error as Error).message}`);
+    }
+  }
+  async function disconnectPairedNode(node: NodeInventoryRecord) {
+    const confirmed = window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`);
+    if (!confirmed) return;
+    try {
+      const result = await withBusy(
+        `disconnect-node-${node.node_id}`,
+        () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" }),
+      );
+      clearNodeDiagnosticsCache(node.node_id);
+      await refreshGatewaySummarySnapshot();
+      setNotice(result.detail || `已断开节点 ${node.node_id}。`);
+    } catch (error) {
+      setNotice(`断开失败：${(error as Error).message}`);
     }
   }
   function submitSetupRole() {
@@ -1871,7 +2917,7 @@ export function App() {
   async function confirmReconfigure() {
     try {
       const stoppedActions: string[] = [];
-      if (wechatStatus?.running && launcherStatus?.profile.enable_gateway !== false) {
+      if (wechatStatus?.running && launcherShouldRunGateway(launcherStatus)) {
         const status = await withBusy("reconfigure-disconnect-wechat", () =>
           requestJson<WeChatStatus>("/api/wechat/onboard/disconnect", { method: "POST" }),
         );
@@ -1890,7 +2936,7 @@ export function App() {
         stoppedActions.push("已停止所有本地组件");
       }
       if ((setupCompletedRoles.has("worker_node") || workerSetup.node_id.trim()) && workerSetup.install_dir.trim()) {
-        const resetUrl = launcherStatus?.profile.enable_gateway === false ? "/local/node/reset-credentials" : "/api/setup/node/reset-credentials";
+        const resetUrl = launcherMachineRoleValue(launcherStatus) === "node" ? "/local/node/reset-credentials" : "/api/setup/node/reset-credentials";
         const result = await withBusy(
           "reconfigure-reset-worker-token",
           () => requestJson<SetupTaskEnvelope>(resetUrl, {
@@ -1903,16 +2949,18 @@ export function App() {
         );
         setSetupTask(result.task);
         setWorkerSetup((current) => ({ ...current, node_token: "" }));
+        clearNodeDiagnosticsCache(workerSetup.node_id.trim());
         stoppedActions.push("已清空节点配置");
       }
       // 重置后端内存状态（仅网关角色需要）
-      if (launcherStatus?.profile.enable_gateway !== false) {
+      if (launcherShouldRunGateway(launcherStatus)) {
         await withBusy("reconfigure-reset-state", () =>
           requestJson<{ removed_nodes: string[]; cleared_memory: boolean }>("/api/setup/reset", { method: "POST" }),
         );
       }
       // 清理前端本地缓存
-      window.localStorage.removeItem(SETUP_DRAFT_KEY);
+      clearQuickSetupCache();
+      clearNodeDiagnosticsCache();
       persistWorkspace("quick_setup");
       setSetupProfile(null);
       setSetupRole(null);
@@ -1960,15 +3008,11 @@ export function App() {
     [nodes, gatewaySetup.dispatch_mode_enabled],
   );
   const setupCompletedRoles = useMemo(() => new Set(setupProfile?.completed_roles ?? []), [setupProfile]);
-  const effectiveRole = useMemo(() => resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []), [setupProfile?.completed_roles, setupRole]);
-  const currentRoleIsGateway = isGatewayRole(effectiveRole);
-  const currentRoleIsWorker = isWorkerRole(effectiveRole);
-  const currentRoleIsConsole = isConsoleRole(effectiveRole);
   const currentRoleDisplay = useMemo(
     () => setupRole ? roleName(setupRole) : (setupProfile?.completed_roles.length ? setupProfile.completed_roles.map(roleName).join(" / ") : "未选择"),
     [setupProfile?.completed_roles, setupRole],
   );
-  const currentNodeLanIp = systemStatus?.preferred_lan_ip || setupTask?.metadata.lan_ip || "";
+  const currentNodeLanIp = launcherStatus?.local_lan_ip || setupTask?.metadata.lan_ip || "";
   const workerGatewayConnection = useMemo(() => {
     const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
     const nodeId = workerSetup.node_id.trim();
@@ -2209,6 +3253,81 @@ export function App() {
     if (!localNodeLogs?.event_log) return "本机节点最近还没有导出的事件日志。";
     return localNodeLogs.event_log;
   }, [localNodeLogs?.event_log]);
+  const runtimeLogEntries = useMemo<Array<{
+    id: string;
+    title: string;
+    subtitle: string;
+    statusLabel: string;
+    statusTone: "human" | "typing" | "queued";
+    summary: string;
+    logText: string;
+  }>>(() => {
+    const entries: Array<{
+      id: string;
+      title: string;
+      subtitle: string;
+      statusLabel: string;
+      statusTone: "human" | "typing" | "queued";
+      summary: string;
+      logText: string;
+    }> = [];
+
+    for (const component of launcherStatus?.components || []) {
+      if (!["gateway", "host-redis", "local-node", "node-cache-redis"].includes(component.name)) continue;
+      const logText = launcherLogs[component.name] || "";
+      if (!logText && !component.log_path && component.state === "stopped") continue;
+      const tone = launcherBadgeTone(component.state);
+      entries.push({
+        id: `launcher-${component.name}`,
+        title: `${launcherComponentName(component.name)} 运行日志`,
+        subtitle: [component.detail, component.log_path || ""].filter(Boolean).join(" · ") || "桌面启动器托管组件",
+        statusLabel: launcherStateLabel(component.state),
+        statusTone: tone === "human" || tone === "typing" ? tone : "queued",
+        summary: component.error_code ? `${component.detail || "组件异常"} · code=${component.error_code}` : component.detail || "组件运行中",
+        logText: logText || "当前还没有采集到日志输出。",
+      });
+    }
+
+    if (localNodeLogs) {
+      const localNodeLogSources = [
+        {
+          key: "event",
+          title: "本机节点事件日志",
+          subtitle: localNodeLogs.event_log_path || localNodeLogs.service_name,
+          summary: localNodeStatus?.detail || "节点本地事件与注册链路输出",
+          logText: localNodeLogs.event_log,
+        },
+        {
+          key: "wrapper",
+          title: "本机节点包装器日志",
+          subtitle: localNodeLogs.wrapper_log_path || localNodeLogs.service_name,
+          summary: "Windows 服务包装器与启动过程输出",
+          logText: localNodeLogs.wrapper_log,
+        },
+        {
+          key: "service",
+          title: "本机节点服务日志",
+          subtitle: localNodeLogs.service_log_path || localNodeLogs.service_name,
+          summary: "节点后端标准输出与运行时异常",
+          logText: localNodeLogs.service_log,
+        },
+      ];
+      for (const source of localNodeLogSources) {
+        if (!source.logText && !source.subtitle) continue;
+        entries.push({
+          id: `local-node-${source.key}`,
+          title: source.title,
+          subtitle: source.subtitle || "本机节点",
+          statusLabel: localNodeStatus?.state || "未读取",
+          statusTone: localNodeStatus?.state === "running" ? "human" : "queued",
+          summary: source.summary,
+          logText: source.logText || "当前还没有日志输出。",
+        });
+      }
+    }
+
+    return entries;
+  }, [launcherLogs, launcherStatus, localNodeLogs, localNodeStatus?.detail, localNodeStatus?.state]);
   const selectedNodeTimelineText = useMemo(() => {
     if (!selectedNodeDiagnostics?.timeline?.length) return "当前节点最近还没有可用的网关诊断时间线。";
     // Filter out repetitive local-bypass heartbeat/pull-task events to reduce noise
@@ -2221,9 +3340,36 @@ export function App() {
       .map((item) => `[${formatTimeLabel(item.timestamp, true)}] ${item.category}/${item.result} ${item.trace_id ? `trace=${item.trace_id} ` : ""}${item.message}`)
       .join("\n");
   }, [selectedNodeDiagnostics]);
+  const nodeChannelOverview = useMemo(() => {
+    return nodeInventory.reduce(
+      (acc, node) => {
+        const capacity = Math.max(node.channel_capacity ?? 0, 0);
+        const inUse = Math.max(node.channel_in_use ?? 0, 0);
+        const idle = Math.max(capacity - inUse, 0);
+        acc.capacity += capacity;
+        acc.inUse += inUse;
+        acc.idle += idle;
+        if (node.online) {
+          acc.onlineCapacity += capacity;
+          acc.onlineInUse += inUse;
+          acc.onlineIdle += idle;
+        }
+        return acc;
+      },
+      {
+        capacity: 0,
+        inUse: 0,
+        idle: 0,
+        onlineCapacity: 0,
+        onlineInUse: 0,
+        onlineIdle: 0,
+      },
+    );
+  }, [nodeInventory]);
   const nodeInventoryHeadline = useMemo(
-    () => `已配对 ${nodeInventorySummary.paired_total} / 在线 ${nodeInventorySummary.online_total} / 离线 ${nodeInventorySummary.offline_total}`,
-    [nodeInventorySummary.offline_total, nodeInventorySummary.online_total, nodeInventorySummary.paired_total],
+    () =>
+      `已配对 ${nodeInventorySummary.paired_total} / 在线 ${nodeInventorySummary.online_total} / 空闲 ${nodeChannelOverview.onlineIdle} / 占用 ${nodeChannelOverview.onlineInUse}`,
+    [nodeChannelOverview.onlineIdle, nodeChannelOverview.onlineInUse, nodeInventorySummary.online_total, nodeInventorySummary.paired_total],
   );
   const currentGatewayBaseUrl = consoleSetup.gateway_base_url || window.location.origin;
   const connectionHeroCards = useMemo<Array<{ eyebrow: string; title: string; detail: string; tone: "good" | "warn" }>>(() => {
@@ -2269,7 +3415,7 @@ export function App() {
           ? availableDispatchNodes > 0
             ? `分发模式已开启，当前有 ${availableDispatchNodes} 个可用于分发的远端节点。`
             : "分发模式已开启，但当前没有可用于接单的远端节点。"
-          : "当前允许本机节点直接参与处理，也可以继续纳管更多远端节点。",
+          : `当前在线节点共有 ${nodeChannelOverview.onlineIdle} 条空闲通道，可继续接入更多节点扩容。`,
         tone: nodeInventorySummary.online_total > 0 ? "good" : "warn",
       },
       {
@@ -2292,6 +3438,7 @@ export function App() {
     modelStatus?.model,
     nodeInventorySummary.online_total,
     nodeInventorySummary.paired_total,
+    nodeChannelOverview.onlineIdle,
     wechatRuntimeSummary.detail,
     wechatRuntimeSummary.tone,
     wechatRuntimeSummary.value,
@@ -2316,6 +3463,258 @@ export function App() {
       "当分发模式开启但在线节点为 0 时，网关只能接入消息，无法完成实际回复。",
     ];
   }, [currentRoleIsWorker]);
+  const connectionPrepItems = useMemo<Array<{ label: string; detail: string; tone: "good" | "warn" }>>(
+    () => [
+      {
+        label: "模型可用",
+        detail: modelStatus?.configured ? modelStatus.model : "尚未检测",
+        tone: modelStatus?.configured ? "good" : "warn",
+      },
+      {
+        label: "微信已连接",
+        detail: wechatRuntimeSummary.value,
+        tone: wechatRuntimeSummary.tone,
+      },
+      {
+        label: "节点在线",
+        detail: `${systemStatus?.active_nodes ?? 0} 个节点`,
+        tone: (systemStatus?.active_nodes ?? 0) > 0 ? "good" : "warn",
+      },
+    ],
+    [modelStatus?.configured, modelStatus?.model, systemStatus?.active_nodes, wechatRuntimeSummary.tone, wechatRuntimeSummary.value],
+  );
+  const connectionSignalCards = useMemo<Array<{ label: string; value: string; meta: string; tone: "good" | "warn" }>>(
+    () => [
+      {
+        label: "模型",
+        value: modelStatus?.configured ? "已就绪" : "待检测",
+        meta: modelStatus?.model || "未配置模型",
+        tone: modelStatus?.configured ? "good" : "warn",
+      },
+      {
+        label: "微信",
+        value: wechatRuntimeSummary.value,
+        meta: wechatStatus?.has_token ? "Token 已存在" : "尚未写入 Token",
+        tone: wechatRuntimeSummary.tone,
+      },
+      {
+        label: "Redis",
+        value: systemStatus?.redis_ok ? "正常" : "未就绪",
+        meta: systemStatus?.redis_ok ? "主状态存储可用" : "请先恢复主存储",
+        tone: systemStatus?.redis_ok ? "good" : "warn",
+      },
+      {
+        label: "调度",
+        value: systemStatus?.dispatch_mode_enabled ? "分发模式" : "本机处理",
+        meta: `${systemStatus?.active_nodes ?? 0} 个在线节点`,
+        tone: (systemStatus?.active_nodes ?? 0) > 0 || !systemStatus?.dispatch_mode_enabled ? "good" : "warn",
+      },
+      {
+        label: "通道池",
+        value: `${nodeChannelOverview.onlineIdle} 空闲`,
+        meta:
+          nodeChannelOverview.onlineCapacity > 0
+            ? `${nodeChannelOverview.onlineInUse} 占用 / ${nodeChannelOverview.onlineCapacity} 总量`
+            : "在线节点尚未上报通道容量",
+        tone: nodeChannelOverview.onlineIdle > 0 || nodeChannelOverview.onlineCapacity === 0 ? "good" : "warn",
+      },
+    ],
+    [
+      modelStatus?.configured,
+      modelStatus?.model,
+      nodeChannelOverview.onlineCapacity,
+      nodeChannelOverview.onlineIdle,
+      nodeChannelOverview.onlineInUse,
+      systemStatus?.active_nodes,
+      systemStatus?.dispatch_mode_enabled,
+      systemStatus?.redis_ok,
+      wechatRuntimeSummary.tone,
+      wechatRuntimeSummary.value,
+      wechatStatus?.has_token,
+    ],
+  );
+  const nodeInventoryCards = useMemo<Array<{
+    nodeId: string;
+    title: string;
+    subtitle: string;
+    kind: NodeKind;
+    badge: string;
+    badgeTone: "human" | "typing" | "queued";
+    address: string;
+    detail: string;
+    platform: string;
+    version: string;
+    concurrency: string;
+    channels: string;
+    channelIdle: string;
+    channelBusy: string;
+    channelCapacity: string;
+    channelUsagePercent: number;
+    channelPressureLabel: string;
+    channelPressureTone: "good" | "warn" | "busy";
+    authFailed: boolean;
+    selected: boolean;
+    actions: Array<{ label: string; onClick: () => void; disabled?: boolean }>;
+  }>>(
+    () =>
+      nodeInventory.map((node) => {
+        const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
+        const channelCapacity = Math.max(node.channel_capacity ?? 0, 0);
+        const channelBusy = Math.max(node.channel_in_use ?? 0, 0);
+        const channelIdle = Math.max(channelCapacity - channelBusy, 0);
+        const channelUsagePercent = channelCapacity > 0 ? Math.min(100, Math.round((channelBusy / channelCapacity) * 100)) : 0;
+        const channelPressureTone = !node.online
+          ? "warn"
+          : channelIdle <= 0 && channelCapacity > 0
+            ? "busy"
+            : channelIdle <= 1
+              ? "warn"
+              : "good";
+        const channelPressureLabel = !node.online
+          ? "节点离线"
+          : channelCapacity <= 0
+            ? "待上报"
+            : channelIdle <= 0
+              ? "已满载"
+              : channelIdle <= 1
+                ? "接近满载"
+                : "可继续接入";
+        return {
+          nodeId: node.node_id,
+          title: node.hostname || node.node_id,
+          subtitle: node.node_id,
+          kind: node.node_kind,
+          badge: presentation.badge,
+          badgeTone: presentation.tone as "human" | "typing" | "queued",
+          address: getInventoryNodeAddress(node),
+          detail: presentation.detail,
+          platform: node.platform || "未知",
+          version: node.node_version || "-",
+          concurrency: String(node.max_concurrency ?? "-"),
+          channels: `${channelBusy} / ${channelCapacity}`,
+          channelIdle: String(channelIdle),
+          channelBusy: String(channelBusy),
+          channelCapacity: String(channelCapacity),
+          channelUsagePercent,
+          channelPressureLabel,
+          channelPressureTone,
+          authFailed: node.connection_state === "auth_failed",
+          selected: selectedNodeId === node.node_id,
+          actions: [
+            {
+              label: selectedNodeId === node.node_id ? "收起诊断" : "查看诊断",
+              onClick: () => setSelectedNodeId(selectedNodeId === node.node_id ? null : node.node_id),
+            },
+            ...(node.node_kind === "remote" && node.paired
+              ? [
+                  {
+                    label: busy === `delete-node-${node.node_id}` ? "处理中..." : "删除节点",
+                    onClick: () => void deletePairedNode(node),
+                    disabled: busy !== null,
+                  },
+                ]
+              : []),
+            ...(node.node_kind === "remote" && node.online
+              ? [
+                  {
+                    label: busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接",
+                    onClick: () => void disconnectPairedNode(node),
+                    disabled: busy !== null,
+                  },
+                ]
+              : []),
+          ],
+        };
+      }),
+    [busy, deletePairedNode, disconnectPairedNode, launcherStatus, localNodeStatus, nodeInventory, selectedNodeId],
+  );
+  const selectedNodeDiagnosticsView = useMemo(() => {
+    if (!selectedNodeId || !selectedNodeDiagnostics) return null;
+    const rows: Array<{ label: string; value: string; multiline?: boolean }> = [
+      { label: "连接状态", value: selectedNodeDiagnostics.connection_state || "未记录" },
+      {
+        label: "最近配对",
+        value: selectedNodeDiagnostics.last_pairing_status
+          ? `${selectedNodeDiagnostics.last_pairing_status}${selectedNodeDiagnostics.last_pairing_at ? ` · ${formatTimeLabel(selectedNodeDiagnostics.last_pairing_at, true)}` : ""}`
+          : "暂无",
+      },
+      {
+        label: "最近注册",
+        value: selectedNodeDiagnostics.last_register_result
+          ? `${selectedNodeDiagnostics.last_register_result}${selectedNodeDiagnostics.last_register_at ? ` · ${formatTimeLabel(selectedNodeDiagnostics.last_register_at, true)}` : ""}`
+          : "暂无",
+      },
+      {
+        label: "最近心跳",
+        value: selectedNodeDiagnostics.last_heartbeat_at ? formatTimeLabel(selectedNodeDiagnostics.last_heartbeat_at, true) : "暂无",
+      },
+    ];
+    if (selectedNodeDiagnostics.last_auth_decision) {
+      rows.push({ label: "最近鉴权", value: selectedNodeDiagnostics.last_auth_decision });
+      if (selectedNodeDiagnostics.last_auth_failure_at) {
+        rows.push({ label: "鉴权失败时间", value: formatTimeLabel(selectedNodeDiagnostics.last_auth_failure_at, true) });
+      }
+      if (selectedNodeDiagnostics.expected_token_masked) {
+        rows.push({ label: "期望 Token", value: selectedNodeDiagnostics.expected_token_masked });
+      }
+      if (selectedNodeDiagnostics.provided_token_masked) {
+        rows.push({ label: "实际 Token", value: selectedNodeDiagnostics.provided_token_masked });
+      }
+      if (selectedNodeDiagnostics.expected_token_masked && selectedNodeDiagnostics.provided_token_masked) {
+        rows.push({
+          label: "Token 对比",
+          value: `期望：${selectedNodeDiagnostics.expected_token_masked} / 实际提供：${selectedNodeDiagnostics.provided_token_masked}`,
+          multiline: true,
+        });
+      }
+      if (selectedNodeDiagnostics.last_auth_client_host) {
+        rows.push({ label: "来源地址", value: selectedNodeDiagnostics.last_auth_client_host });
+      }
+    }
+    if (selectedNodeDiagnostics.last_error) {
+      rows.push({ label: "最近错误", value: selectedNodeDiagnostics.last_error, multiline: true });
+    }
+    return {
+      nodeId: selectedNodeId,
+      kind: selectedNodeDiagnostics.node_kind || null,
+      traceId: selectedNodeDiagnostics.last_pairing_trace_id || null,
+      rows,
+      timelineText: selectedNodeDiagnostics.timeline?.length ? selectedNodeTimelineText : null,
+      onClose: () => setSelectedNodeId(null),
+    };
+  }, [selectedNodeDiagnostics, selectedNodeId, selectedNodeTimelineText]);
+  const wechatStatusRows = useMemo(
+    () => [
+      { label: "接入状态", value: wechatRuntimeSummary.value, multiline: true },
+      { label: "Token 状态", value: wechatStatus?.has_token ? "已写入当前网关" : "尚未写入" },
+      { label: "运行状态", value: wechatStatus?.running ? "轮询中" : "未轮询" },
+      ...(wechatStatus?.last_error ? [{ label: "最近错误", value: wechatStatus.last_error, multiline: true }] : []),
+    ],
+    [wechatRuntimeSummary.value, wechatStatus?.has_token, wechatStatus?.last_error, wechatStatus?.running],
+  );
+  const pairingDebugViewEntries = useMemo<Array<{
+    id: string;
+    title: string;
+    target: string;
+    updatedAtLabel: string;
+    statusLabel: string;
+    statusTone: "human" | "typing" | "queued";
+    summary: string;
+    logText: string;
+  }>>(
+    () =>
+      pairingDebugEntries.map((entry) => ({
+        id: entry.id,
+        title: entry.title,
+        target: entry.target,
+        updatedAtLabel: formatTimeLabel(entry.updated_at, true),
+        statusLabel: pairingDebugStatusLabel(entry.status),
+        statusTone: (entry.status === "succeeded" ? "human" : entry.status === "running" || entry.status === "pending" ? "typing" : "queued") as "human" | "typing" | "queued",
+        summary: entry.summary || "等待更多日志...",
+        logText: entry.logs.length ? entry.logs.join("\n") : "暂无详细日志",
+      })),
+    [pairingDebugEntries],
+  );
 
   return (
     <div className="console-app">
@@ -2325,7 +3724,13 @@ export function App() {
           <div className="topbar-main">
             <div className="topbar-kicker">wechat-claw-hub</div>
             <div className="topbar-title">微信 Agent 运维工作台</div>
-            <div className="topbar-copy">把快速配置、接入联调和会话观察拆成三个一级工作区，首次启动先走向导，后续也能随时重配。</div>
+            <div className="topbar-copy">
+              {workspace === "connection"
+                ? "接入中心优先展示当前运行态、接入结果和关键配置。"
+                : workspace === "logs"
+                  ? "日志中心集中查看运行日志、配对日志和节点回连输出。"
+                  : "把快速配置、接入联调、日志中心和会话观察拆成四个一级工作区，首次启动先走向导，后续也能随时重配。"}
+            </div>
           </div>
           <div className="topbar-status-row">
             {currentRoleIsWorker ? (
@@ -2333,7 +3738,7 @@ export function App() {
                 <StatusChip label="目标网关" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已连接" : workerSetup.gateway_base_url ? "可达" : "未填写"} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
                 <StatusChip label="节点" value={workerSetup.node_id || "未配置"} tone={workerSetup.node_id ? "good" : "warn"} />
                 <StatusChip label="注册状态" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已注册" : workerGatewayConnection.state === "idle" ? "未检测" : workerGatewayConnection.label} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
-                <StatusChip label="模型" value={localNodeStatus?.model_settings?.model_provider && (localNodeStatus.model_settings.openai_api_key_configured || localNodeStatus.model_settings.dify_api_key_configured) ? localNodeStatus.model_settings.model_provider : "未配置"} tone={localNodeStatus?.model_settings?.openai_api_key_configured || localNodeStatus?.model_settings?.dify_api_key_configured ? "good" : "warn"} />
+                <StatusChip label="模型" value={localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider || "未配置"} tone={localNodeStatus?.inference_ready ? "good" : "warn"} />
               </>
             ) : (
               <>
@@ -2354,6 +3759,9 @@ export function App() {
           </button>
           <button type="button" className={`workspace-tab ${workspace === "connection" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("connection")}>
             {(() => { const badge = resolveRoleBadge(effectiveRole); return badge?.tab === "connection" ? <span className="workspace-tab-badge">接入中心<span className={`role-badge role-badge-${badge.variant}`}>{badge.label}</span></span> : "接入中心"; })()}
+          </button>
+          <button type="button" className={`workspace-tab ${workspace === "logs" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("logs")}>
+            日志中心
           </button>
         </div>
 
@@ -2433,8 +3841,11 @@ export function App() {
                     {launcherExpanded ? (
                       <>
                         <div className="info-stack" style={{marginTop: 14}}>
+                          <InfoRow label="机器角色" value={launcherMachineRoleLabel(launcherStatus)} />
+                          <InfoRow label="托管组件" value={launcherManagedComponentsLabel(launcherStatus)} multiline />
                           <InfoRow label="存储库目录" value={launcherStatus?.layout.root || "尚未选择"} multiline />
                           <InfoRow label="节点缓存策略" value={launcherStatus?.profile.node_cache_policy === "disabled" ? "关闭" : "已启用"} />
+                          <InfoRow label="本机节点策略" value={launcherLocalNodePolicyLabel(launcherStatus)} multiline />
                           {!currentRoleIsWorker ? <InfoRow label="分发模式" value={gatewaySetup.dispatch_mode_enabled ? "已开启（主机只分发）" : "已关闭（本机节点可处理）"} /> : null}
                         </div>
 
@@ -2557,7 +3968,7 @@ export function App() {
                       <div className="section-head">
                         <div><div className="section-kicker">当前角色</div><h3>{roleName(setupRole)}</h3></div>
                         <div className="inline-actions">
-                          <button type="button" className="ghost-button" onClick={() => { persistWorkspace("quick_setup"); window.localStorage.removeItem(SETUP_DRAFT_KEY); setSetupMode("role"); }}>重新选角色</button>
+                          <button type="button" className="ghost-button" onClick={() => { clearQuickSetupCache(); persistWorkspace("quick_setup"); setSetupRole(null); setSetupTask(null); setSetupMode("role"); }}>重新选角色</button>
                           {setupProfile?.setup_completed ? <button type="button" className="ghost-button" onClick={returnToSetupStatus}>返回状态总览</button> : null}
                           <button type="button" className="ghost-button" onClick={resetCurrentSetupDraft}>重置当前填写内容</button>
                         </div>
@@ -2721,358 +4132,282 @@ export function App() {
         ) : workspace === "connection" ? (
           <section className="workspace-frame connection-workspace">
             <div className="workspace-heading">
-              <div><div className="section-kicker">{currentRoleIsWorker ? "节点工作台" : "接入中心"}</div><h2>{currentRoleIsWorker ? "聚焦本机节点安装、回连与发现响应" : "连接前先确认模型、微信和节点都已就绪"}</h2></div>
-              <div className="workspace-caption">{currentRoleIsWorker ? "当前角色不会展示网关纳管、微信接入和分发模式操作。" : "保留原有 API，不改协议，只重组桌面工作流。"}</div>
+              <div><div className="section-kicker">{currentRoleIsWorker ? "节点工作台" : "接入中心"}</div><h2>{currentRoleIsWorker ? "聚焦本机节点安装、回连与发现响应" : "先确认网关、微信、节点和模型都处于可用状态"}</h2></div>
+              <div className="workspace-caption">{currentRoleIsWorker ? "当前角色不会展示网关纳管、微信接入和分发模式操作。" : "摘要优先，细节折叠，常规联调不再需要一路向下翻整页表单。"}</div>
             </div>
-            <section className="surface connection-overview">
-              <div className="connection-overview-main">
-                <div>
-                  <div className="section-kicker">{currentRoleIsWorker ? "操作重点" : "联调总览"}</div>
-                  <h3>{currentRoleIsWorker ? "先让这台机器稳定回连，再看诊断细节" : "把接入中心变成一张可执行的运行面板"}</h3>
-                </div>
-                <div className="connection-overview-copy">
-                  {connectionActionTips.map((tip) => (
-                    <div key={tip} className="connection-overview-tip">{tip}</div>
-                  ))}
-                </div>
-              </div>
-              <div className="connection-hero-grid">
-                {connectionHeroCards.map((card) => (
-                  <ConnectionHeroCard key={`${card.eyebrow}-${card.title}`} eyebrow={card.eyebrow} title={card.title} detail={card.detail} tone={card.tone} />
-                ))}
-              </div>
-            </section>
-            <div className="connection-grid">
-              <div className="connection-status-column">
-                {!currentRoleIsWorker ? (
-                <section className="surface surface-tight">
-                  <div className="section-head"><div><div className="section-kicker">准备流程</div><h3>接入状态</h3></div><button onClick={runModelCheck} disabled={busy !== null}>{busy === "model-check" ? "检测中..." : "检测模型"}</button></div>
-                  <div className="prep-strip-list">
-                    <PrepStrip label="模型可用" detail={modelStatus?.configured ? modelStatus.model : "尚未检测"} tone={modelStatus?.configured ? "good" : "warn"} />
-                    <PrepStrip label="微信已连接" detail={wechatRuntimeSummary.value} tone={wechatRuntimeSummary.tone} />
-                    <PrepStrip label="节点在线" detail={`${systemStatus?.active_nodes ?? 0} 个节点`} tone={(systemStatus?.active_nodes ?? 0) > 0 ? "good" : "warn"} />
-                  </div>
-                </section>
-                ) : (
-                <>
-                  {/* IP/port identity block - req 3.6 */}
-                  <div className="worker-wizard-identity" style={{ marginBottom: 12 }}>
-                    <div className="worker-wizard-identity-ip">{workerGatewayConnection.remoteNode?.lan_ip || localNodeStatus?.diagnostics?.lan_ip as string || currentNodeLanIp || "检测中…"}</div>
-                    <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
-                      端口：{workerSetup.discovery_port} &nbsp;&middot;&nbsp; 本机节点地址，网关管理员可用此地址配对
-                    </div>
-                  </div>
-                  <section className="surface surface-tight">
-                    <div className="section-head"><div><div className="section-kicker">节点工作台</div><h3>当前节点状态</h3></div></div>
-                    <div className="prep-strip-list">
-                      <PrepStrip label="节点配置" detail={setupCompletedRoles.has("worker_node") ? "当前机器节点已完成配置" : "尚未完成节点配置"} tone={setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
-                      <PrepStrip label="目标网关地址" detail={workerSetup.gateway_base_url || "未填写局域网网关地址"} tone={workerSetup.gateway_base_url ? "good" : "warn"} />
-                      <PrepStrip label="发现响应" detail={workerSetup.discovery_enabled ? `已启用 UDP ${workerSetup.discovery_port}` : "当前已关闭"} tone={workerSetup.discovery_enabled ? "good" : "warn"} />
-                      {/* Token status - req 3.7 */}
-                      <PrepStrip
-                        label="Token 状态"
-                        detail={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已配对" : resolveTokenDisplayState(workerSetup.node_token).status === "waiting" ? "等待网关下发 token" : "已配对"}
-                        tone={workerGatewayConnection.state === "gateway_reachable_node_connected" || resolveTokenDisplayState(workerSetup.node_token).status === "paired" ? "good" : "warn"}
-                      />
-                    </div>
-                  </section>
-                </>
-                )}
-                {!currentRoleIsWorker ? <section className="surface">
-                  <div className="section-head"><div><div className="section-kicker">运行摘要</div><h3>系统状态</h3></div><button type="button" className="ghost-button" onClick={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)} disabled={busy !== null}>{busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}</button></div>
-                  <div className="connection-signal-grid">
-                    <ConnectionSignalCard
-                      label="模型"
-                      value={modelStatus?.configured ? "已就绪" : "待检测"}
-                      meta={modelStatus?.model || "未配置模型"}
-                      tone={modelStatus?.configured ? "good" : "warn"}
-                    />
-                    <ConnectionSignalCard
-                      label="微信"
-                      value={wechatRuntimeSummary.value}
-                      meta={wechatStatus?.has_token ? "Token 已存在" : "尚未写入 Token"}
-                      tone={wechatRuntimeSummary.tone}
-                    />
-                    <ConnectionSignalCard
-                      label="Redis"
-                      value={systemStatus?.redis_ok ? "正常" : "未就绪"}
-                      meta={systemStatus?.redis_ok ? "主状态存储可用" : "请先恢复主存储"}
-                      tone={systemStatus?.redis_ok ? "good" : "warn"}
-                    />
-                    <ConnectionSignalCard
-                      label="调度"
-                      value={systemStatus?.dispatch_mode_enabled ? "分发模式" : "本机处理"}
-                      meta={`${systemStatus?.active_nodes ?? 0} 个在线节点`}
-                      tone={(systemStatus?.active_nodes ?? 0) > 0 || !systemStatus?.dispatch_mode_enabled ? "good" : "warn"}
-                    />
-                  </div>
-                  <div className="connection-signal-note">
-                    当前控制台目标：{setupProfile?.console.gateway_base_url || currentGatewayBaseUrl}
-                  </div>
-                  {modelCheck ? <div className="info-stack" style={{marginTop: 10}}><InfoRow label="模型检测" value={modelCheck.configured_model_available ? "可用" : "未命中模型列表"} /></div> : null}
-                  {wechatStatus?.last_error ? <div className="info-stack" style={{marginTop: 6}}><InfoRow label="最近错误" value={wechatStatus.last_error} multiline /></div> : null}
-                  {gatewaySetup.dispatch_mode_enabled && availableDispatchNodes === 0 ? <div className="topbar-notice dispatch-warning" style={{marginTop: 12}}>已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。</div> : null}
-                </section> : null}
+            {!currentRoleIsWorker ? (
+              <div className="connection-layout-stack">
+                <OverviewPanel
+                  heroCards={connectionHeroCards}
+                  prepItems={connectionPrepItems}
+                  signalCards={connectionSignalCards}
+                  consoleTarget={setupProfile?.console.gateway_base_url || currentGatewayBaseUrl}
+                  modelCheckText={modelCheck ? (modelCheck.configured_model_available ? "可用" : "未命中模型列表") : null}
+                  lastError={wechatStatus?.last_error || null}
+                  dispatchWarning={gatewaySetup.dispatch_mode_enabled && availableDispatchNodes === 0 ? "已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。" : null}
+                  onRunModelCheck={runModelCheck}
+                  onToggleDispatch={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)}
+                  runModelCheckLabel={busy === "model-check" ? "检测中..." : "检测模型"}
+                  toggleDispatchLabel={busy === "dispatch-mode-toggle" ? "切换中..." : gatewaySetup.dispatch_mode_enabled ? "关闭分发模式" : "开启分发模式"}
+                  busy={busy !== null}
+                />
 
-                {!currentRoleIsWorker ? <section className="surface">
-                  <div className="section-head">
-                    <div><div className="section-kicker">节点清单</div><h3>已接入节点总览</h3></div>
-                    <span className="small-note">{nodeInventoryHeadline}</span>
-                  </div>
-                  {!nodeInventory.length ? (
-                    <div className="empty-state">当前还没有已接入节点。本机内置节点和远端工作节点会在这里统一显示，但会明确区分角色来源。</div>
-                  ) : (
-                    <div className="connection-node-grid">
-                      {nodeInventory.map((node) => {
-                        const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
-                        return (
-                        <article key={node.node_id} className={`connection-node-card ${selectedNodeId === node.node_id ? "connection-node-card-active" : ""}`}>
-                          <div className="connection-node-card-top">
-                            <div className="connection-node-card-head">
-                              <div className="connection-node-card-title-row">
-                                <div className="node-card-title">{node.hostname || node.node_id}</div>
-                                <span className={`node-kind-tag node-kind-tag-${node.node_kind}`}>{node.node_kind === "local" ? "网关内置" : "远端工作节点"}</span>
-                                {node.connection_state === "auth_failed" ? <span className="auth-failed-badge" title="节点 token 不匹配，请重新配对或重置凭据">鉴权失败</span> : null}
-                              </div>
-                              <div className="node-card-subtitle">{node.node_id}</div>
-                            </div>
-                            <span className={`session-badge session-badge-${presentation.tone}`}>{presentation.badge}</span>
-                          </div>
-                          <div className="connection-node-address">{getInventoryNodeAddress(node)}</div>
-                          <div className="connection-node-detail">{presentation.detail}</div>
-                          <div className="connection-node-stats">
-                            <div className="connection-node-stat">
-                              <span>平台</span>
-                              <strong>{node.platform || "未知"}</strong>
-                            </div>
-                            <div className="connection-node-stat">
-                              <span>版本</span>
-                              <strong>{node.node_version || "-"}</strong>
-                            </div>
-                            <div className="connection-node-stat">
-                              <span>并发</span>
-                              <strong>{node.max_concurrency ?? "-"}</strong>
-                            </div>
-                            <div className="connection-node-stat">
-                              <span>通道</span>
-                              <strong>{node.channel_in_use ?? 0} / {node.channel_capacity ?? 0}</strong>
-                            </div>
-                          </div>
-                          <div className="connection-node-card-actions">
-                            <button type="button" className="ghost-button launcher-row-btn" onClick={() => setSelectedNodeId(selectedNodeId === node.node_id ? null : node.node_id)}>
-                              {selectedNodeId === node.node_id ? "收起诊断" : "查看诊断"}
-                            </button>
-                            {node.node_kind === "remote" && node.paired ? <button type="button" className="ghost-button launcher-row-btn" onClick={() => void deletePairedNode(node)} disabled={busy !== null}>{busy === `delete-node-${node.node_id}` ? "处理中..." : "删除节点"}</button> : null}
-                            {node.node_kind === "remote" && node.online ? <button type="button" className="ghost-button launcher-row-btn" onClick={async () => { if (!window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`)) return; try { const r = await withBusy(`disconnect-node-${node.node_id}`, () => requestJson<NodeDeleteResponse>(`/api/nodes/${encodeURIComponent(node.node_id)}/disconnect`, { method: "POST" })); const refreshed = await requestJson<NodeListResponse>("/api/nodes"); syncNodeStateView(refreshed); setNotice(r.detail || `已断开节点 ${node.node_id}。`); } catch (e) { setNotice(`断开失败：${(e as Error).message}`); } }} disabled={busy !== null}>{busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接"}</button> : null}
-                          </div>
-                        </article>
-                      )})}
-                    </div>
-                  )}
-                </section> : null}
-                {!currentRoleIsWorker && selectedNodeId ? <section className="surface">
-                  <div className="section-head">
-                    <div>
-                      <div className="section-kicker">节点诊断</div>
-                      <h3 style={{display:"flex",alignItems:"center",gap:8}}>
-                        {selectedNodeId}
-                        {selectedNodeDiagnostics?.node_kind ? <span className={`node-kind-tag node-kind-tag-${selectedNodeDiagnostics.node_kind}`}>{selectedNodeDiagnostics.node_kind === "local" ? "网关内置" : "远端工作节点"}</span> : null}
-                      </h3>
-                    </div>
-                    <div className="inline-actions">
-                      {selectedNodeDiagnostics?.last_pairing_trace_id ? <span className="small-note" style={{fontFamily:"monospace",fontSize:11}}>trace: {selectedNodeDiagnostics.last_pairing_trace_id.slice(0,16)}…</span> : null}
-                      <button type="button" className="ghost-button launcher-row-btn" onClick={() => setSelectedNodeId(null)}>关闭</button>
-                    </div>
-                  </div>
-                  <div className="info-stack">
-                    <InfoRow label="连接状态" value={selectedNodeDiagnostics?.connection_state || "未记录"} />
-                    <InfoRow label="最近配对" value={selectedNodeDiagnostics?.last_pairing_status ? `${selectedNodeDiagnostics.last_pairing_status}${selectedNodeDiagnostics.last_pairing_at ? ` · ${formatTimeLabel(selectedNodeDiagnostics.last_pairing_at, true)}` : ""}` : "暂无"} />
-                    <InfoRow label="最近注册" value={selectedNodeDiagnostics?.last_register_result ? `${selectedNodeDiagnostics.last_register_result}${selectedNodeDiagnostics.last_register_at ? ` · ${formatTimeLabel(selectedNodeDiagnostics.last_register_at, true)}` : ""}` : "暂无"} />
-                    <InfoRow label="最近心跳" value={selectedNodeDiagnostics?.last_heartbeat_at ? formatTimeLabel(selectedNodeDiagnostics.last_heartbeat_at, true) : "暂无"} />
-                    {selectedNodeDiagnostics?.last_auth_decision ? (
-                      <>
-                        <InfoRow label="最近鉴权" value={selectedNodeDiagnostics.last_auth_decision} />
-                        {selectedNodeDiagnostics.last_auth_failure_at ? <InfoRow label="鉴权失败时间" value={formatTimeLabel(selectedNodeDiagnostics.last_auth_failure_at, true)} /> : null}
-                        {selectedNodeDiagnostics.expected_token_masked ? <InfoRow label="期望 Token" value={selectedNodeDiagnostics.expected_token_masked} /> : null}
-                        {selectedNodeDiagnostics.provided_token_masked ? <InfoRow label="实际 Token" value={selectedNodeDiagnostics.provided_token_masked} /> : null}
-                        {selectedNodeDiagnostics.expected_token_masked && selectedNodeDiagnostics.provided_token_masked ? (
-                          <InfoRow label="Token 对比" value={`期望：${selectedNodeDiagnostics.expected_token_masked} / 实际提供：${selectedNodeDiagnostics.provided_token_masked}`} multiline />
-                        ) : null}
-                        {selectedNodeDiagnostics.last_auth_client_host ? <InfoRow label="来源地址" value={selectedNodeDiagnostics.last_auth_client_host} /> : null}
-                      </>
-                    ) : null}
-                    {selectedNodeDiagnostics?.last_error ? <InfoRow label="最近错误" value={selectedNodeDiagnostics.last_error} multiline /> : null}
-                  </div>
-                  {selectedNodeDiagnostics?.timeline?.length ? <SnippetBlock label="诊断时间线" content={selectedNodeTimelineText} /> : null}
-                </section> : null}
-                <section className="surface">
-                  <div className="section-head">
-                    <div><div className="section-kicker">{currentRoleIsWorker ? "节点安装" : "节点纳管"}</div><h3>{currentRoleIsWorker ? "安装或重装当前机器节点" : "网关配置后继续添加工作节点"}</h3></div>
-                    {!currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>填入当前网关地址</button> : null}
-                  </div>
-                  <div className="form-grid">
-                    <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
-                    <label><span>目标网关地址</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
-                    <label>
-                      <span>配对密钥</span>
-                      <div className="field-with-action">
-                        <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="节点与网关保持一致" autoComplete="new-password" />
-                        <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>{workerPairingKeyVisible ? "隐藏" : "显示"}</button>
+                <div className="connection-section-grid">
+                  <NodeInventoryPanel headline={nodeInventoryHeadline} cards={nodeInventoryCards} selectedDiagnostics={selectedNodeDiagnosticsView} />
+                  <WeChatConfigCard
+                    statusRows={wechatStatusRows}
+                    qrImageSrc={qrImageSrc}
+                    pollStatus={pollState?.status ?? "未开始"}
+                    wechatBaseUrl={wechatBaseUrl}
+                    manualToken={manualToken}
+                    busyKey={busy}
+                    onWechatBaseUrlChange={setWechatBaseUrl}
+                    onManualTokenChange={setManualToken}
+                    onStartQrFlow={startQrFlow}
+                    onPollQrStatus={pollQrStatus}
+                    onConnectManualToken={connectManualToken}
+                    onDisconnectWeChat={disconnectWeChat}
+                  />
+                </div>
+
+                <div className="connection-section-grid">
+                  <div className="connection-panel-stack">
+                    <section className="surface">
+                      <div className="section-head">
+                        <div><div className="section-kicker">节点与模型参数</div><h3>添加或修复远端工作节点</h3></div>
+                        <button type="button" className="ghost-button" onClick={applyPreferredGatewayBaseUrlToWorker}>
+                          填入当前网关地址
+                        </button>
                       </div>
-                    </label>
-                    <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
+                      <div className="inline-tip">
+                        基础安装信息直接展示，按地址直连和局域网扫描收纳到折叠区，降低首次配置时的认知负担。
+                      </div>
+                      <div className="connection-form-grid">
+                        <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
+                        <label><span>目标网关地址</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
+                        <label>
+                          <span>配对密钥</span>
+                          <div className="field-with-action">
+                            <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="节点与网关保持一致" autoComplete="new-password" />
+                            <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>
+                              {workerPairingKeyVisible ? "隐藏" : "显示"}
+                            </button>
+                          </div>
+                        </label>
+                        <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
+                      </div>
+                      <details className="form-advanced-details connection-fold-card">
+                        <summary>
+                          <span className="section-kicker">高级选项</span>
+                          <span className="connection-fold-hint">发现响应、并发与 bundle 路径</span>
+                        </summary>
+                        <div className="connection-form-grid">
+                          <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
+                          <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
+                          <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
+                          <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
+                          <label className="checkbox-row"><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /><span>启用局域网发现</span></label>
+                          <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
+                        </div>
+                      </details>
+                      <div className="inline-actions" style={{ marginTop: 14 }}>
+                        <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>
+                          {busy === "setup-worker" ? "安装中..." : "安装当前机器节点"}
+                        </button>
+                      </div>
+                    </section>
+
+                    <section className="surface" style={{ padding: "12px 20px" }}>
+                      <details className="form-advanced-details connection-fold-card">
+                        <summary>
+                          <span className="section-kicker">高级功能</span>
+                          <span className="connection-fold-hint">按地址直接纳管远端节点</span>
+                        </summary>
+                        <div className="inline-tip">
+                          如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
+                        </div>
+                        <div className="connection-form-grid">
+                          <label><span>目标 IP / 主机名</span><input value={manualPair.host} onChange={(event) => updateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
+                          <label><span>配对端口</span><input type="number" value={manualPair.pairing_port} onChange={(event) => updateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
+                          <label><span>配对密钥</span><ToggleSecretInput value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
+                          <label><span>指定节点 ID（可选）</span><input value={manualPair.node_id} onChange={(event) => updateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
+                        </div>
+                        <div className="inline-actions">
+                          <button type="button" onClick={() => void manualPairNode()} disabled={busy !== null}>
+                            {busy === "setup-manual-pair" ? "连接中..." : "按地址配对"}
+                          </button>
+                        </div>
+                      </details>
+                    </section>
+
+                    <section className="surface" style={{ padding: "12px 20px" }}>
+                      <details className="form-advanced-details connection-fold-card">
+                        <summary>
+                          <span className="section-kicker">局域网发现</span>
+                          <span className="connection-fold-hint">扫描并批量纳管附近节点</span>
+                        </summary>
+                        <div className="section-head compact-head">
+                          <button type="button" onClick={scanLanNodes} disabled={busy !== null}>
+                            {busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}
+                          </button>
+                        </div>
+                        <div className="inline-tip">
+                          当前网关回连地址：{currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
+                        </div>
+                        {!discoveredNodes.length ? (
+                          <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div>
+                        ) : (
+                          <div className="discovery-list">
+                            {discoveredNodes.map((item) => (
+                              <div key={item.discovery_id} className="discovery-card">
+                                <div className="discovery-card-top">
+                                  <div>
+                                    <div className="node-card-title">{item.pairing_label || item.hostname}</div>
+                                    <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
+                                  </div>
+                                  <span className={`session-badge session-badge-${pairingStatusTone(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}`}>
+                                    {pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}
+                                  </span>
+                                </div>
+                                <div className="node-card-grid">
+                                  <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
+                                  <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
+                                  <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
+                                  <div><div className="node-card-label">正式节点 ID</div><div className="node-card-value">{item.node_id || "配对时自动生成"}</div></div>
+                                </div>
+                                <div className="discovery-actions">
+                                  <input value={pairingSecrets[item.discovery_id] || ""} onChange={(event) => setPairingSecrets((current) => ({ ...current, [item.discovery_id]: event.target.value }))} placeholder="输入该机器的配对密钥" />
+                                  <button type="button" onClick={() => pairLanNode(item)} disabled={busy !== null}>
+                                    {busy === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </details>
+                    </section>
                   </div>
-                  <div className="launcher-env-head" onClick={() => setNodeFormAdvanced(v => !v)} style={{marginTop: 8}}>
-                    <span className="section-kicker">高级选项</span>
-                    <span className="launcher-env-toggle">{nodeFormAdvanced ? "▲" : "▼"}</span>
-                  </div>
-                  {nodeFormAdvanced ? (
-                    <div className="form-grid" style={{marginTop: 10}}>
-                      <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
-                      <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
-                      <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
-                      <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
-                      <label><span>启用局域网发现</span><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /></label>
-                      <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
-                    </div>
-                  ) : null}
-                  <div className="inline-actions" style={{marginTop: 14}}>
-                    <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>{busy === "setup-worker" ? "安装中..." : "安装当前机器节点"}</button>
-                    {currentRoleIsWorker ? <button type="button" className="ghost-button" onClick={() => void probeWorkerGateway()} disabled={busy !== null}>{busy === "setup-gateway-probe" ? "检测中..." : "检测目标网关"}</button> : null}
+
+                  <NodeModelConfigPanel
+                    launcherAvailable={launcherAvailable}
+                    busyKey={busy}
+                    status={localNodeStatus}
+                    runtimeSummary={localNodeRuntimeSummary}
+                    gatewayControl={{
+                      managed: launcherShouldRunGateway(launcherStatus),
+                      state: launcherStatus?.components.find((item) => item.name === "gateway")?.state || "未读取",
+                      onRestart: () => void restartGatewayService(),
+                      disabled:
+                        busy !== null ||
+                        !launcherAvailable ||
+                        !launcherShouldRunGateway(launcherStatus),
+                      busy: busy === "launcher-gateway-restart",
+                    }}
+                    eventPreview=""
+                    draft={localNodeModelDraft}
+                    onChange={updateLocalNodeModelDraft}
+                    onRefresh={() => void refreshLocalNodeDiagnostics()}
+                    onRestart={() => void restartLocalNodeService()}
+                    onSave={() => void saveLocalNodeModelConfig()}
+                    onExport={() => void exportLocalNodeDiagnostics()}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="connection-layout-stack">
+                <section className="surface connection-overview" style={{ padding: "16px", background: "transparent", boxShadow: "none" }}>
+                  <div className="connection-hero-grid">
+                    {connectionHeroCards.map((card) => (
+                      <ConnectionHeroCard key={`${card.eyebrow}-${card.title}`} eyebrow={card.eyebrow} title={card.title} detail={card.detail} tone={card.tone} />
+                    ))}
                   </div>
                 </section>
-              </div>
-              <div className="connection-action-column">
-                {!currentRoleIsWorker && setupProfile ? (
-                  <>
-                    <section className="surface">
+
+                <div className="connection-grid">
+                  <div className="connection-status-column">
+                    <div className="worker-wizard-identity" style={{ marginBottom: 12 }}>
+                      <div className="worker-wizard-identity-ip">
+                        {workerGatewayConnection.remoteNode?.lan_ip || String(localNodeStatus?.diagnostics?.lan_ip || currentNodeLanIp || "检测中…")}
+                      </div>
+                      <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
+                        端口：{workerSetup.discovery_port} &nbsp;&middot;&nbsp; 当前机器节点地址，网关管理员可使用该地址配对
+                      </div>
+                    </div>
+
+                    <section className="surface surface-tight">
                       <div className="section-head">
-                        <div><div className="section-kicker">直连配对</div><h3>按地址直接纳管工作节点</h3></div>
-                      </div>
-                      <div className="inline-tip">
-                        如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
-                      </div>
-                      <div className="form-grid">
-                        <label><span>目标 IP / 主机名</span><input value={manualPair.host} onChange={(event) => updateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
-                        <label><span>配对端口</span><input type="number" value={manualPair.pairing_port} onChange={(event) => updateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
-                        <label><span>配对密钥</span><input type="password" value={manualPair.pairing_key} onChange={(event) => updateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
-                        <label><span>指定节点 ID（可选）</span><input value={manualPair.node_id} onChange={(event) => updateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
-                      </div>
-                      <div className="inline-actions">
-                        <button type="button" onClick={() => void manualPairNode()} disabled={busy !== null}>{busy === "setup-manual-pair" ? "连接中..." : "按地址配对"}</button>
-                      </div>
-                    </section>
-                    <section className="surface">
-                      <div className="section-head">
-                        <div><div className="section-kicker">节点配对</div><h3>扫描并纳管局域网工作节点</h3></div>
-                        <button type="button" onClick={scanLanNodes} disabled={busy !== null}>{busy === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}</button>
-                      </div>
-                      <div className="inline-tip">
-                        当前网关回连地址：{currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
-                      </div>
-                      {!discoveredNodes.length ? <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div> : (
-                        <div className="discovery-list">
-                          {discoveredNodes.map((item) => (
-                            <div key={item.discovery_id} className="discovery-card">
-                              <div className="discovery-card-top">
-                                <div>
-                                  <div className="node-card-title">{item.pairing_label || item.hostname}</div>
-                                  <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
-                                </div>
-                                <span className={`session-badge session-badge-${pairingStatusTone(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}`}>{pairingStatusLabel(pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}</span>
-                              </div>
-                              <div className="node-card-grid">
-                                <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
-                                <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
-                                <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
-                                <div><div className="node-card-label">正式节点 ID</div><div className="node-card-value">{item.node_id || "配对时自动生成"}</div></div>
-                              </div>
-                              <div className="discovery-actions">
-                                <input value={pairingSecrets[item.discovery_id] || ""} onChange={(event) => setPairingSecrets((current) => ({ ...current, [item.discovery_id]: event.target.value }))} placeholder="输入该机器的配对密钥" />
-                                <button type="button" onClick={() => pairLanNode(item)} disabled={busy !== null}>{busy === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}</button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </section>
-                    <section className="surface">
-                      <div className="section-head">
-                        <div><div className="section-kicker">本机诊断</div><h3>网关内置节点的 Windows 服务、配置路径与本地事件</h3></div>
-                        <div className="inline-actions">
-                          <button type="button" className="ghost-button" onClick={() => void refreshLocalNodeDiagnostics()} disabled={!launcherAvailable || busy !== null}>刷新</button>
-                          <button type="button" className="ghost-button" onClick={() => void restartLocalNodeService()} disabled={!launcherAvailable || busy !== null}>{busy === "local-node-restart" ? "重启中..." : "重启服务"}</button>
-                          <button type="button" className="ghost-button" onClick={() => void saveLocalNodeModelConfig()} disabled={!launcherAvailable || busy !== null}>{busy === "local-node-model-save" ? "保存中..." : "保存模型并应用"}</button>
-                          <button type="button" className="ghost-button" onClick={() => void exportLocalNodeDiagnostics()} disabled={!launcherAvailable || busy !== null}>{busy === "local-node-export" ? "导出中..." : "导出诊断包"}</button>
+                        <div>
+                          <div className="section-kicker">节点工作台</div>
+                          <h3>当前节点状态</h3>
                         </div>
                       </div>
-                      <div className="inline-tip">
-                        这里展示的是网关当前机器自带的内置节点，不是局域网中其它远端工作节点。它会直接跟随 launcher 托管的主网关运行。
+                      <div className="prep-strip-list">
+                        <PrepStrip label="节点配置" detail={setupCompletedRoles.has("worker_node") ? "当前机器节点已完成配置" : "尚未完成节点配置"} tone={setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
+                        <PrepStrip label="目标网关地址" detail={workerSetup.gateway_base_url || "未填写局域网网关地址"} tone={workerSetup.gateway_base_url ? "good" : "warn"} />
+                        <PrepStrip label="发现响应" detail={workerSetup.discovery_enabled ? `已启用 UDP ${workerSetup.discovery_port}` : "当前已关闭"} tone={workerSetup.discovery_enabled ? "good" : "warn"} />
+                        <PrepStrip
+                          label="Token 状态"
+                          detail={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已配对" : resolveTokenDisplayState(workerSetup.node_token).status === "waiting" ? "等待网关下发 token" : "已配对"}
+                          tone={workerGatewayConnection.state === "gateway_reachable_node_connected" || resolveTokenDisplayState(workerSetup.node_token).status === "paired" ? "good" : "warn"}
+                        />
                       </div>
-                      <div className="info-stack">
-                        <InfoRow label="节点身份" value={localNodeStatus?.node_kind === "local" ? "网关内置节点" : nodeRoleLabel("local-node", localNodeStatus?.node_kind)} multiline />
-                        <InfoRow label="服务状态" value={localNodeStatus?.state || "未读取"} />
-                        <InfoRow label="网关注册状态" value={localNodeRuntimeSummary.label} multiline />
-                        <InfoRow label="服务名" value={localNodeStatus?.service_name || "未读取"} multiline />
-                        <InfoRow label="配置文件" value={localNodeStatus?.config_path || "未读取"} multiline />
-                        <InfoRow label="诊断文件" value={localNodeStatus?.diagnostics_path || "未读取"} multiline />
-                        <InfoRow label="运行详情" value={localNodeRuntimeSummary.detail || localNodeStatus?.detail || "未读取"} multiline />
-                        <InfoRow label="本地状态机" value={localNodeStatus?.runtime_state || String(localNodeStatus?.diagnostics?.current_state || "未记录")} multiline />
-                        <InfoRow label="最近注册结果" value={localNodeStatus?.last_register_result || "暂无"} multiline />
-                        <InfoRow label="最近注册时间" value={localNodeStatus?.last_register_at ? formatTimeLabel(localNodeStatus.last_register_at, true) : "暂无"} />
-                        <InfoRow label="模型提供方" value={localNodeStatus?.model_settings?.model_provider || "auto"} />
-                        <InfoRow label="OpenAI Key" value={localNodeStatus?.model_settings?.openai_api_key_configured ? "已配置" : "未配置"} />
-                        <InfoRow label="Dify Key" value={localNodeStatus?.model_settings?.dify_api_key_configured ? "已配置" : "未配置"} />
+                    </section>
+
+                    <section className="surface">
+                      <div className="section-head">
+                        <div>
+                          <div className="section-kicker">节点安装</div>
+                          <h3>安装或重装当前机器节点</h3>
+                        </div>
                       </div>
                       <div className="form-grid">
+                        <label><span>节点 ID</span><input value={workerSetup.node_id} onChange={(event) => updateWorkerSetup("node_id", event.target.value)} /></label>
+                        <label><span>目标网关地址</span><input value={workerSetup.gateway_base_url} onChange={(event) => updateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
                         <label>
-                          <span>模型提供方</span>
-                          <select value={localNodeModelDraft.model_provider} onChange={(event) => updateLocalNodeModelDraft("model_provider", event.target.value)}>
-                            <option value="auto">auto</option>
-                            <option value="openai">openai</option>
-                            <option value="dify">dify</option>
-                          </select>
+                          <span>配对密钥</span>
+                          <div className="field-with-action">
+                            <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => updateWorkerSetup("pairing_key", event.target.value)} placeholder="节点与网关保持一致" autoComplete="new-password" />
+                            <button type="button" className="ghost-button" onClick={() => setWorkerPairingKeyVisible((current) => !current)}>
+                              {workerPairingKeyVisible ? "隐藏" : "显示"}
+                            </button>
+                          </div>
                         </label>
-                        <label>
-                          <span>OpenAI Base URL</span>
-                          <input value={localNodeModelDraft.openai_base_url} onChange={(event) => updateLocalNodeModelDraft("openai_base_url", event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
-                        </label>
-                        <label>
-                          <span>OpenAI Model</span>
-                          <input value={localNodeModelDraft.openai_model} onChange={(event) => updateLocalNodeModelDraft("openai_model", event.target.value)} placeholder="qwen3.5-plus" />
-                        </label>
-                        <label>
-                          <span>OpenAI API Key</span>
-                          <input type="password" value={localNodeModelDraft.openai_api_key} onChange={(event) => updateLocalNodeModelDraft("openai_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
-                        </label>
-                        <label>
-                          <span>Dify Base URL</span>
-                          <input value={localNodeModelDraft.dify_base_url} onChange={(event) => updateLocalNodeModelDraft("dify_base_url", event.target.value)} placeholder="https://api.dify.ai/v1" />
-                        </label>
-                        <label>
-                          <span>Dify API Key</span>
-                          <input type="password" value={localNodeModelDraft.dify_api_key} onChange={(event) => updateLocalNodeModelDraft("dify_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
-                        </label>
+                        <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => updateWorkerSetup("install_dir", event.target.value)} /></label>
                       </div>
-                      <div className="inline-actions">
-                        <label className="checkbox-row">
-                          <input type="checkbox" checked={localNodeModelDraft.openai_enable_thinking} onChange={(event) => updateLocalNodeModelDraft("openai_enable_thinking", event.target.checked)} />
-                          <span>启用 OpenAI Thinking</span>
-                        </label>
-                        <label className="checkbox-row">
-                          <input type="checkbox" checked={localNodeModelDraft.restart_service} onChange={(event) => updateLocalNodeModelDraft("restart_service", event.target.checked)} />
-                          <span>保存后自动重启服务</span>
-                        </label>
+                      <details className="form-advanced-details connection-fold-card">
+                        <summary>
+                          <span className="section-kicker">高级选项</span>
+                          <span className="connection-fold-hint">发现响应、并发与 bundle 路径</span>
+                        </summary>
+                        <div className="connection-form-grid">
+                          <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => updateWorkerSetup("dify_base_url", event.target.value)} /></label>
+                          <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => updateWorkerSetup("dify_api_key", event.target.value)} /></label>
+                          <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => updateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
+                          <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => updateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
+                          <label className="checkbox-row"><input type="checkbox" checked={workerSetup.discovery_enabled} onChange={(event) => updateWorkerSetup("discovery_enabled", event.target.checked)} /><span>启用局域网发现</span></label>
+                          <label><span>Bundle 路径（可选）</span><input value={workerSetup.bundle_path} onChange={(event) => updateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
+                        </div>
+                      </details>
+                      <div className="inline-actions" style={{ marginTop: 14 }}>
+                        <button type="button" onClick={() => void runWorkerSetup({ showResultScreen: false })} disabled={busy !== null}>
+                          {busy === "setup-worker" ? "安装中..." : "安装当前机器节点"}
+                        </button>
+                        <button type="button" className="ghost-button" onClick={() => void probeWorkerGateway()} disabled={busy !== null}>
+                          {busy === "setup-gateway-probe" ? "检测中..." : "检测目标网关"}
+                        </button>
                       </div>
-                      <SnippetBlock label="本机节点事件日志" content={localNodeEventPreview} />
                     </section>
-                  </>
-                ) : (
-                  <>
+
                     <section className="surface node-role-surface">
-                      <div className="section-head"><div><div className="section-kicker">节点说明</div><h3>节点角色只配置当前机器，不纳管其它节点</h3></div></div>
+                      <div className="section-head">
+                        <div>
+                          <div className="section-kicker">节点说明</div>
+                          <h3>节点角色只配置当前机器，不纳管其它节点</h3>
+                        </div>
+                      </div>
                       <div className="inline-tip">
-                        你当前选择的是节点角色，这里只保留当前机器这一个远端工作节点的安装、回连、凭据和发现响应相关功能；网关内置节点属于主网关自身，扫描并纳管其它节点需要切换回网关角色。
+                        当前角色只负责这台机器自己的安装、回连、凭据与发现响应。扫描并纳管其它节点需要切回网关角色操作。
                       </div>
                       <div className="info-stack">
                         <InfoRow label="节点身份" value="远端工作节点（当前机器）" multiline />
@@ -3080,113 +4415,60 @@ export function App() {
                         <InfoRow label="网关连接状态" value={workerGatewayConnection.label} multiline />
                         <InfoRow label="连接详情" value={workerGatewayConnection.detail} multiline />
                         <InfoRow label="节点 ID" value={workerSetup.node_id || "未填写"} multiline />
-                        <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在左侧表单中显示/修改" : "未填写"} multiline />
+                        <InfoRow label="配对密钥" value={workerSetup.pairing_key.trim() ? "已填写，可在上方显示/修改" : "未填写"} multiline />
                         {workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点记录" value={summarizeRemoteNode(workerGatewayConnection.remoteNode)} multiline /> : null}
                       </div>
-                      <SnippetBlock label="节点连接日志" content={workerConnectionLog || "这里会显示当前节点被连接、探测、注册和心跳确认的详细日志。"} />
                     </section>
-                    {launcherAvailable ? (
-                    <section className="surface">
-                      <div className="section-head">
-                        <div><div className="section-kicker">推理后端</div><h3>配置当前节点的模型</h3></div>
-                        <div className="inline-actions">
-                          <button type="button" className="ghost-button" onClick={() => void saveLocalNodeModelConfig()} disabled={busy !== null}>{busy === "local-node-model-save" ? "保存中..." : "保存并应用"}</button>
-                        </div>
-                      </div>
-                      <div className="inline-tip">
-                        节点需要配置推理后端才能接单处理任务。保存后会自动重启节点服务。
-                      </div>
-                      <div className="form-grid">
-                        <label>
-                          <span>模型提供方</span>
-                          <select value={localNodeModelDraft.model_provider} onChange={(event) => updateLocalNodeModelDraft("model_provider", event.target.value)}>
-                            <option value="auto">auto</option>
-                            <option value="openai">openai</option>
-                            <option value="dify">dify</option>
-                          </select>
-                        </label>
-                        <label>
-                          <span>OpenAI Base URL</span>
-                          <input value={localNodeModelDraft.openai_base_url} onChange={(event) => updateLocalNodeModelDraft("openai_base_url", event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
-                        </label>
-                        <label>
-                          <span>OpenAI Model</span>
-                          <input value={localNodeModelDraft.openai_model} onChange={(event) => updateLocalNodeModelDraft("openai_model", event.target.value)} placeholder="qwen3.5-plus" />
-                        </label>
-                        <label>
-                          <span>OpenAI API Key</span>
-                          <input type="password" value={localNodeModelDraft.openai_api_key} onChange={(event) => updateLocalNodeModelDraft("openai_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
-                        </label>
-                        <label>
-                          <span>Dify Base URL</span>
-                          <input value={localNodeModelDraft.dify_base_url} onChange={(event) => updateLocalNodeModelDraft("dify_base_url", event.target.value)} placeholder="https://api.dify.ai/v1" />
-                        </label>
-                        <label>
-                          <span>Dify API Key</span>
-                          <input type="password" value={localNodeModelDraft.dify_api_key} onChange={(event) => updateLocalNodeModelDraft("dify_api_key", event.target.value)} placeholder={localNodeStatus?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
-                        </label>
-                      </div>
-                      <div className="inline-actions">
-                        <label className="checkbox-row">
-                          <input type="checkbox" checked={localNodeModelDraft.openai_enable_thinking} onChange={(event) => updateLocalNodeModelDraft("openai_enable_thinking", event.target.checked)} />
-                          <span>启用 OpenAI Thinking</span>
-                        </label>
-                        <label className="checkbox-row">
-                          <input type="checkbox" checked={localNodeModelDraft.restart_service} onChange={(event) => updateLocalNodeModelDraft("restart_service", event.target.checked)} />
-                          <span>保存后自动重启服务</span>
-                        </label>
-                      </div>
-                      <div className="info-stack" style={{marginTop: 10}}>
-                        <InfoRow label="当前提供方" value={localNodeStatus?.model_settings?.model_provider || "未读取"} />
-                        <InfoRow label="OpenAI Key" value={localNodeStatus?.model_settings?.openai_api_key_configured ? "已配置" : "未配置"} />
-                        <InfoRow label="Dify Key" value={localNodeStatus?.model_settings?.dify_api_key_configured ? "已配置" : "未配置"} />
-                      </div>
-                    </section>
-                    ) : null}
-                  </>
-                )}
-                <section className="surface">
-                  <div className="section-head">
-                    <div><div className="section-kicker">调试日志</div><h3>{currentRoleIsWorker ? "网关探测与节点回连定位" : "配对过程与问题定位"}</h3></div>
-                    <div className="inline-actions">
-                      <span className="small-note">保留最近 12 条扫描/配对记录</span>
-                      <button type="button" className="ghost-button" onClick={() => setPairingDebugEntries([])} disabled={!pairingDebugEntries.length}>清空日志</button>
-                    </div>
                   </div>
-                  {!pairingDebugEntries.length ? <div className="empty-state">{currentRoleIsWorker ? "这里会显示目标网关探测、节点回连检测和失败原因，方便定位当前节点为什么连不上网关。" : "这里会显示扫描、直连配对、失败原因和返回日志，方便快速定位问题。"}</div> : (
-                    <div className="pairing-debug-list">
-                      {pairingDebugEntries.map((entry) => (
-                        <article key={entry.id} className="pairing-debug-card">
-                          <div className="pairing-debug-top">
-                            <div>
-                              <div className="node-card-title">{entry.title}</div>
-                              <div className="node-card-subtitle">{entry.target} · {formatTimeLabel(entry.updated_at, true)}</div>
-                            </div>
-                            <span className={`session-badge session-badge-${entry.status === "succeeded" ? "human" : entry.status === "running" || entry.status === "pending" ? "typing" : "queued"}`}>{pairingDebugStatusLabel(entry.status)}</span>
-                          </div>
-                          <div className="pairing-debug-summary">{entry.summary || "等待更多日志..."}</div>
-                          <pre className="pairing-debug-log">{entry.logs.length ? entry.logs.join("\n") : "暂无详细日志"}</pre>
-                        </article>
-                      ))}
-                    </div>
-                  )}
-                </section>
-                {!currentRoleIsWorker ? <section className="surface surface-feature">
-                  <div className="section-head"><div><div className="section-kicker">扫码接入</div><h3>连接微信 Bot</h3></div><div className="inline-actions"><button onClick={startQrFlow} disabled={busy !== null}>{busy === "wechat-qr" ? "生成中..." : "生成二维码"}</button><button onClick={pollQrStatus} disabled={!qr || busy !== null}>{busy === "wechat-poll" ? "轮询中..." : "轮询状态"}</button></div></div>
-                  <div className="qr-stage">
-                    <div className="qr-frame">{qrImageSrc ? <img className="qr-image" src={qrImageSrc} alt="WeChat QR code" /> : <div className="qr-placeholder">点击“生成二维码”后，这里会显示扫码图。</div>}</div>
-                    <div className="qr-meta"><div className="qr-status-line"><span>当前状态</span><strong>{pollState?.status ?? "未开始"}</strong></div><div className="small-note">支持扫码自动接入，也支持复制 token 做手动连接测试。</div></div>
+
+                  <div className="connection-action-column">
+                    <NodeModelConfigPanel
+                      launcherAvailable={launcherAvailable}
+                      busyKey={busy}
+                      status={localNodeStatus}
+                      runtimeSummary={localNodeRuntimeSummary}
+                      gatewayControl={null}
+                      eventPreview=""
+                      draft={localNodeModelDraft}
+                      onChange={updateLocalNodeModelDraft}
+                      onRefresh={() => void refreshLocalNodeDiagnostics()}
+                      onRestart={() => void restartLocalNodeService()}
+                      onSave={() => void saveLocalNodeModelConfig()}
+                      onExport={() => void exportLocalNodeDiagnostics()}
+                    />
                   </div>
-                </section> : null}
-                {!currentRoleIsWorker ? <section className="surface">
-                  <div className="section-head"><div><div className="section-kicker">手动模式</div><h3>Token 连接</h3></div></div>
-                  <div className="form-grid">
-                    <label><span>WeChat Base URL</span><input value={wechatBaseUrl} onChange={(event) => setWechatBaseUrl(event.target.value)} placeholder="https://ilinkai.weixin.qq.com" /></label>
-                    <label><span>手动 Token</span><textarea value={manualToken} onChange={(event) => setManualToken(event.target.value)} placeholder="也可以先扫码，扫码确认后会自动填入并接入。" /></label>
-                  </div>
-                  <div className="inline-actions"><button onClick={connectManualToken} disabled={busy !== null}>{busy === "wechat-connect" ? "连接中..." : "使用当前 Token 连接"}</button><button onClick={disconnectWeChat} disabled={busy !== null}>断开连接</button></div>
-                </section> : null}
+                </div>
               </div>
+            )}
+          </section>
+        ) : workspace === "logs" ? (
+          <section className="workspace-frame connection-workspace">
+            <div className="workspace-heading">
+              <div>
+                <div className="section-kicker">日志中心</div>
+                <h2>{currentRoleIsWorker ? "集中查看节点回连、配对与本地运行日志" : "集中查看主机组件、本机节点与配对日志"}</h2>
+              </div>
+              <div className="workspace-caption">
+                {currentRoleIsWorker ? "这里不再混入安装配置表单，只保留当前机器节点的关键日志。" : "接入中心负责配置与状态，日志中心负责集中排障与运行追踪。"}
+              </div>
+            </div>
+            <div className="logs-workspace-stack">
+              {currentRoleIsWorker ? <SnippetBlock label="节点连接日志" content={workerConnectionLog} /> : null}
+              <RuntimeLogsPanel
+                title={currentRoleIsWorker ? "节点本地运行与回连日志" : "主机组件与本机节点日志"}
+                subtitle={currentRoleIsWorker ? "展示当前机器节点的服务、回连与诊断日志。" : "这里集中查看 launcher、主网关和本机内置节点的运行日志。"}
+                helperText="日志中心可见时每 4 秒自动刷新"
+                entries={runtimeLogEntries}
+                onRefresh={() => void refreshRuntimeLogs()}
+                refreshing={runtimeLogsRefreshing}
+              />
+              <DiagnosticsConsole
+                title={currentRoleIsWorker ? "节点配对与回连日志" : "配对与纳管日志中心"}
+                subtitle={currentRoleIsWorker ? "记录当前节点与网关的配对、检测和回连结果。" : "集中展示扫描、手动配对和节点纳管的调试输出。"}
+                emptyText={currentRoleIsWorker ? "当前还没有节点配对日志；执行网关探测或等待回连后会显示在这里。" : "当前还没有网关配对日志；开始扫描或连接节点后会在这里出现。"}
+                entries={pairingDebugViewEntries}
+                onClear={() => setPairingDebugEntries([])}
+              />
             </div>
           </section>
         ) : (
@@ -3250,6 +4532,17 @@ export function App() {
 
                 <section className="surface transcript-surface">
                   <div className="section-head compact-head"><div><div className="section-kicker">Transcript</div><h3>聊天时间线</h3></div>{typingState ? <div className="typing-status-inline">{typingState}</div> : null}</div>
+                  {selectedSession && messagesLoaded && (messageHistoryLoading || messageHasMoreBefore || messageHistoryStart > 0) ? (
+                    <div className="history-toolbar history-toolbar-passive">
+                      <div className="history-toolbar-copy">
+                        {messageHistoryLoading
+                          ? "正在回补更早历史消息…"
+                          : messageHasMoreBefore
+                            ? "继续上滑可自动加载更早消息"
+                            : "已加载完该会话的更早历史"}
+                      </div>
+                    </div>
+                  ) : null}
                   <div ref={messagesRef} className="message-stream" onScroll={handleMessageStreamScroll}>
                     {!selectedSession ? <div className="empty-state">选择一个会话后，这里会显示完整聊天内容。</div> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载聊天内容…</div> : !messages.length ? <div className="empty-state">当前会话还没有消息。</div> : messages.map((message, index) => (
                       <div key={message.message_id}>
@@ -3257,7 +4550,7 @@ export function App() {
                         <div className={`message-row message-row-${message.role === "user" ? "user" : "assistant"}`}>
                           <div className={`message-bubble message-bubble-${message.role}`}>
                             <div className="message-role-line"><span className="message-role">{roleLabel(message.role)}</span>{message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}<span>{formatTimeLabel(message.created_at, true)}</span></div>
-                            <div className="message-content">{message.content}</div>
+                            <div className="message-content">{renderMessageContent(message.content)}</div>
                           </div>
                         </div>
                       </div>
@@ -3349,6 +4642,17 @@ function Metric({ title, value }: { title: string; value: string }) { return <di
 function InfoRow({ label, value, multiline }: { label: string; value: string; multiline?: boolean }) { return <div className="info-row"><span>{label}</span><strong className={multiline ? "multiline" : ""}>{value}</strong></div>; }
 function MetaPill({ label, value }: { label: string; value: string }) { return <div className="meta-pill"><span>{label}</span><strong>{value}</strong></div>; }
 function SnippetBlock({ label, content }: { label: string; content: string }) { return <div className="snippet-block"><div className="snippet-label">{label}</div><div className="snippet-content">{content}</div></div>; }
+function ToggleSecretInput(props: JSX.IntrinsicElements["input"]) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+      <input {...props} type={visible ? "text" : "password"} style={{ ...(props.style ?? {}), flex: 1 }} />
+      <button type="button" className="ghost-button" onClick={() => setVisible((current) => !current)} style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+        {visible ? "隐藏" : "显示"}
+      </button>
+    </div>
+  );
+}
 function ConnectionHeroCard({ eyebrow, title, detail, tone }: { eyebrow: string; title: string; detail: string; tone: "good" | "warn" }) {
   return (
     <article className={`connection-hero-card connection-hero-card-${tone}`}>
@@ -3366,6 +4670,48 @@ function ConnectionSignalCard({ label, value, meta, tone }: { label: string; val
       <div className="connection-signal-meta">{meta}</div>
     </article>
   );
+}
+function renderMessageContent(content: string) {
+  const parts = parseMarkdownImageParts(content);
+  if (!parts.length) {
+    return content;
+  }
+  return parts.map((part, index) => {
+    if (part.kind === "image") {
+      return (
+        <figure key={`img-${index}-${part.url}`} className="message-image-block">
+          <img className="message-inline-image" src={part.url} alt={part.alt || "message image"} loading="lazy" />
+          {part.alt ? <figcaption>{part.alt}</figcaption> : null}
+        </figure>
+      );
+    }
+    return (
+      <span key={`text-${index}`} className="message-text-fragment">
+        {part.text}
+      </span>
+    );
+  });
+}
+function parseMarkdownImageParts(content: string): Array<{ kind: "text"; text: string } | { kind: "image"; url: string; alt: string }> {
+  const pattern = /!\[([^\]]*)\]\(([^)\s]+(?:\s+"[^"]*")?)\)/g;
+  const parts: Array<{ kind: "text"; text: string } | { kind: "image"; url: string; alt: string }> = [];
+  let cursor = 0;
+  for (const match of content.matchAll(pattern)) {
+    const index = match.index ?? 0;
+    if (index > cursor) {
+      parts.push({ kind: "text", text: content.slice(cursor, index) });
+    }
+    parts.push({
+      kind: "image",
+      alt: match[1]?.trim() || "",
+      url: match[2].split(" ", 1)[0].trim(),
+    });
+    cursor = index + match[0].length;
+  }
+  if (cursor < content.length) {
+    parts.push({ kind: "text", text: content.slice(cursor) });
+  }
+  return parts;
 }
 
 function syncSessions(next: SessionRecord[], setSessions: React.Dispatch<React.SetStateAction<SessionRecord[]>>, setSelectedSessionId: React.Dispatch<React.SetStateAction<string | null>>, setActiveSession: React.Dispatch<React.SetStateAction<SessionRecord | null>>) {
@@ -3388,7 +4734,11 @@ function syncNodeState(
     setSelectedNodeId(null);
     return;
   }
-  setSelectedNodeId((current) => current && next.inventory.some((item) => item.node_id === current) ? current : (next.inventory[0]?.node_id ?? next.nodes[0]?.node_id ?? null));
+  setSelectedNodeId((current) =>
+    current && next.inventory.some((item) => item.node_id === current)
+      ? current
+      : null,
+  );
 }
 function matchesFilter(session: SessionRecord, filter: SessionFilter, now: number) { return filter === "processing" ? session.queue_status !== "none" || Boolean(session.active_task_id) : filter === "human" ? session.status === "human_active" || session.status === "handoff_pending" : filter === "recent" ? isRecent(session, now) : true; }
 function isRecent(session: SessionRecord, now: number) { const updatedAt = new Date(session.updated_at).getTime(); return !Number.isNaN(updatedAt) && now - updatedAt <= 30 * 60 * 1000; }

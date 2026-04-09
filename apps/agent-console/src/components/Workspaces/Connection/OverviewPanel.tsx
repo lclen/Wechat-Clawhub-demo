@@ -11,8 +11,10 @@ type OverviewPanelProps = {
   dispatchWarning?: string | null;
   onRunModelCheck: () => void;
   onToggleDispatch: () => void;
+  onRefreshAllStatus: () => void;
   runModelCheckLabel: string;
   toggleDispatchLabel: string;
+  refreshAllLabel: string;
   busy: boolean;
 };
 
@@ -26,8 +28,10 @@ export function OverviewPanel({
   dispatchWarning,
   onRunModelCheck,
   onToggleDispatch,
+  onRefreshAllStatus,
   runModelCheckLabel,
   toggleDispatchLabel,
+  refreshAllLabel,
   busy,
 }: OverviewPanelProps) {
   return (
@@ -44,7 +48,7 @@ export function OverviewPanel({
           <div className="connection-overview-chip-row">
             <span className="connection-overview-chip">先看状态</span>
             <span className="connection-overview-chip">再改配置</span>
-            <span className="connection-overview-chip">日志默认收起</span>
+            <span className="connection-overview-chip">日志自动刷新</span>
           </div>
         </div>
         <div className="connection-hero-grid">
@@ -61,9 +65,14 @@ export function OverviewPanel({
               <div className="section-kicker">准备流程</div>
               <h3>接入状态</h3>
             </div>
-            <button type="button" onClick={onRunModelCheck} disabled={busy}>
-              {runModelCheckLabel}
-            </button>
+            <div className="inline-actions">
+              <button type="button" className="ghost-button" onClick={onRefreshAllStatus} disabled={busy}>
+                {refreshAllLabel}
+              </button>
+              <button type="button" onClick={onRunModelCheck} disabled={busy}>
+                {runModelCheckLabel}
+              </button>
+            </div>
           </div>
           <div className="prep-strip-list">
             {prepItems.map((item) => (

@@ -6,13 +6,15 @@ from typing import Any
 import httpx
 
 from claw_node.config import NodeSettings
+from claw_node.local_cache import LocalCache
 
 
 class DifyClient:
     """Best-effort Dify client for the worker node."""
 
-    def __init__(self, settings: NodeSettings) -> None:
+    def __init__(self, settings: NodeSettings, local_cache: LocalCache | None = None) -> None:
         self._settings = settings
+        self._local_cache = local_cache
         self._conversation_ids: dict[str, str] = {}
         self._client = httpx.AsyncClient(
             base_url=settings.dify_base_url.rstrip("/"),
@@ -37,7 +39,7 @@ class DifyClient:
         recent_messages: list[dict[str, Any]],
     ) -> tuple[str, dict[str, Any] | None]:
         conversation_key = self._conversation_key(session_id=session_id, user_id=user_id)
-        conversation_id = self._resolve_conversation_id(conversation_key, recent_messages)
+        conversation_id = await self._resolve_conversation_id(conversation_key, recent_messages)
         payload = {
             "inputs": {
                 "session_id": session_id,
@@ -75,8 +77,9 @@ class DifyClient:
         usage = data.get("usage") or data.get("metadata")
         returned_conversation_id = str(data.get("conversation_id") or "").strip()
         if returned_conversation_id:
-            self._conversation_ids[conversation_key] = returned_conversation_id
-        return str(answer), usage
+            await self._remember_conversation_id(conversation_key, returned_conversation_id)
+        effective_conversation_id = returned_conversation_id or conversation_id
+        return str(answer), self._inject_conversation_metadata(usage, effective_conversation_id)
 
     async def _ask_streaming(self, payload: dict[str, Any]) -> dict[str, Any]:
         streaming_payload = dict(payload)
@@ -137,19 +140,43 @@ class DifyClient:
             raise ValueError("Dify user_id must not be empty")
         return normalized
 
-    def _resolve_conversation_id(self, conversation_key: str, recent_messages: list[dict[str, Any]]) -> str:
+    async def _resolve_conversation_id(self, conversation_key: str, recent_messages: list[dict[str, Any]]) -> str:
         cached = self._conversation_ids.get(conversation_key, "").strip()
         if cached:
             return cached
+        if self._local_cache is not None:
+            cached = await self._local_cache.get_dify_conversation_id(conversation_key)
+            if cached:
+                self._conversation_ids[conversation_key] = cached
+                return cached
         for item in reversed(recent_messages):
             metadata = item.get("metadata")
             if not isinstance(metadata, dict):
                 continue
             candidate = str(metadata.get("dify_conversation_id") or metadata.get("conversation_id") or "").strip()
             if candidate:
-                self._conversation_ids[conversation_key] = candidate
+                await self._remember_conversation_id(conversation_key, candidate)
                 return candidate
         return ""
+
+    async def _remember_conversation_id(self, conversation_key: str, conversation_id: str) -> None:
+        normalized = str(conversation_id).strip()
+        if not normalized:
+            return
+        self._conversation_ids[conversation_key] = normalized
+        if self._local_cache is not None:
+            await self._local_cache.store_dify_conversation_id(conversation_key, normalized)
+
+    def _inject_conversation_metadata(
+        self,
+        usage: dict[str, Any] | None,
+        conversation_id: str,
+    ) -> dict[str, Any] | None:
+        if not conversation_id:
+            return usage
+        payload = dict(usage or {})
+        payload["dify_conversation_id"] = conversation_id
+        return payload
 
     def _collect_files(self, recent_messages: list[dict[str, Any]]) -> list[dict[str, str]]:
         files: list[dict[str, str]] = []

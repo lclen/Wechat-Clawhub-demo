@@ -6,7 +6,9 @@ from unittest.mock import AsyncMock, Mock
 
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueue
-from app.models.session import MessageRecord, MessageRole, RoutingMode, SessionRecord, SessionStatus
+from app.models.dispatch import ChannelReleasedRequest
+from app.models.node import NodeRecord, NodeStatus
+from app.models.session import MessageRecord, MessageRole, RoutingMode, SessionRecord, SessionStatus, SessionSwitchAction
 
 
 class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
@@ -247,10 +249,12 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_switch_session_target_accepts_explicit_manual_target(self) -> None:
         switched = self._build_session(session_id="session-6", assigned_node_id="node-2", assigned_slot_id="slot-02")
-        self.queue._switch_session = AsyncMock(return_value=switched)  # type: ignore[method-assign]
+        self.queue._bind_session_to_node = AsyncMock(return_value=switched)  # type: ignore[method-assign]
 
         session, detail = await self.queue.switch_session_target(
             "session-6",
+            action=SessionSwitchAction.MANUAL,
+            node_id="node-2",
             requested_by="console",
             reason="manual",
             routing_mode=RoutingMode.MANUAL,
@@ -259,15 +263,17 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(session.assigned_node_id, "node-2")
         self.assertIn("node-2", detail)
-        self.queue._switch_session.assert_awaited_once()
-        self.assertEqual(self.queue._switch_session.await_args.kwargs["target_node_id"], "node-2")
+        self.queue._bind_session_to_node.assert_awaited_once()
+        self.assertEqual(self.queue._bind_session_to_node.await_args.kwargs["node_id"], "node-2")
 
     async def test_switch_session_target_reports_unavailable_manual_target(self) -> None:
         unavailable = self._build_session(session_id="session-7", assigned_node_id="node-9", assigned_slot_id=None)
-        self.queue._switch_session = AsyncMock(return_value=unavailable)  # type: ignore[method-assign]
+        self.queue._bind_session_to_node = AsyncMock(return_value=unavailable)  # type: ignore[method-assign]
 
         _, detail = await self.queue.switch_session_target(
             "session-7",
+            action=SessionSwitchAction.MANUAL,
+            node_id="node-3",
             requested_by="console",
             reason="manual",
             routing_mode=RoutingMode.MANUAL,
@@ -275,6 +281,135 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertIn("node-3", detail)
+
+    async def test_release_channel_from_node_clears_assignment_for_idle_session(self) -> None:
+        session = self._build_session(session_id="session-6", assigned_node_id="node-1", assigned_slot_id="slot-01")
+        self.session_manager.get_session.return_value = session
+        self.queue._release_slot = AsyncMock(return_value=self._build_session(session_id="session-6", assigned_node_id=None, assigned_slot_id=None))  # type: ignore[method-assign]
+        payload = ChannelReleasedRequest(
+            session_id="session-6",
+            node_id="node-1",
+            slot_id="slot-01",
+            reason="idle_timeout",
+        )
+
+        released = await self.queue.release_channel_from_node(payload)
+
+        self.assertIsNotNone(released)
+        self.queue._release_slot.assert_awaited_once()
+        self.assertTrue(self.queue._release_slot.await_args.kwargs["clear_assigned_node"])
+
+    async def test_release_channel_from_node_ignores_busy_session(self) -> None:
+        session = self._build_session(session_id="session-7", assigned_node_id="node-1", assigned_slot_id="slot-01")
+        session = session.model_copy(update={"active_task_id": "task-7", "queue_status": "inflight"})
+        self.session_manager.get_session.return_value = session
+        self.queue._release_slot = AsyncMock()  # type: ignore[method-assign]
+        payload = ChannelReleasedRequest(
+            session_id="session-7",
+            node_id="node-1",
+            slot_id="slot-01",
+            reason="idle_timeout",
+        )
+
+        released = await self.queue.release_channel_from_node(payload)
+
+        self.assertEqual(released, session)
+        self.queue._release_slot.assert_not_awaited()
+
+    async def test_ensure_slot_assignment_keeps_manual_binding_on_selected_node_only(self) -> None:
+        session = self._build_session(session_id="session-8", assigned_node_id="node-manual", assigned_slot_id=None)
+        session = session.model_copy(update={"routing_mode": RoutingMode.MANUAL})
+        self.scheduler.rank_nodes.return_value = [
+            NodeRecord(
+                node_id="node-other",
+                base_url="http://node-other",
+                advertised_address=None,
+                lan_ip=None,
+                max_concurrency=4,
+                current_load=0,
+                status=NodeStatus.HEALTHY,
+                last_heartbeat_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                last_error=None,
+                load_ratio=0,
+                node_version=None,
+                platform=None,
+                hostname=None,
+                capabilities=[],
+                channel_capacity=2,
+                channel_in_use=0,
+            ),
+            NodeRecord(
+                node_id="node-manual",
+                base_url="http://node-manual",
+                advertised_address=None,
+                lan_ip=None,
+                max_concurrency=4,
+                current_load=0,
+                status=NodeStatus.HEALTHY,
+                last_heartbeat_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                last_error=None,
+                load_ratio=0,
+                node_version=None,
+                platform=None,
+                hostname=None,
+                capabilities=[],
+                channel_capacity=2,
+                channel_in_use=0,
+            ),
+        ]
+        self.store.hgetall.return_value = {}
+        self.session_manager.set_dispatch_state.return_value = session.model_copy(update={"assigned_slot_id": "slot-01"})
+
+        allocation = await self.queue._ensure_slot_assignment(session, routing_mode=RoutingMode.MANUAL)
+
+        self.assertIsNotNone(allocation)
+        self.store.hset.assert_awaited_once_with("wch:node:node-manual:slots", "slot-01", "session-8")
+        self.assertEqual(self.session_manager.set_dispatch_state.await_args.kwargs["assigned_node_id"], "node-manual")
+
+    async def test_bind_session_to_node_preserves_manual_target_when_slot_unavailable(self) -> None:
+        session = self._build_session(session_id="session-9", assigned_node_id="node-old", assigned_slot_id="slot-01")
+        released = self._build_session(session_id="session-9", assigned_node_id=None, assigned_slot_id=None)
+        bound = self._build_session(session_id="session-9", assigned_node_id="node-target", assigned_slot_id=None)
+        bound = bound.model_copy(update={"routing_mode": RoutingMode.MANUAL})
+        self.session_manager.get_session.return_value = session
+        self.queue._release_slot = AsyncMock(return_value=released)  # type: ignore[method-assign]
+        self.session_manager.set_dispatch_state.return_value = bound
+        self.queue._ensure_slot_assignment = AsyncMock(return_value=None)  # type: ignore[method-assign]
+
+        result = await self.queue._bind_session_to_node(
+            "session-9",
+            node_id="node-target",
+            requested_by="console",
+            reason="console_manual_bind",
+        )
+
+        self.assertEqual(result.assigned_node_id, "node-target")
+        self.assertIsNone(result.assigned_slot_id)
+        self.assertEqual(result.routing_mode, RoutingMode.MANUAL)
+        self.queue._ensure_slot_assignment.assert_awaited_once()
+        self.assertEqual(self.queue._ensure_slot_assignment.await_args.kwargs["preferred_node_id"], "node-target")
+
+    async def test_restore_session_auto_assignment_clears_preferred_node_before_reallocate(self) -> None:
+        session = self._build_session(session_id="session-10", assigned_node_id="node-old", assigned_slot_id="slot-01")
+        released = self._build_session(session_id="session-10", assigned_node_id=None, assigned_slot_id=None)
+        restored = self._build_session(session_id="session-10", assigned_node_id="node-new", assigned_slot_id="slot-02")
+        restored = restored.model_copy(update={"routing_mode": RoutingMode.AUTO})
+        self.session_manager.get_session.return_value = session
+        self.queue._release_slot = AsyncMock(return_value=released)  # type: ignore[method-assign]
+        self.queue._ensure_slot_assignment = AsyncMock(return_value=(restored, None, None))  # type: ignore[method-assign]
+
+        result = await self.queue._restore_session_auto_assignment(
+            "session-10",
+            requested_by="console",
+            reason="console_restore_auto",
+        )
+
+        self.assertEqual(result.assigned_node_id, "node-new")
+        self.assertEqual(result.routing_mode, RoutingMode.AUTO)
+        self.queue._release_slot.assert_awaited_once()
+        self.assertTrue(self.queue._release_slot.await_args.kwargs["clear_assigned_node"])
 
 
 if __name__ == "__main__":

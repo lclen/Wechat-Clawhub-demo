@@ -1,15 +1,17 @@
 export type RuntimeLogEntry = {
   id: string;
   title: string;
-  detail?: string;
-  content: string;
-  tone?: "human" | "typing" | "queued";
+  subtitle: string;
+  statusLabel: string;
+  statusTone: "human" | "typing" | "queued";
+  summary: string;
+  logText: string;
 };
 
 type RuntimeLogsPanelProps = {
   title: string;
   subtitle: string;
-  helperText?: string;
+  helperText: string;
   entries: RuntimeLogEntry[];
   onRefresh: () => void;
   refreshing: boolean;
@@ -24,39 +26,42 @@ export function RuntimeLogsPanel({
   refreshing,
 }: RuntimeLogsPanelProps) {
   return (
-    <details className="surface connection-ops-console" open>
-      <summary className="connection-ops-summary">
+    <section className="surface connection-runtime-console">
+      <div className="section-head">
         <div>
-          <div className="section-kicker">运行日志</div>
+          <div className="section-kicker">实时运行日志</div>
           <h3>{title}</h3>
           <div className="workspace-caption">{subtitle}</div>
         </div>
         <div className="inline-actions">
-          {helperText ? <span className="small-note">{helperText}</span> : null}
-          <button type="button" className="ghost-button" onClick={(event) => { event.preventDefault(); onRefresh(); }}>
-            {refreshing ? "刷新中..." : "刷新日志"}
+          <span className="small-note">{helperText}</span>
+          <button type="button" className="ghost-button" onClick={onRefresh}>
+            {refreshing ? "刷新中..." : "立即刷新"}
           </button>
         </div>
-      </summary>
+      </div>
 
       {!entries.length ? (
-        <div className="empty-state">当前还没有可展示的运行日志。</div>
+        <div className="empty-state">当前还没有可展示的运行日志；启动相关组件后会自动在这里刷新。</div>
       ) : (
         <div className="pairing-debug-list">
-          {entries.map((entry) => (
-            <article key={entry.id} className="pairing-debug-card">
-              <div className="pairing-debug-top">
-                <div>
-                  <div className="node-card-title">{entry.title}</div>
-                  {entry.detail ? <div className="node-card-subtitle">{entry.detail}</div> : null}
+          {entries.map((entry, index) => (
+            <details key={entry.id} className="pairing-debug-card pairing-debug-card-collapsible" open={index === 0}>
+              <summary className="pairing-debug-summary-row">
+                <div className="pairing-debug-top">
+                  <div>
+                    <div className="node-card-title">{entry.title}</div>
+                    <div className="node-card-subtitle">{entry.subtitle}</div>
+                  </div>
+                  <span className={`session-badge session-badge-${entry.statusTone}`}>{entry.statusLabel}</span>
                 </div>
-                <span className={`session-badge session-badge-${entry.tone || "typing"}`}>运行中</span>
-              </div>
-              <pre className="pairing-debug-log">{entry.content || "暂无详细日志"}</pre>
-            </article>
+                <div className="pairing-debug-summary">{entry.summary}</div>
+              </summary>
+              <pre className="pairing-debug-log">{entry.logText || "暂无日志内容"}</pre>
+            </details>
           ))}
         </div>
       )}
-    </details>
+    </section>
   );
 }

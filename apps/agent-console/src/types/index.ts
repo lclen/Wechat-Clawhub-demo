@@ -5,6 +5,7 @@ export type WeChatStatus = { configured: boolean; running: boolean; base_url: st
 export type SessionStatus = "bot_active" | "handoff_pending" | "human_active" | "closing";
 export type QueueStatus = "none" | "pending" | "inflight";
 export type RoutingMode = "auto" | "manual";
+export type SessionSwitchAction = "auto" | "manual";
 export type SessionRecord = { session_id: string; channel: string; user_id: string; agent_id: string; status: SessionStatus; assigned_node_id: string | null; assigned_slot_id: string | null; active_task_id: string | null; queue_status: QueueStatus; context_summary: string; context_version: number; routing_mode: RoutingMode; slot_bound_at: string | null; slot_expires_at: string | null; reply_context_token: string | null; handoff_ticket_id: string | null; claimed_by: string | null; message_count: number; last_message_at: string; last_dispatch_at: string | null; created_at: string; updated_at: string; version: number };
 export type MessageRecord = { message_id: string; session_id: string; channel: string; user_id: string; role: "user" | "bot" | "human" | "system"; content: string; created_at: string; actor_id: string | null; node_id: string | null; metadata: Record<string, string> };
 export type NodeRecord = { node_id: string; base_url: string; advertised_address: string | null; lan_ip: string | null; max_concurrency: number; current_load: number; status: string; last_heartbeat_at: string; updated_at: string; last_error: string | null; load_ratio: number; node_version: string | null; platform: string | null; hostname: string | null; capabilities: string[]; channel_capacity: number; channel_in_use: number };
@@ -18,7 +19,7 @@ export type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; conn
 export type NodeDiagnosticsResponse = { node_id: string; diagnostics: NodeDiagnosticsRecord };
 export type NodeDiagnosticsStreamEnvelope = { type: "diagnostics_snapshot"; node_id: string; diagnostics: NodeDiagnosticsRecord };
 export type SessionsResponse = { sessions: SessionRecord[] };
-export type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean };
+export type SessionMessagesResponse = { session: SessionRecord; messages: MessageRecord[]; next_cursor: number; replace_messages: boolean; history_start: number | null; has_more_before: boolean | null };
 export type SessionStreamEnvelope = SessionMessagesResponse & { type: "snapshot" | "messages_appended" };
 export type SessionOverviewEnvelope = { type: "sessions_snapshot"; sessions: SessionRecord[] };
 export type GatewaySummaryResponse = { system: SystemStatus; wechat: WeChatStatus; nodes: NodeListResponse };
@@ -31,9 +32,12 @@ export type SessionMessageCacheEntry = {
   session: SessionRecord | null;
   messages: MessageRecord[];
   cursor: number;
+  historyStart: number;
+  hasMoreBefore: boolean;
   loaded: boolean;
   lastLoadedAt: number;
 };
+export type SessionSwitchRequest = { action: SessionSwitchAction; node_id?: string; reason: string };
 export type SessionSwitchResponse = { ok: boolean; session: SessionRecord; detail: string };
 export type QrStart = { qrcode: string; qrcode_url: string };
 export type PollResponse = { status: string; token?: string; base_url?: string; message?: string; bot_id?: string; user_id?: string };
@@ -77,7 +81,7 @@ export type LocalNodeStatusResponse = { service_name: string; state: string; pid
 export type LocalNodeLogsResponse = { service_name: string; event_log_path: string | null; service_log_path: string | null; wrapper_log_path: string | null; event_log: string; service_log: string; wrapper_log: string };
 export type LocalNodeActionResponse = { ok: boolean; detail: string; status: LocalNodeStatusResponse };
 export type LocalNodeExportResponse = { ok: boolean; export_path: string; detail: string };
-export type WorkspaceTab = "quick_setup" | "sessions" | "connection";
+export type WorkspaceTab = "quick_setup" | "sessions" | "connection" | "logs";
 export type SessionFilter = "all" | "processing" | "human" | "recent";
 export type SetupMode = "status" | "role" | "config" | "preview" | "result";
 export type LauncherComponentName = "host-redis" | "gateway" | "local-node" | "node-cache-redis";
@@ -107,6 +111,7 @@ export type AppUiStateCache = {
 };
 
 export type AppSummaryStateCache = {
+  system_status: SystemStatus | null;
   wechat_status: WeChatStatus | null;
   node_list: NodeListResponse | null;
   sessions: SessionRecord[];
