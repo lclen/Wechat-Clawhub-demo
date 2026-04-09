@@ -81,6 +81,12 @@ def create_app() -> FastAPI:
             cache["expires_at"] = time.monotonic() + ttl_seconds
             return value.model_copy(deep=True) if hasattr(value, "model_copy") else value
 
+    def invalidate_cached_response(cache_name: str) -> None:
+        cache = getattr(app.state, cache_name, None)
+        if isinstance(cache, dict):
+            cache["value"] = None
+            cache["expires_at"] = 0.0
+
     async def restore_runtime_services() -> None:
         """Auto-restore services based on profile configuration."""
         import logging
@@ -457,6 +463,12 @@ def create_app() -> FastAPI:
                     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
             apply_state = _read_local_node_apply_state(apply_state_path)
             model_settings = _read_local_node_model_config(config_path)
+            response_model_settings = model_settings.model_copy(
+                update={
+                    "openai_api_key": "",
+                    "dify_api_key": "",
+                }
+            )
             node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
             status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
             runtime_state = str(diagnostics.get("current_state", "") or "").strip()
@@ -480,7 +492,7 @@ def create_app() -> FastAPI:
                 current_detail=status.detail,
             )
             diagnostics_runtime_state = str(diagnostics.get("current_state", "") or "").strip()
-            configured_model_provider = str(diagnostics.get("configured_model_provider", "") or "").strip() or (model_settings.model_provider or "auto")
+            configured_model_provider = (model_settings.model_provider or "").strip() or str(diagnostics.get("configured_model_provider", "") or "").strip() or "auto"
             active_model_provider = str(diagnostics.get("effective_model_provider", "") or "").strip() or configured_model_provider
             inference_ready = bool(diagnostics.get("inference_ready", False))
             inference_detail = str(diagnostics.get("inference_detail", "") or "").strip()
@@ -529,7 +541,7 @@ def create_app() -> FastAPI:
                 inference_ready=inference_ready,
                 inference_detail=inference_detail,
                 diagnostics=diagnostics,
-                model_settings=model_settings,
+                model_settings=response_model_settings,
             )
 
         return await load_cached_response(
@@ -576,6 +588,7 @@ def create_app() -> FastAPI:
             )
             raise
         _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
+        invalidate_cached_response("local_node_status_cache")
         status = await local_node_status()
         return LocalNodeActionResponse(detail="本机节点服务已执行重装/重启。", status=status)
 
@@ -707,6 +720,7 @@ def create_app() -> FastAPI:
             detail = "本机节点模型配置已保存，正在重启本机节点服务。"
         else:
             _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
+        invalidate_cached_response("local_node_status_cache")
         status = await local_node_status()
         return LocalNodeActionResponse(detail=detail, status=status)
 
@@ -931,7 +945,8 @@ def _validate_local_node_model_config(payload: LocalNodeModelConfigRequest) -> N
     if provider == "openai":
         if not payload.openai_base_url.strip():
             raise HTTPException(status_code=422, detail="当前 Provider 已切换为 OpenAI，请先填写 OpenAI Base URL。")
-        if not payload.openai_api_key.strip():
+        openai_key_available = bool(payload.openai_api_key.strip()) or bool(payload.preserve_openai_api_key and not payload.clear_openai_api_key)
+        if not openai_key_available:
             raise HTTPException(status_code=422, detail="当前 Provider 已切换为 OpenAI，请先填写 OpenAI API Key。")
         if not payload.openai_model.strip():
             raise HTTPException(status_code=422, detail="当前 Provider 已切换为 OpenAI，请先填写 OpenAI Model。")
@@ -940,7 +955,8 @@ def _validate_local_node_model_config(payload: LocalNodeModelConfigRequest) -> N
         return
     if not payload.dify_base_url.strip():
         raise HTTPException(status_code=422, detail="当前 Provider 已切换为 Dify，请先填写 Dify Base URL。")
-    if not payload.dify_api_key.strip():
+    dify_key_available = bool(payload.dify_api_key.strip()) or bool(payload.preserve_dify_api_key and not payload.clear_dify_api_key)
+    if not dify_key_available:
         raise HTTPException(status_code=422, detail="当前 Provider 已切换为 Dify，请先填写 Dify API Key。")
 
 
@@ -1021,7 +1037,12 @@ def _update_local_node_model_config(path: Path, payload: LocalNodeModelConfigReq
     values = _read_env_file(path)
     values["CLAW_MODEL_PROVIDER"] = (payload.model_provider or "auto").strip() or "auto"
     values["CLAW_OPENAI_BASE_URL"] = payload.openai_base_url.strip()
-    values["CLAW_OPENAI_API_KEY"] = payload.openai_api_key.strip()
+    if payload.clear_openai_api_key:
+        values["CLAW_OPENAI_API_KEY"] = ""
+    elif payload.openai_api_key.strip():
+        values["CLAW_OPENAI_API_KEY"] = payload.openai_api_key.strip()
+    elif not payload.preserve_openai_api_key:
+        values["CLAW_OPENAI_API_KEY"] = ""
     values["CLAW_OPENAI_MODEL"] = payload.openai_model.strip()
     values["CLAW_OPENAI_ENABLE_THINKING"] = "true" if payload.openai_enable_thinking else "false"
     values["CLAW_OPENAI_TEMPERATURE"] = str(payload.openai_temperature)
@@ -1036,7 +1057,12 @@ def _update_local_node_model_config(path: Path, payload: LocalNodeModelConfigReq
     values["CLAW_OPENAI_ENABLE_SEARCH_EXTENSION"] = "true" if payload.openai_enable_search_extension else "false"
     values["CLAW_OPENAI_MULTIMODAL_ENABLED"] = "true" if payload.openai_multimodal_enabled else "false"
     values["CLAW_DIFY_BASE_URL"] = payload.dify_base_url.strip()
-    values["CLAW_DIFY_API_KEY"] = payload.dify_api_key.strip()
+    if payload.clear_dify_api_key:
+        values["CLAW_DIFY_API_KEY"] = ""
+    elif payload.dify_api_key.strip():
+        values["CLAW_DIFY_API_KEY"] = payload.dify_api_key.strip()
+    elif not payload.preserve_dify_api_key:
+        values["CLAW_DIFY_API_KEY"] = ""
     _write_env_file(path, values)
 
 

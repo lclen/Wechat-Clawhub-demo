@@ -353,8 +353,12 @@ class ProcessManager:
     def _resolved_local_node_spec(self, profile: LauncherProfile) -> dict[str, Any]:
         runtime_model = derive_runtime_model(profile)
         if runtime_model.machine_role == LauncherMachineRole.NODE and not runtime_model.gateway_should_run:
+            node_id = profile.local_node_id.strip() or "claw-node-1"
+            # `local-node` is reserved for gateway-hosted builtin nodes only.
+            if node_id == "local-node":
+                node_id = "claw-node-1"
             return {
-                "node_id": profile.local_node_id.strip() or "claw-node-1",
+                "node_id": node_id,
                 "node_kind": "remote",
                 "gateway_base_url": profile.gateway_base_url.strip(),
                 "local_direct_auth": False,

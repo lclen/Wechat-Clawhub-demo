@@ -298,9 +298,14 @@ function Remove-FirewallRuleIfExists([string]$DisplayName) {
     if (-not $getRule) {
         return
     }
-    $existing = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
-    if ($existing) {
-        $existing | Remove-NetFirewallRule | Out-Null
+    try {
+        $existing = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
+        if ($existing) {
+            $existing | Remove-NetFirewallRule -ErrorAction Stop | Out-Null
+        }
+    }
+    catch {
+        Write-Step "Skipping firewall rule removal '$DisplayName': $($_.Exception.Message)"
     }
 }
 
@@ -316,20 +321,26 @@ function Ensure-FirewallPortRule(
         Write-Step "NetSecurity module unavailable; skipping firewall rule '$DisplayName'"
         return
     }
-    $existing = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
-    if ($existing) {
-        $existing | Remove-NetFirewallRule | Out-Null
+    try {
+        $existing = Get-NetFirewallRule -DisplayName $DisplayName -ErrorAction SilentlyContinue
+        if ($existing) {
+            $existing | Remove-NetFirewallRule -ErrorAction Stop | Out-Null
+        }
+        New-NetFirewallRule `
+            -DisplayName $DisplayName `
+            -Direction Inbound `
+            -Action Allow `
+            -Enabled True `
+            -Profile Any `
+            -Protocol $Protocol `
+            -LocalPort $Port `
+            -Description $Description `
+            -ErrorAction Stop | Out-Null
+        Write-Step "Firewall rule ready: $DisplayName ($Protocol/$Port)"
     }
-    New-NetFirewallRule `
-        -DisplayName $DisplayName `
-        -Direction Inbound `
-        -Action Allow `
-        -Enabled True `
-        -Profile Any `
-        -Protocol $Protocol `
-        -LocalPort $Port `
-        -Description $Description | Out-Null
-    Write-Step "Firewall rule ready: $DisplayName ($Protocol/$Port)"
+    catch {
+        Write-Step "Skipping firewall rule '$DisplayName' ($Protocol/$Port): $($_.Exception.Message)"
+    }
 }
 
 function Sync-NodeFirewallRules([string]$NodeId, [bool]$DiscoveryEnabled, [int]$DiscoveryPort) {
@@ -510,6 +521,10 @@ $ReuseVenv = (
 )
 if (-not $ReuseVenv) {
     Write-Step "Preparing Python virtual environment"
+    if (Test-Path -LiteralPath $VenvDir) {
+        Write-Step "Removing stale virtual environment before rebuild: $VenvDir"
+        Remove-Item -LiteralPath $VenvDir -Recurse -Force
+    }
     & python -m venv $VenvDir
 }
 else {

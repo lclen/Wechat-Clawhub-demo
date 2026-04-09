@@ -347,10 +347,10 @@ export function App() {
   const pendingHistoryRestoreRef = useRef<{ sessionId: string; scrollHeight: number; scrollTop: number } | null>(null);
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
   const nodeDiagnosticsCacheRef = useRef<Map<string, NodeDiagnosticsRecord>>(new Map());
-  const effectiveRole = resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? []);
+  const runtimeMachineRole = launcherMachineRoleValue(launcherStatus);
+  const effectiveRole = resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? [], runtimeMachineRole);
   const currentRoleIsWorker = isWorkerRole(effectiveRole);
   const currentRoleIsConsole = isConsoleRole(effectiveRole);
-  const runtimeMachineRole = launcherMachineRoleValue(launcherStatus);
   const localGatewayManaged = launcherAvailable ? launcherShouldRunGateway(launcherStatus) : null;
   const shouldUseLocalGatewayApi = shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
   const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
@@ -882,10 +882,19 @@ export function App() {
   const typingState = getTypingState(selectedSession, now);
   const channelReleaseHint = getChannelReleaseHint(selectedSession, now);
   const availableDispatchNodes = useMemo(() => countAvailableDispatchNodes(nodes, gatewaySetup.dispatch_mode_enabled), [nodes, gatewaySetup.dispatch_mode_enabled]);
-  const setupCompletedRoles = useMemo(() => new Set(setupProfile?.completed_roles ?? []), [setupProfile]);
+  const setupCompletedRoles = useMemo(
+    () => new Set((setupProfile?.completed_roles?.length ? setupProfile.completed_roles : (effectiveRole ? [effectiveRole] : []))),
+    [effectiveRole, setupProfile],
+  );
   const currentRoleDisplay = useMemo(
-    () => setupRole ? roleName(setupRole) : (setupProfile?.completed_roles.length ? setupProfile.completed_roles.map(roleName).join(" / ") : "未选择"),
-    [setupProfile?.completed_roles, setupRole],
+    () => setupRole
+      ? roleName(setupRole)
+      : (setupProfile?.completed_roles.length
+          ? setupProfile.completed_roles.map(roleName).join(" / ")
+          : effectiveRole
+            ? roleName(effectiveRole)
+            : "未选择"),
+    [effectiveRole, setupProfile?.completed_roles, setupRole],
   );
   useEffect(() => {
     if (!selectedSession) {
@@ -1741,6 +1750,7 @@ export function App() {
             launcherGatewayManaged={launcherShouldRunGateway(launcherStatus)}
             localNodeStatus={localNodeStatus}
             localNodeModelDraft={localNodeModelDraft}
+            localNodeModelDirty={localNodeModelDirty}
             workerGatewayConnection={workerGatewayConnection}
             localNodeRuntimeSummary={localNodeRuntimeSummary}
             connectionHeroCards={connectionHeroCards}

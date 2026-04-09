@@ -94,6 +94,8 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     model_provider="openai",
                     openai_base_url="https://new.example.com/v1",
                     openai_api_key="new-openai-key",
+                    preserve_openai_api_key=False,
+                    clear_openai_api_key=False,
                     openai_model="new-model",
                     openai_enable_thinking=True,
                     openai_temperature=0.7,
@@ -109,6 +111,8 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     openai_multimodal_enabled=True,
                     dify_base_url="https://new-dify.example.com/v1",
                     dify_api_key="new-dify-key",
+                    preserve_dify_api_key=False,
+                    clear_dify_api_key=False,
                     restart_service=False,
                 ),
             )
@@ -153,6 +157,8 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     model_provider="auto",
                     openai_base_url="",
                     openai_api_key="",
+                    preserve_openai_api_key=False,
+                    clear_openai_api_key=False,
                     openai_model="",
                     openai_enable_thinking=False,
                     openai_temperature=0.3,
@@ -168,6 +174,8 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     openai_multimodal_enabled=True,
                     dify_base_url="",
                     dify_api_key="",
+                    preserve_dify_api_key=False,
+                    clear_dify_api_key=False,
                     restart_service=False,
                 ),
             )
@@ -183,6 +191,8 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     model_provider="dify",
                     dify_base_url="",
                     dify_api_key="",
+                    preserve_dify_api_key=False,
+                    clear_dify_api_key=False,
                     restart_service=True,
                 )
             )
@@ -197,6 +207,8 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     model_provider="openai",
                     openai_base_url="",
                     openai_api_key="",
+                    preserve_openai_api_key=False,
+                    clear_openai_api_key=False,
                     openai_model="",
                     restart_service=True,
                 )
@@ -224,6 +236,42 @@ class LocalNodeModelConfigTests(unittest.TestCase):
             self.assertEqual(stored["config_apply_state"], "failed")
             self.assertEqual(stored["last_apply_error"], "restart exploded")
             self.assertTrue(stored["last_apply_at"])
+
+    def test_update_local_node_model_config_preserves_existing_keys(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / "node.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "CLAW_MODEL_PROVIDER=openai",
+                        "CLAW_OPENAI_API_KEY=existing-openai-key",
+                        "CLAW_DIFY_API_KEY=existing-dify-key",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            _update_local_node_model_config(
+                env_path,
+                LocalNodeModelConfigRequest(
+                    model_provider="openai",
+                    openai_base_url="https://new.example.com/v1",
+                    openai_api_key="",
+                    preserve_openai_api_key=True,
+                    clear_openai_api_key=False,
+                    openai_model="new-model",
+                    dify_base_url="https://dify.example.com/v1",
+                    dify_api_key="",
+                    preserve_dify_api_key=True,
+                    clear_dify_api_key=False,
+                    restart_service=False,
+                ),
+            )
+
+            updated = env_path.read_text(encoding="utf-8")
+            self.assertIn("CLAW_OPENAI_API_KEY=existing-openai-key", updated)
+            self.assertIn("CLAW_DIFY_API_KEY=existing-dify-key", updated)
 
 
 if __name__ == "__main__":

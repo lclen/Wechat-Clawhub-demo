@@ -4,6 +4,7 @@ import { InfoRow, SnippetBlock, ToggleSecretInput } from "./ConnectionUi";
 type NodeModelConfigPanelProps = {
   launcherAvailable: boolean;
   busyKey: string | null;
+  dirty: boolean;
   status: LocalNodeStatusResponse | null;
   runtimeSummary: { label: string; detail: string };
   gatewayControl?: {
@@ -25,6 +26,7 @@ type NodeModelConfigPanelProps = {
 export function NodeModelConfigPanel({
   launcherAvailable,
   busyKey,
+  dirty,
   status,
   runtimeSummary,
   gatewayControl,
@@ -63,7 +65,9 @@ export function NodeModelConfigPanel({
         ? "正在重启节点..."
         : applyJustSucceeded
           ? "已应用"
-          : "保存并应用";
+          : dirty
+            ? "保存并应用"
+            : "重新应用配置";
   const applyStateLabel =
     applyState === "saving"
       ? "正在保存"
@@ -74,6 +78,17 @@ export function NodeModelConfigPanel({
           : applyState === "failed"
             ? "应用失败"
             : "空闲";
+  const selectedProvider = draft.model_provider === "openai" || draft.model_provider === "dify" ? draft.model_provider : "auto";
+  const providerHeadline =
+    selectedProvider === "openai"
+      ? "OpenAI 兼容接口"
+      : selectedProvider === "dify"
+        ? "Dify 工作流"
+        : "自动选择已完整配置的 Provider";
+  const openaiKeyConfigured = Boolean(status?.model_settings?.openai_api_key_configured);
+  const difyKeyConfigured = Boolean(status?.model_settings?.dify_api_key_configured);
+  const openaiKeyMode = draft.clear_openai_api_key ? "clear" : draft.openai_api_key.trim() ? "replace" : draft.preserve_openai_api_key ? "keep" : "missing";
+  const difyKeyMode = draft.clear_dify_api_key ? "clear" : draft.dify_api_key.trim() ? "replace" : draft.preserve_dify_api_key ? "keep" : "missing";
 
   return (
     <section className="surface">
@@ -90,12 +105,7 @@ export function NodeModelConfigPanel({
         </div>
         <div className="inline-actions">
           {gatewayControl ? (
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={gatewayControl.onRestart}
-              disabled={gatewayControl.disabled}
-            >
+            <button type="button" className="ghost-button" onClick={gatewayControl.onRestart} disabled={gatewayControl.disabled}>
               {gatewayControl.busy ? "网关重启中..." : "重启网关"}
             </button>
           ) : null}
@@ -108,20 +118,20 @@ export function NodeModelConfigPanel({
           <button type="button" className="ghost-button" onClick={onExport} disabled={busyKey !== null}>
             {busyKey === "local-node-export" ? "导出中..." : "导出诊断包"}
           </button>
-          <button type="button" className="ghost-button" onClick={onSave} disabled={busyKey !== null || applyBusy}>
+          <button type="button" onClick={onSave} disabled={busyKey !== null || applyBusy}>
             {saveButtonLabel}
           </button>
         </div>
       </div>
 
       <div className="inline-tip">
-        这里展示的是网关当前机器自带的内置节点，不是局域网中其它远端工作节点。模型配置以节点自己的 `node.env` 为准，保存后会在后台重启节点。
+        配置会写入节点自己的 <code>node.env</code>。密钥改成了显式的保留 / 替换 / 清空语义，留空不再默认为清空。
       </div>
 
       <div className="connection-fact-grid connection-fact-grid-wide">
         <div className="connection-fact-tile">
           <span>节点身份</span>
-          <strong>{status?.node_kind === "local" ? "网关内置节点" : "未读取"}</strong>
+          <strong>{status?.node_kind === "local" ? "网关内置节点" : "当前工作节点"}</strong>
         </div>
         <div className="connection-fact-tile">
           <span>服务状态</span>
@@ -132,20 +142,16 @@ export function NodeModelConfigPanel({
           <strong>{runtimeSummary.label}</strong>
         </div>
         <div className="connection-fact-tile">
-          <span>配置中的 Provider</span>
-          <strong>{status?.configured_model_provider || status?.model_settings?.model_provider || "未读取"}</strong>
-        </div>
-        <div className="connection-fact-tile">
-          <span>当前生效 Provider</span>
-          <strong>{status?.active_model_provider || "未读取"}</strong>
+          <span>当前 Provider</span>
+          <strong>{status?.active_model_provider || status?.configured_model_provider || "未读取"}</strong>
         </div>
         <div className="connection-fact-tile">
           <span>OpenAI Key</span>
-          <strong>{status?.model_settings?.openai_api_key_configured ? "已配置" : "未配置"}</strong>
+          <strong>{openaiKeyConfigured ? "已保存" : "未保存"}</strong>
         </div>
         <div className="connection-fact-tile">
           <span>Dify Key</span>
-          <strong>{status?.model_settings?.dify_api_key_configured ? "已配置" : "未配置"}</strong>
+          <strong>{difyKeyConfigured ? "已保存" : "未保存"}</strong>
         </div>
         <div className="connection-fact-tile">
           <span>配置应用状态</span>
@@ -155,63 +161,111 @@ export function NodeModelConfigPanel({
           <span>推理后端</span>
           <strong>{status?.inference_ready ? "已就绪" : "未就绪"}</strong>
         </div>
-      </div>
-
-      <details className="form-advanced-details connection-fold-card">
-        <summary>
-          <span className="section-kicker">运行时详情</span>
-          <span className="connection-fold-hint">服务路径、注册时间与诊断状态</span>
-        </summary>
-        <div className="info-stack connection-inline-info">
-          <InfoRow label="服务名" value={status?.service_name || "未读取"} multiline />
-          <InfoRow label="配置文件" value={status?.config_path || "未读取"} multiline />
-          <InfoRow label="诊断文件" value={status?.diagnostics_path || "未读取"} multiline />
-          <InfoRow label="运行详情" value={runtimeSummary.detail || status?.detail || "未读取"} multiline />
-          <InfoRow label="本地状态机" value={status?.runtime_state || String(status?.diagnostics?.current_state || "未记录")} multiline />
-          <InfoRow label="当前生效 Provider" value={status?.active_model_provider || "未读取"} multiline />
-          <InfoRow label="推理后端状态" value={status?.inference_ready ? "已就绪" : "未就绪"} />
-          <InfoRow label="推理后端说明" value={status?.inference_detail || "暂无"} multiline />
-          <InfoRow label="最近注册结果" value={status?.last_register_result || "暂无"} multiline />
-          <InfoRow label="最近注册时间" value={status?.last_register_at || "暂无"} />
-          <InfoRow label="最近应用时间" value={status?.last_apply_at || "暂无"} />
-          <InfoRow label="最近应用错误" value={status?.last_apply_error || "无"} multiline />
-        </div>
-      </details>
-
-      <div className="connection-panel-subhead">
-        <div>
-          <div className="section-kicker">基础参数</div>
-          <h4>保持常用项可见，高级项折叠</h4>
+        <div className="connection-fact-tile">
+          <span>待保存变更</span>
+          <strong>{dirty ? "有变更待提交" : "当前没有草稿差异"}</strong>
         </div>
       </div>
 
-      <div className="connection-form-grid">
-        <label>
-          <span>模型提供方</span>
-          <select value={draft.model_provider} onChange={(event) => onChange("model_provider", event.target.value)}>
-            <option value="auto">auto</option>
-            <option value="openai">openai</option>
-            <option value="dify">dify</option>
-          </select>
-        </label>
-        <label>
-          <span>OpenAI Base URL</span>
-          <input value={draft.openai_base_url} onChange={(event) => onChange("openai_base_url", event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" />
-        </label>
-        <label>
-          <span>OpenAI Model</span>
-          <input value={draft.openai_model} onChange={(event) => onChange("openai_model", event.target.value)} placeholder="qwen3.5-plus" />
-        </label>
-        <label>
-          <span>Dify Base URL</span>
-          <input value={draft.dify_base_url} onChange={(event) => onChange("dify_base_url", event.target.value)} placeholder="https://api.dify.ai/v1" />
-        </label>
+      <div className="node-model-shell">
+        <div className="node-model-primary-card">
+          <div className="section-kicker">Primary Config</div>
+          <h4>先决定当前节点走哪条推理链路</h4>
+          <p className="node-model-copy">
+            {providerHeadline}
+          </p>
+          <div className="node-provider-toggle">
+            {(["auto", "openai", "dify"] as const).map((provider) => (
+              <button
+                key={provider}
+                type="button"
+                className={`node-provider-chip ${draft.model_provider === provider ? "node-provider-chip-active" : ""}`}
+                onClick={() => onChange("model_provider", provider)}
+              >
+                {provider === "auto" ? "自动" : provider === "openai" ? "OpenAI" : "Dify"}
+              </button>
+            ))}
+          </div>
+          <div className="connection-form-grid">
+            <label>
+              <span>OpenAI Base URL</span>
+              <input
+                value={draft.openai_base_url}
+                onChange={(event) => onChange("openai_base_url", event.target.value)}
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+              />
+            </label>
+            <label>
+              <span>OpenAI Model</span>
+              <input
+                value={draft.openai_model}
+                onChange={(event) => onChange("openai_model", event.target.value)}
+                placeholder="qwen-plus / gpt-4o-mini / deepseek-chat"
+              />
+            </label>
+            <label className="connection-full-span">
+              <span>Dify Base URL</span>
+              <input
+                value={draft.dify_base_url}
+                onChange={(event) => onChange("dify_base_url", event.target.value)}
+                placeholder="https://api.dify.ai/v1"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="node-model-secret-grid">
+          <SecretCard
+            title="OpenAI Key"
+            subtitle={openaiKeyConfigured ? "当前节点已保存密钥，留空可以继续沿用。" : "当前节点还没有保存密钥。"}
+            status={openaiKeyMode}
+            value={draft.openai_api_key}
+            configured={openaiKeyConfigured}
+            preserve={draft.preserve_openai_api_key}
+            clear={draft.clear_openai_api_key}
+            placeholder={openaiKeyConfigured ? "输入新 Key 才会替换现有值" : "输入 OpenAI 兼容 API Key"}
+            onValueChange={(value) => onChange("openai_api_key", value)}
+            onPreserveChange={(checked) => {
+              onChange("preserve_openai_api_key", checked);
+              if (checked) onChange("clear_openai_api_key", false);
+            }}
+            onClearChange={(checked) => {
+              onChange("clear_openai_api_key", checked);
+              if (checked) {
+                onChange("preserve_openai_api_key", false);
+                onChange("openai_api_key", "");
+              }
+            }}
+          />
+          <SecretCard
+            title="Dify Key"
+            subtitle={difyKeyConfigured ? "当前节点已保存密钥，只有输入新值时才会替换。" : "当前节点还没有保存 Dify Key。"}
+            status={difyKeyMode}
+            value={draft.dify_api_key}
+            configured={difyKeyConfigured}
+            preserve={draft.preserve_dify_api_key}
+            clear={draft.clear_dify_api_key}
+            placeholder={difyKeyConfigured ? "输入新 Key 才会替换现有值" : "输入 Dify API Key"}
+            onValueChange={(value) => onChange("dify_api_key", value)}
+            onPreserveChange={(checked) => {
+              onChange("preserve_dify_api_key", checked);
+              if (checked) onChange("clear_dify_api_key", false);
+            }}
+            onClearChange={(checked) => {
+              onChange("clear_dify_api_key", checked);
+              if (checked) {
+                onChange("preserve_dify_api_key", false);
+                onChange("dify_api_key", "");
+              }
+            }}
+          />
+        </div>
       </div>
 
       <details className="form-advanced-details connection-fold-card">
         <summary>
           <span className="section-kicker">高级模型参数</span>
-          <span className="connection-fold-hint">展开管理温度、搜索与密钥</span>
+          <span className="connection-fold-hint">温度、搜索、thinking、多模态与 stop sequences</span>
         </summary>
         <div className="connection-form-grid">
           <label>
@@ -242,14 +296,6 @@ export function NodeModelConfigPanel({
               <option value="agent">agent</option>
               <option value="agent_max">agent_max</option>
             </select>
-          </label>
-          <label>
-            <span>OpenAI API Key</span>
-            <ToggleSecretInput value={draft.openai_api_key} onChange={(event) => onChange("openai_api_key", event.target.value)} placeholder={status?.model_settings?.openai_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
-          </label>
-          <label>
-            <span>Dify API Key</span>
-            <ToggleSecretInput value={draft.dify_api_key} onChange={(event) => onChange("dify_api_key", event.target.value)} placeholder={status?.model_settings?.dify_api_key_configured ? "留空表示继续使用当前 Key" : "输入新的 API Key"} autoComplete="new-password" />
           </label>
           <label className="connection-full-span">
             <span>Stop Sequences（每行一个，或 JSON 数组）</span>
@@ -284,7 +330,98 @@ export function NodeModelConfigPanel({
         </div>
       </details>
 
+      <details className="form-advanced-details connection-fold-card">
+        <summary>
+          <span className="section-kicker">运行时详情</span>
+          <span className="connection-fold-hint">服务路径、注册时间与诊断状态</span>
+        </summary>
+        <div className="info-stack connection-inline-info">
+          <InfoRow label="服务名" value={status?.service_name || "未读取"} multiline />
+          <InfoRow label="配置文件" value={status?.config_path || "未读取"} multiline />
+          <InfoRow label="诊断文件" value={status?.diagnostics_path || "未读取"} multiline />
+          <InfoRow label="运行详情" value={runtimeSummary.detail || status?.detail || "未读取"} multiline />
+          <InfoRow label="本地状态机" value={status?.runtime_state || String(status?.diagnostics?.current_state || "未记录")} multiline />
+          <InfoRow label="当前生效 Provider" value={status?.active_model_provider || "未读取"} multiline />
+          <InfoRow label="推理后端状态" value={status?.inference_ready ? "已就绪" : "未就绪"} />
+          <InfoRow label="推理后端说明" value={status?.inference_detail || "暂无"} multiline />
+          <InfoRow label="最近注册结果" value={status?.last_register_result || "暂无"} multiline />
+          <InfoRow label="最近注册时间" value={status?.last_register_at || "暂无"} />
+          <InfoRow label="最近应用时间" value={status?.last_apply_at || "暂无"} />
+          <InfoRow label="最近应用错误" value={status?.last_apply_error || "无"} multiline />
+        </div>
+      </details>
+
       {eventPreview ? <SnippetBlock label="本机节点事件日志" content={eventPreview} /> : null}
+    </section>
+  );
+}
+
+type SecretCardProps = {
+  title: string;
+  subtitle: string;
+  status: "keep" | "replace" | "clear" | "missing";
+  value: string;
+  configured: boolean;
+  preserve: boolean;
+  clear: boolean;
+  placeholder: string;
+  onValueChange: (value: string) => void;
+  onPreserveChange: (checked: boolean) => void;
+  onClearChange: (checked: boolean) => void;
+};
+
+function SecretCard({
+  title,
+  subtitle,
+  status,
+  value,
+  configured,
+  preserve,
+  clear,
+  placeholder,
+  onValueChange,
+  onPreserveChange,
+  onClearChange,
+}: SecretCardProps) {
+  const statusLabel =
+    status === "replace"
+      ? "将替换"
+      : status === "clear"
+        ? "将清空"
+        : status === "keep"
+          ? "将保留"
+          : configured
+            ? "待确认"
+            : "未提供";
+
+  return (
+    <section className="node-secret-card">
+      <div className="node-secret-head">
+        <div>
+          <div className="section-kicker">Credential</div>
+          <h4>{title}</h4>
+        </div>
+        <span className={`node-secret-badge node-secret-badge-${status}`}>{statusLabel}</span>
+      </div>
+      <p className="node-model-copy">{subtitle}</p>
+      <ToggleSecretInput
+        value={value}
+        onChange={(event) => onValueChange(event.target.value)}
+        placeholder={placeholder}
+        autoComplete="new-password"
+      />
+      {configured ? (
+        <div className="connection-checkbox-grid node-secret-options">
+          <label className="checkbox-row">
+            <input type="checkbox" checked={preserve && !clear} onChange={(event) => onPreserveChange(event.target.checked)} />
+            <span>保留当前已保存的 Key</span>
+          </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={clear} onChange={(event) => onClearChange(event.target.checked)} />
+            <span>保存时清空这个 Key</span>
+          </label>
+        </div>
+      ) : null}
     </section>
   );
 }

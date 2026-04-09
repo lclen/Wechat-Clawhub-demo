@@ -63,6 +63,8 @@ export const DEFAULT_LOCAL_NODE_MODEL_CONFIG: LocalNodeModelConfigRequest = {
   model_provider: "auto",
   openai_base_url: "",
   openai_api_key: "",
+  preserve_openai_api_key: false,
+  clear_openai_api_key: false,
   openai_model: "",
   openai_enable_thinking: false,
   openai_temperature: 0.3,
@@ -78,6 +80,8 @@ export const DEFAULT_LOCAL_NODE_MODEL_CONFIG: LocalNodeModelConfigRequest = {
   openai_multimodal_enabled: true,
   dify_base_url: "",
   dify_api_key: "",
+  preserve_dify_api_key: false,
+  clear_dify_api_key: false,
   restart_service: true,
 };
 

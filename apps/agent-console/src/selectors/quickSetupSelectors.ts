@@ -9,12 +9,20 @@ import type {
   WorkerNodeSetupConfig,
 } from "../types";
 
-export function resolveEffectiveRole(currentRole: SetupRole | null, completedRoles: SetupRole[]): SetupRole | null {
+export function resolveEffectiveRole(
+  currentRole: SetupRole | null,
+  completedRoles: SetupRole[],
+  runtimeMachineRole?: LauncherMachineRole | null,
+): SetupRole | null {
   if (currentRole) return currentRole;
   if (completedRoles.includes("gateway_host_console")) return "gateway_host_console";
   if (completedRoles.includes("gateway_host")) return "gateway_host";
   if (completedRoles.includes("worker_node")) return "worker_node";
   if (completedRoles.includes("console_only")) return "console_only";
+  if (runtimeMachineRole === "gateway_console") return "gateway_host_console";
+  if (runtimeMachineRole === "gateway") return "gateway_host";
+  if (runtimeMachineRole === "node") return "worker_node";
+  if (runtimeMachineRole === "console") return "console_only";
   return null;
 }
 
@@ -116,7 +124,11 @@ export function launcherRoleUsesLocalNode(machineRole: LauncherMachineRole) {
 }
 
 export function resolveWorkerNodeId(currentValue: string, launcherProfile?: LauncherProfile | null) {
-  return currentValue.trim() || launcherProfile?.local_node_id || "local-node";
+  const candidate = currentValue.trim() || launcherProfile?.local_node_id || "";
+  if (candidate && candidate !== "local-node") {
+    return candidate;
+  }
+  return launcherProfile?.enable_gateway === false ? "claw-node-1" : "local-node";
 }
 
 export function resolveWorkerGatewayBaseUrl(

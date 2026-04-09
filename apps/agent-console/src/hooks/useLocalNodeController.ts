@@ -122,7 +122,22 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
 
   const updateLocalNodeModelDraft = useCallback(<K extends keyof LocalNodeModelConfigRequest>(key: K, value: LocalNodeModelConfigRequest[K]) => {
     setLocalNodeModelDirty(true);
-    setLocalNodeModelDraft((current) => ({ ...current, [key]: value }));
+    setLocalNodeModelDraft((current) => {
+      const next = { ...current, [key]: value };
+
+      if (key === "openai_api_key") {
+        const hasNewValue = String(value).trim().length > 0;
+        next.preserve_openai_api_key = !hasNewValue && current.preserve_openai_api_key;
+        next.clear_openai_api_key = false;
+      }
+      if (key === "dify_api_key") {
+        const hasNewValue = String(value).trim().length > 0;
+        next.preserve_dify_api_key = !hasNewValue && current.preserve_dify_api_key;
+        next.clear_dify_api_key = false;
+      }
+
+      return next;
+    });
   }, [setLocalNodeModelDirty, setLocalNodeModelDraft]);
 
   const saveLocalNodeModelConfig = useCallback(async () => {
@@ -131,7 +146,10 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
         setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Base URL。");
         return;
       }
-      if (!localNodeModelDraft.openai_api_key.trim()) {
+      const openaiKeyAvailable =
+        localNodeModelDraft.openai_api_key.trim()
+        || (localNodeModelDraft.preserve_openai_api_key && !localNodeModelDraft.clear_openai_api_key);
+      if (!openaiKeyAvailable) {
         setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI API Key。");
         return;
       }
@@ -145,7 +163,10 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
         setNotice("当前 Provider 已切换为 Dify，请先填写 Dify Base URL。");
         return;
       }
-      if (!localNodeModelDraft.dify_api_key.trim()) {
+      const difyKeyAvailable =
+        localNodeModelDraft.dify_api_key.trim()
+        || (localNodeModelDraft.preserve_dify_api_key && !localNodeModelDraft.clear_dify_api_key);
+      if (!difyKeyAvailable) {
         setNotice("当前 Provider 已切换为 Dify，请先填写 Dify API Key。");
         return;
       }

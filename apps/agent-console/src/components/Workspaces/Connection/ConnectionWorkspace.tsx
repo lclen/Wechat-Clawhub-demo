@@ -93,6 +93,7 @@ type ConnectionWorkspaceProps = {
   launcherGatewayManaged: boolean;
   localNodeStatus: LocalNodeStatusResponse | null;
   localNodeModelDraft: LocalNodeModelConfigRequest;
+  localNodeModelDirty: boolean;
   workerGatewayConnection: WorkerGatewayConnectionView;
   localNodeRuntimeSummary: { label: string; detail: string };
   connectionHeroCards: ConnectionHeroCardData[];
@@ -311,6 +312,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
             <NodeModelConfigPanel
               launcherAvailable={props.launcherAvailable}
               busyKey={props.busyKey}
+              dirty={props.localNodeModelDirty}
               status={props.localNodeStatus}
               runtimeSummary={props.localNodeRuntimeSummary}
               gatewayControl={{
@@ -441,6 +443,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
               <NodeModelConfigPanel
                 launcherAvailable={props.launcherAvailable}
                 busyKey={props.busyKey}
+                dirty={props.localNodeModelDirty}
                 status={props.localNodeStatus}
                 runtimeSummary={props.localNodeRuntimeSummary}
                 gatewayControl={null}

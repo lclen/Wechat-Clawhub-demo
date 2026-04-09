@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 from launcher.models import (
     LauncherMachineRole,
@@ -10,6 +11,7 @@ from launcher.models import (
     derive_runtime_model,
     StartRequest,
 )
+from launcher.process_manager import ProcessManager
 
 
 class LauncherRuntimeModelTests(unittest.TestCase):
@@ -45,6 +47,36 @@ class LauncherRuntimeModelTests(unittest.TestCase):
         self.assertTrue(profile.enable_local_node)
         self.assertTrue(runtime.gateway_should_run)
         self.assertFalse(runtime.local_node_should_run)
+
+    def test_node_role_keeps_worker_machine_role_when_gateway_disabled(self) -> None:
+        profile = apply_machine_role(LauncherProfile(), LauncherMachineRole.NODE)
+
+        runtime = derive_runtime_model(profile)
+
+        self.assertFalse(profile.enable_gateway)
+        self.assertTrue(profile.enable_local_node)
+        self.assertEqual(runtime.machine_role, LauncherMachineRole.NODE)
+        self.assertFalse(runtime.gateway_should_run)
+        self.assertTrue(runtime.local_node_should_run)
+
+    def test_console_role_disables_local_node_runtime(self) -> None:
+        profile = apply_machine_role(LauncherProfile(), LauncherMachineRole.CONSOLE)
+
+        runtime = derive_runtime_model(profile)
+
+        self.assertFalse(profile.enable_gateway)
+        self.assertFalse(profile.enable_local_node)
+        self.assertEqual(runtime.machine_role, LauncherMachineRole.CONSOLE)
+        self.assertFalse(runtime.gateway_should_run)
+        self.assertFalse(runtime.local_node_should_run)
+
+    def test_node_role_never_reuses_reserved_local_node_id(self) -> None:
+        profile = apply_machine_role(LauncherProfile(local_node_id="local-node"), LauncherMachineRole.NODE)
+
+        node_spec = ProcessManager(Path("D:/wechat-clawhub"))._resolved_local_node_spec(profile)
+
+        self.assertEqual(node_spec["node_kind"], "remote")
+        self.assertEqual(node_spec["node_id"], "claw-node-1")
 
 
 if __name__ == "__main__":
