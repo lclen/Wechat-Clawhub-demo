@@ -27,6 +27,18 @@ class GatewaySetupConfig(BaseModel):
     builtin_model_base_url: str = ""
     builtin_model_api_key: str = ""
     builtin_model_name: str = ""
+    builtin_model_enable_thinking: bool = False
+    builtin_model_temperature: float = 0.3
+    builtin_model_top_p: float = 1.0
+    builtin_model_max_tokens: int = 0
+    builtin_model_seed: int = 0
+    builtin_model_thinking_budget: int = 0
+    builtin_model_stop: str = ""
+    builtin_model_enable_search: bool = False
+    builtin_model_search_forced: bool = False
+    builtin_model_search_strategy: str = "turbo"
+    builtin_model_enable_search_extension: bool = False
+    builtin_model_multimodal_enabled: bool = True
     wechat_base_url: str = "https://ilinkai.weixin.qq.com"
     wechat_token: str = ""
     dispatch_mode_enabled: bool = False
@@ -43,6 +55,17 @@ class WorkerNodeSetupConfig(BaseModel):
     openai_api_key: str = ""
     openai_model: str = ""
     openai_enable_thinking: bool = False
+    openai_temperature: float = 0.3
+    openai_top_p: float = 1.0
+    openai_max_tokens: int = 0
+    openai_seed: int = 0
+    openai_thinking_budget: int = 0
+    openai_stop: str = ""
+    openai_enable_search: bool = False
+    openai_search_forced: bool = False
+    openai_search_strategy: str = "turbo"
+    openai_enable_search_extension: bool = False
+    openai_multimodal_enabled: bool = True
     max_concurrency: int = Field(default=1, ge=1, le=128)
     install_dir: str = Field(min_length=1)
     bundle_path: str = ""

@@ -39,6 +39,18 @@ class Settings(BaseSettings):
     builtin_model_base_url: str = ""
     builtin_model_api_key: str = ""
     builtin_model_name: str = ""
+    builtin_model_enable_thinking: bool = False
+    builtin_model_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
+    builtin_model_top_p: float = Field(default=1.0, ge=0.0, le=1.0)
+    builtin_model_max_tokens: int = Field(default=0, ge=0, le=131072)
+    builtin_model_seed: int = Field(default=0, ge=0, le=2147483647)
+    builtin_model_thinking_budget: int = Field(default=0, ge=0, le=131072)
+    builtin_model_stop: str = ""
+    builtin_model_enable_search: bool = False
+    builtin_model_search_forced: bool = False
+    builtin_model_search_strategy: str = "turbo"
+    builtin_model_enable_search_extension: bool = False
+    builtin_model_multimodal_enabled: bool = True
     cors_allow_origins: list[str] = Field(
         default_factory=lambda: [
             "http://127.0.0.1:5174",

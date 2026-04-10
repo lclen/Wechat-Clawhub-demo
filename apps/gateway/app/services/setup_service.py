@@ -152,6 +152,18 @@ class SetupService:
             builtin_model_base_url=self._settings.builtin_model_base_url,
             builtin_model_api_key=self._settings.builtin_model_api_key,
             builtin_model_name=self._settings.builtin_model_name,
+            builtin_model_enable_thinking=self._settings.builtin_model_enable_thinking,
+            builtin_model_temperature=self._settings.builtin_model_temperature,
+            builtin_model_top_p=self._settings.builtin_model_top_p,
+            builtin_model_max_tokens=self._settings.builtin_model_max_tokens,
+            builtin_model_seed=self._settings.builtin_model_seed,
+            builtin_model_thinking_budget=self._settings.builtin_model_thinking_budget,
+            builtin_model_stop=self._settings.builtin_model_stop,
+            builtin_model_enable_search=self._settings.builtin_model_enable_search,
+            builtin_model_search_forced=self._settings.builtin_model_search_forced,
+            builtin_model_search_strategy=self._settings.builtin_model_search_strategy,
+            builtin_model_enable_search_extension=self._settings.builtin_model_enable_search_extension,
+            builtin_model_multimodal_enabled=self._settings.builtin_model_multimodal_enabled,
             wechat_base_url=self._settings.wechat_base_url,
             wechat_token=self._settings.wechat_token,
             dispatch_mode_enabled=self._settings.dispatch_mode_enabled,
@@ -1179,6 +1191,18 @@ class SetupService:
             "WCH_BUILTIN_MODEL_BASE_URL": normalized_config.builtin_model_base_url,
             "WCH_BUILTIN_MODEL_API_KEY": normalized_config.builtin_model_api_key,
             "WCH_BUILTIN_MODEL_NAME": normalized_config.builtin_model_name,
+            "WCH_BUILTIN_MODEL_ENABLE_THINKING": "true" if normalized_config.builtin_model_enable_thinking else "false",
+            "WCH_BUILTIN_MODEL_TEMPERATURE": str(normalized_config.builtin_model_temperature),
+            "WCH_BUILTIN_MODEL_TOP_P": str(normalized_config.builtin_model_top_p),
+            "WCH_BUILTIN_MODEL_MAX_TOKENS": str(normalized_config.builtin_model_max_tokens),
+            "WCH_BUILTIN_MODEL_SEED": str(normalized_config.builtin_model_seed),
+            "WCH_BUILTIN_MODEL_THINKING_BUDGET": str(normalized_config.builtin_model_thinking_budget),
+            "WCH_BUILTIN_MODEL_STOP": normalized_config.builtin_model_stop,
+            "WCH_BUILTIN_MODEL_ENABLE_SEARCH": "true" if normalized_config.builtin_model_enable_search else "false",
+            "WCH_BUILTIN_MODEL_SEARCH_FORCED": "true" if normalized_config.builtin_model_search_forced else "false",
+            "WCH_BUILTIN_MODEL_SEARCH_STRATEGY": normalized_config.builtin_model_search_strategy,
+            "WCH_BUILTIN_MODEL_ENABLE_SEARCH_EXTENSION": "true" if normalized_config.builtin_model_enable_search_extension else "false",
+            "WCH_BUILTIN_MODEL_MULTIMODAL_ENABLED": "true" if normalized_config.builtin_model_multimodal_enabled else "false",
             "WCH_WECHAT_BASE_URL": normalized_config.wechat_base_url,
             "WCH_WECHAT_TOKEN": normalized_config.wechat_token,
             "WCH_DISPATCH_MODE_ENABLED": "true" if normalized_config.dispatch_mode_enabled else "false",
@@ -1192,6 +1216,18 @@ class SetupService:
             "builtin_model_base_url",
             "builtin_model_api_key",
             "builtin_model_name",
+            "builtin_model_enable_thinking",
+            "builtin_model_temperature",
+            "builtin_model_top_p",
+            "builtin_model_max_tokens",
+            "builtin_model_seed",
+            "builtin_model_thinking_budget",
+            "builtin_model_stop",
+            "builtin_model_enable_search",
+            "builtin_model_search_forced",
+            "builtin_model_search_strategy",
+            "builtin_model_enable_search_extension",
+            "builtin_model_multimodal_enabled",
             "wechat_base_url",
             "wechat_token",
             "dispatch_mode_enabled",
@@ -1203,6 +1239,18 @@ class SetupService:
         self._settings.builtin_model_base_url = normalized_config.builtin_model_base_url
         self._settings.builtin_model_api_key = normalized_config.builtin_model_api_key
         self._settings.builtin_model_name = normalized_config.builtin_model_name
+        self._settings.builtin_model_enable_thinking = normalized_config.builtin_model_enable_thinking
+        self._settings.builtin_model_temperature = normalized_config.builtin_model_temperature
+        self._settings.builtin_model_top_p = normalized_config.builtin_model_top_p
+        self._settings.builtin_model_max_tokens = normalized_config.builtin_model_max_tokens
+        self._settings.builtin_model_seed = normalized_config.builtin_model_seed
+        self._settings.builtin_model_thinking_budget = normalized_config.builtin_model_thinking_budget
+        self._settings.builtin_model_stop = normalized_config.builtin_model_stop
+        self._settings.builtin_model_enable_search = normalized_config.builtin_model_enable_search
+        self._settings.builtin_model_search_forced = normalized_config.builtin_model_search_forced
+        self._settings.builtin_model_search_strategy = normalized_config.builtin_model_search_strategy
+        self._settings.builtin_model_enable_search_extension = normalized_config.builtin_model_enable_search_extension
+        self._settings.builtin_model_multimodal_enabled = normalized_config.builtin_model_multimodal_enabled
         self._settings.wechat_base_url = normalized_config.wechat_base_url
         self._settings.wechat_token = normalized_config.wechat_token
         self._settings.dispatch_mode_enabled = normalized_config.dispatch_mode_enabled
@@ -1239,6 +1287,7 @@ class SetupService:
             current_value=self._settings.builtin_model_api_key,
         )
         builtin_model_name = config.builtin_model_name.strip()
+        builtin_model_search_strategy = config.builtin_model_search_strategy.strip() or "turbo"
         wechat_token = config.wechat_token.strip() or self._preserve_secret(
             task,
             label="微信 Token",
@@ -1255,6 +1304,18 @@ class SetupService:
                     "builtin_model_base_url": builtin_model_base_url,
                     "builtin_model_api_key": builtin_model_api_key,
                     "builtin_model_name": builtin_model_name,
+                    "builtin_model_enable_thinking": config.builtin_model_enable_thinking,
+                    "builtin_model_temperature": config.builtin_model_temperature,
+                    "builtin_model_top_p": config.builtin_model_top_p,
+                    "builtin_model_max_tokens": config.builtin_model_max_tokens,
+                    "builtin_model_seed": config.builtin_model_seed,
+                    "builtin_model_thinking_budget": config.builtin_model_thinking_budget,
+                    "builtin_model_stop": config.builtin_model_stop,
+                    "builtin_model_enable_search": config.builtin_model_enable_search,
+                    "builtin_model_search_forced": config.builtin_model_search_forced,
+                    "builtin_model_search_strategy": builtin_model_search_strategy,
+                    "builtin_model_enable_search_extension": config.builtin_model_enable_search_extension,
+                    "builtin_model_multimodal_enabled": config.builtin_model_multimodal_enabled,
                     "wechat_token": wechat_token,
                 }
             )
@@ -1275,6 +1336,18 @@ class SetupService:
                 "builtin_model_base_url": fallback_base_url,
                 "builtin_model_api_key": fallback_api_key,
                 "builtin_model_name": fallback_model_name,
+                "builtin_model_enable_thinking": self._settings.builtin_model_enable_thinking,
+                "builtin_model_temperature": self._settings.builtin_model_temperature,
+                "builtin_model_top_p": self._settings.builtin_model_top_p,
+                "builtin_model_max_tokens": self._settings.builtin_model_max_tokens,
+                "builtin_model_seed": self._settings.builtin_model_seed,
+                "builtin_model_thinking_budget": self._settings.builtin_model_thinking_budget,
+                "builtin_model_stop": self._settings.builtin_model_stop,
+                "builtin_model_enable_search": self._settings.builtin_model_enable_search,
+                "builtin_model_search_forced": self._settings.builtin_model_search_forced,
+                "builtin_model_search_strategy": self._settings.builtin_model_search_strategy,
+                "builtin_model_enable_search_extension": self._settings.builtin_model_enable_search_extension,
+                "builtin_model_multimodal_enabled": self._settings.builtin_model_multimodal_enabled,
                 "wechat_token": wechat_token,
             }
         )
@@ -1474,6 +1547,18 @@ class SetupService:
                 "openai_base_url": config.openai_base_url.strip(),
                 "openai_api_key": config.openai_api_key.strip(),
                 "openai_model": config.openai_model.strip(),
+                "openai_enable_thinking": config.openai_enable_thinking,
+                "openai_temperature": config.openai_temperature,
+                "openai_top_p": config.openai_top_p,
+                "openai_max_tokens": config.openai_max_tokens,
+                "openai_seed": config.openai_seed,
+                "openai_thinking_budget": config.openai_thinking_budget,
+                "openai_stop": config.openai_stop,
+                "openai_enable_search": config.openai_enable_search,
+                "openai_search_forced": config.openai_search_forced,
+                "openai_search_strategy": config.openai_search_strategy.strip() or "turbo",
+                "openai_enable_search_extension": config.openai_enable_search_extension,
+                "openai_multimodal_enabled": config.openai_multimodal_enabled,
                 "install_dir": config.install_dir.strip(),
                 "bundle_path": config.bundle_path.strip(),
             }
@@ -1505,6 +1590,18 @@ class SetupService:
                     "openai_base_url": inherited_base_url,
                     "openai_api_key": inherited_api_key,
                     "openai_model": inherited_model,
+                    "openai_enable_thinking": self._settings.builtin_model_enable_thinking,
+                    "openai_temperature": self._settings.builtin_model_temperature,
+                    "openai_top_p": self._settings.builtin_model_top_p,
+                    "openai_max_tokens": self._settings.builtin_model_max_tokens,
+                    "openai_seed": self._settings.builtin_model_seed,
+                    "openai_thinking_budget": self._settings.builtin_model_thinking_budget,
+                    "openai_stop": self._settings.builtin_model_stop,
+                    "openai_enable_search": self._settings.builtin_model_enable_search,
+                    "openai_search_forced": self._settings.builtin_model_search_forced,
+                    "openai_search_strategy": self._settings.builtin_model_search_strategy,
+                    "openai_enable_search_extension": self._settings.builtin_model_enable_search_extension,
+                    "openai_multimodal_enabled": self._settings.builtin_model_multimodal_enabled,
                 }
             )
 

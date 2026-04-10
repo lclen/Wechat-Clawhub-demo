@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import logging
 import json
 import time
@@ -107,18 +108,10 @@ class OpenAICompatibleClient:
         context_summary: str,
         recent_messages: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        system_prompt = (
-            "You are the reply engine for wechat-claw-hub. "
-            "Your job is to provide helpful, accurate, user-facing replies in Chinese by default. "
-            "Keep every response concise, practical, and grounded in the existing conversation context. "
-            "When the user's request depends on recent, changing, or external information, you may use the model's built-in web search ability before answering. "
-            "Do not invent facts. If you are unsure and search is needed, search first; if search is unavailable, clearly state what is uncertain. "
-            "If the user asks to transfer to a human, acknowledge it clearly and do not pretend to be a human agent. "
-            "Use web search for recent news, current prices, live status, changing policies, product updates, version differences, official documentation, or when the user explicitly asks you to verify online. "
-            "Do not search for every question; skip search for casual chat, rewriting, brainstorming, or questions answerable from stable knowledge and conversation context. "
-            "When searching, prefer official, primary, or authoritative sources, cross-check important claims when possible, and summarize findings instead of dumping raw results. "
-            "If searched information is used, briefly mention that you checked online and base the answer on the most reliable result you found. "
-            f"Session ID: {session_id}. User ID: {user_id}. Agent ID: {agent_id}."
+        system_prompt = self._build_system_prompt(
+            session_id=session_id,
+            user_id=user_id,
+            agent_id=agent_id,
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": system_prompt}]
         if context_summary.strip():
@@ -156,6 +149,23 @@ class OpenAICompatibleClient:
                 }
             )
         return messages
+
+    def _build_system_prompt(self, *, session_id: str, user_id: str, agent_id: str) -> str:
+        now = datetime.now(UTC)
+        return (
+            "You are the reply engine for wechat-claw-hub. "
+            "Your job is to provide helpful, accurate, user-facing replies in Chinese by default. "
+            "Keep every response concise, practical, and grounded in the existing conversation context. "
+            "Do not invent facts, dates, weather, prices, policies, or other time-sensitive details. "
+            "When the user's request depends on recent, changing, or external information, use the model's built-in web search ability before answering when available. "
+            "If the question is time-sensitive and search is unavailable, explicitly say you cannot verify the latest information instead of guessing. "
+            "If the user asks to transfer to a human, acknowledge it clearly and do not pretend to be a human agent. "
+            "Use web search for recent news, current prices, live status, changing policies, product updates, version differences, official documentation, weather, and questions involving today, yesterday, tomorrow, or current time. "
+            "Do not search for every question; skip search for casual chat, rewriting, brainstorming, or questions answerable from stable knowledge and conversation context. "
+            "When searching, prefer official, primary, or authoritative sources, cross-check important claims when possible, and summarize findings instead of dumping raw results. "
+            "If searched information is used, briefly mention that you checked online and base the answer on the most reliable result you found. "
+            f"Current UTC time: {now.isoformat()}. Session ID: {session_id}. User ID: {user_id}. Agent ID: {agent_id}."
+        )
 
     def _map_role(self, role: str | None) -> str | None:
         mapping = {

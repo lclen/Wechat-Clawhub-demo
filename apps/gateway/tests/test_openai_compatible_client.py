@@ -27,6 +27,41 @@ class OpenAICompatibleClientTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_build_chat_payload_includes_extended_builtin_model_options(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            builtin_model_base_url="https://example.com/v1",
+            builtin_model_api_key="sk-test-key",
+            builtin_model_name="qwen-test",
+            builtin_model_enable_thinking=True,
+            builtin_model_temperature=0.6,
+            builtin_model_top_p=0.8,
+            builtin_model_max_tokens=2048,
+            builtin_model_seed=42,
+            builtin_model_thinking_budget=1024,
+            builtin_model_stop='["</answer>"]',
+            builtin_model_enable_search=True,
+            builtin_model_search_forced=True,
+            builtin_model_search_strategy="max",
+            builtin_model_enable_search_extension=True,
+        )
+        client = OpenAICompatibleClient(settings)
+        try:
+            payload = client.build_chat_payload(messages=[{"role": "user", "content": "你好"}])
+            self.assertEqual(payload["model"], "qwen-test")
+            self.assertEqual(payload["temperature"], 0.6)
+            self.assertEqual(payload["top_p"], 0.8)
+            self.assertEqual(payload["max_tokens"], 2048)
+            self.assertEqual(payload["seed"], 42)
+            self.assertEqual(payload["thinking_budget"], 1024)
+            self.assertEqual(payload["stop"], "</answer>")
+            self.assertTrue(payload["enable_search"])
+            self.assertEqual(payload["search_options"]["search_strategy"], "max")
+            self.assertTrue(payload["search_options"]["forced_search"])
+            self.assertTrue(payload["search_options"]["enable_search_extension"])
+        finally:
+            await client.close()
+
 
 if __name__ == "__main__":
     unittest.main()

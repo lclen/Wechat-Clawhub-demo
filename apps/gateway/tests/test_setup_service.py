@@ -68,6 +68,18 @@ def build_gateway_config() -> GatewaySetupConfig:
         builtin_model_base_url="",
         builtin_model_api_key="",
         builtin_model_name="",
+        builtin_model_enable_thinking=False,
+        builtin_model_temperature=0.3,
+        builtin_model_top_p=1.0,
+        builtin_model_max_tokens=0,
+        builtin_model_seed=0,
+        builtin_model_thinking_budget=0,
+        builtin_model_stop="",
+        builtin_model_enable_search=False,
+        builtin_model_search_forced=False,
+        builtin_model_search_strategy="turbo",
+        builtin_model_enable_search_extension=False,
+        builtin_model_multimodal_enabled=True,
         wechat_base_url="https://ilinkai.weixin.qq.com",
         wechat_token="",
     )
@@ -89,6 +101,17 @@ def build_worker_config(**overrides: object) -> WorkerNodeSetupConfig:
         "openai_api_key": "",
         "openai_model": "",
         "openai_enable_thinking": False,
+        "openai_temperature": 0.3,
+        "openai_top_p": 1.0,
+        "openai_max_tokens": 0,
+        "openai_seed": 0,
+        "openai_thinking_budget": 0,
+        "openai_stop": "",
+        "openai_enable_search": False,
+        "openai_search_forced": False,
+        "openai_search_strategy": "turbo",
+        "openai_enable_search_extension": False,
+        "openai_multimodal_enabled": True,
         "max_concurrency": 1,
         "install_dir": "C:\\wechat-claw-node",
         "bundle_path": "",
@@ -509,6 +532,10 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.settings.builtin_model_base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
         self.settings.builtin_model_api_key = "builtin-key"
         self.settings.builtin_model_name = "qwen3.5-plus"
+        self.settings.builtin_model_enable_thinking = True
+        self.settings.builtin_model_temperature = 0.6
+        self.settings.builtin_model_enable_search = True
+        self.settings.builtin_model_search_strategy = "max"
         task = self.service._create_task("node_install", "安装工作节点 node-b")
 
         config = self.service._prepare_worker_install_config(build_worker_config(), task)
@@ -516,6 +543,10 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.openai_base_url, self.settings.builtin_model_base_url)
         self.assertEqual(config.openai_api_key, self.settings.builtin_model_api_key)
         self.assertEqual(config.openai_model, self.settings.builtin_model_name)
+        self.assertTrue(config.openai_enable_thinking)
+        self.assertEqual(config.openai_temperature, 0.6)
+        self.assertTrue(config.openai_enable_search)
+        self.assertEqual(config.openai_search_strategy, "max")
         self.assertTrue(any("自动沿用网关的 OpenAI 兼容模型" in line for line in task.logs))
 
     async def test_prepare_worker_install_config_keeps_discovery_mode_when_model_missing(self) -> None:
