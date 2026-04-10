@@ -22,10 +22,11 @@ from urllib.parse import unquote
 import httpx
 
 from app.core.config import Settings
+from app.dispatch.queue import DispatchQueueError
 from app.models.session import InboundMessageRequest, SessionSwitchAction
 from app.models.wechat import WeChatStatusResponse
 from app.services.redis_store import RedisStore
-from app.services.session_manager import SessionManager
+from app.services.session_manager import SessionManager, SessionManagerError
 from app.services.transcript_writer import TranscriptWriter
 
 if TYPE_CHECKING:
@@ -707,7 +708,16 @@ class WeChatBotService:
         if self._dispatch_queue is None:
             raise RuntimeError("WeChat dispatch queue is not attached")
         session, message = await self._session_manager.ingest_inbound_message(payload)
-        task = await self._dispatch_queue.enqueue_for_inbound(session, message)
+        try:
+            task = await self._dispatch_queue.enqueue_for_inbound(session, message)
+        except (DispatchQueueError, SessionManagerError, ValueError) as exc:
+            session = await self._dispatch_queue.handle_inbound_dispatch_failure(
+                session=session,
+                message=message,
+                exc=exc,
+            )
+            self._received_messages += 1
+            return
         if task is None:
             self._transcript_writer.append_event(
                 session_id=session.session_id,

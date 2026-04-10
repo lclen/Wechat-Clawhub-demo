@@ -12,6 +12,7 @@ from app.access.wechat_bot import (
     parse_markdown_segments,
 )
 from app.core.config import Settings
+from app.dispatch.queue import DispatchQueueError
 
 
 class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -43,6 +44,27 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(self.service._running)
         self.assertEqual(self.service._last_error, "WeChat 会话已过期，请重新扫码或手动重新连接。")
+
+    async def test_handle_raw_message_notifies_user_when_dispatch_enqueue_fails(self) -> None:
+        session = Mock(session_id="wechat:user-1")
+        message = Mock(message_id="msg-1")
+        raw = {
+            "message_id": "wx-msg-1",
+            "message_type": 1,
+            "from_user_id": "wechat-user",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "你好"}}],
+        }
+        self.session_manager.ingest_inbound_message.return_value = (session, message)
+        self.dispatch_queue.enqueue_for_inbound.side_effect = DispatchQueueError("boom")
+        self.dispatch_queue.handle_inbound_dispatch_failure = AsyncMock(return_value=session)
+        self.service.start_typing_loop = AsyncMock()  # type: ignore[method-assign]
+
+        await self.service._handle_raw_message(raw)
+
+        self.dispatch_queue.handle_inbound_dispatch_failure.assert_awaited_once()
+        self.service.start_typing_loop.assert_not_awaited()
+        self.assertEqual(self.service._received_messages, 1)
 
     def test_parse_markdown_segments_extracts_images_and_text(self) -> None:
         segments = parse_markdown_segments("说明文字 ![接线图](https://example.com/a.jpg) 收尾")

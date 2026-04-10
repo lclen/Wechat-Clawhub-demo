@@ -149,6 +149,33 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
             "node_unavailable",
         )
 
+    async def test_handle_inbound_dispatch_failure_rolls_back_partial_task_and_notifies_user(self) -> None:
+        session = self._build_session(session_id="session-3", assigned_node_id="node-1", assigned_slot_id="slot-01")
+        message = self._build_message(session_id="session-3", message_id="msg-3")
+        notified_session = self._build_session(session_id="session-3", assigned_node_id="node-1", assigned_slot_id="slot-01")
+        self.store.get.return_value = "task-stale"
+        self.outgoing_dispatcher.deliver_system_notice.return_value = True
+        self.session_manager.append_bot_message.return_value = notified_session
+
+        result = await self.queue.handle_inbound_dispatch_failure(
+            session=session,
+            message=message,
+            exc=RuntimeError("boom"),
+        )
+
+        self.assertEqual(result.session_id, "session-3")
+        self.store.delete.assert_awaited_once_with(
+            "wch:dispatch:task:task-stale",
+            "wch:dispatch:inflight:task-stale",
+            "wch:dispatch:session:session-3",
+        )
+        self.outgoing_dispatcher.deliver_system_notice.assert_awaited_once()
+        self.assertEqual(
+            self.session_manager.append_bot_message.await_args.kwargs["metadata"]["notice_kind"],
+            "enqueue_failed",
+        )
+        self.assertEqual(self.transcript_writer.append_event.call_args.kwargs["event_type"], "dispatch_enqueue_failed")
+
     async def test_submit_failure_notifies_retrying_when_alternative_node_exists(self) -> None:
         task_message = self._build_message(session_id="session-4", message_id="msg-4")
         task = Mock(

@@ -117,6 +117,45 @@ class DispatchQueue:
         )
         return task
 
+    async def handle_inbound_dispatch_failure(
+        self,
+        *,
+        session: SessionRecord,
+        message: MessageRecord,
+        exc: Exception,
+    ) -> SessionRecord:
+        await self._rollback_partial_inbound_task(session.session_id)
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type="dispatch_enqueue_failed",
+            actor_type="system",
+            actor_id="gateway",
+            node_id=session.assigned_node_id,
+            payload={
+                "message_id": message.message_id,
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        )
+        logger.exception(
+            "[dispatch] failed to enqueue inbound message session=%s message_id=%s node=%s slot=%s",
+            session.session_id,
+            message.message_id,
+            session.assigned_node_id,
+            session.assigned_slot_id,
+            exc_info=exc,
+        )
+        return await self._notify_user_notice(
+            session,
+            self.USER_NOTICE_FAILURE,
+            metadata={
+                "system_action": "dispatch_notice",
+                "notice_kind": "enqueue_failed",
+                "source_message_id": message.message_id,
+                "error_type": type(exc).__name__,
+            },
+        )
+
     async def pull_for_node(self, node_id: str, wait_seconds: int = 0) -> DispatchTask | None:
         try:
             queue_key = self._node_queue_key(node_id)
@@ -948,6 +987,24 @@ class DispatchQueue:
             reason="task_timeout",
             clear_assigned_node=False,
         )
+
+    async def _rollback_partial_inbound_task(self, session_id: str) -> None:
+        try:
+            task_id = await self._store.get(self._session_task_key(session_id))
+            if task_id:
+                await self._store.delete(
+                    self._task_key(task_id),
+                    self._inflight_key(task_id),
+                    self._session_task_key(session_id),
+                )
+                return
+            await self._store.delete(self._session_task_key(session_id))
+        except RedisError:
+            logger.warning(
+                "[dispatch] failed to rollback partial inbound task for session=%s",
+                session_id,
+                exc_info=True,
+            )
 
     async def _release_slot(
         self,
