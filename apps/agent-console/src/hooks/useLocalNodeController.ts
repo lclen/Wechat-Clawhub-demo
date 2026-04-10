@@ -146,18 +146,18 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
   const saveLocalNodeModelConfig = useCallback(async () => {
     if (localNodeModelDraft.model_provider === "openai") {
       if (!hasText(localNodeModelDraft.openai_base_url)) {
-        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Base URL。");
+        setNotice("当前 Provider 已切换为 DashScope，请先填写 DashScope Base URL。");
         return;
       }
       const openaiKeyAvailable =
         safeTrim(localNodeModelDraft.openai_api_key)
         || (localNodeModelDraft.preserve_openai_api_key && !localNodeModelDraft.clear_openai_api_key);
       if (!openaiKeyAvailable) {
-        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI API Key。");
+        setNotice("当前 Provider 已切换为 DashScope，请先填写 DashScope API Key。");
         return;
       }
       if (!hasText(localNodeModelDraft.openai_model)) {
-        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Model。");
+        setNotice("当前 Provider 已切换为 DashScope，请先填写 DashScope 模型名称。");
         return;
       }
     }

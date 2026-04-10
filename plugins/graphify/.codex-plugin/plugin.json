@@ -1,0 +1,38 @@
+{
+  "name": "graphify",
+  "version": "0.1.0",
+  "description": "Codex-local wrapper plugin for the graphify knowledge graph workflow.",
+  "author": {
+    "name": "wechat-claw-hub",
+    "email": "TODO@example.com",
+    "url": "https://github.com/safishamsi/graphify"
+  },
+  "homepage": "https://github.com/safishamsi/graphify",
+  "repository": "https://github.com/safishamsi/graphify",
+  "license": "MIT",
+  "keywords": [
+    "knowledge-graph",
+    "codex"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Graphify",
+    "shortDescription": "Build a queryable knowledge graph for the current codebase.",
+    "longDescription": "Runs the upstream graphify workflow from Codex so the assistant can reason over graph outputs instead of repeatedly scanning raw files.",
+    "developerName": "Safi Shamsi / wechat-claw-hub",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/safishamsi/graphify",
+    "privacyPolicyURL": "https://docs.github.com/en/site-policy/privacy-policies/github-privacy-statement",
+    "termsOfServiceURL": "https://docs.github.com/en/site-policy/github-terms/github-terms-of-service",
+    "defaultPrompt": [
+      "$graphify .",
+      "$graphify . --update",
+      "$graphify query \"show the auth flow\""
+    ],
+    "brandColor": "#2563EB"
+  }
+}

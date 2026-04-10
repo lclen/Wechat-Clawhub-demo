@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { CommandBar, EmptyState, MetricStrip, SectionHeader, SignalBadge, SurfaceCard } from "../../shared/ConsolePrimitives";
+import { formatModelProviderLabel } from "../../../stringUtils";
 import type {
   LocalNodeConversationTestRequest,
   LocalNodeConversationTestResponse,
@@ -47,8 +48,8 @@ export function ConversationTestWorkspace({
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const configuredProvider =
-    localNodeStatus?.configured_model_provider || "未读取";
-  const activeProvider = localNodeStatus?.active_model_provider || "未读取";
+    formatModelProviderLabel(localNodeStatus?.configured_model_provider) || "未读取";
+  const activeProvider = formatModelProviderLabel(localNodeStatus?.active_model_provider) || "未读取";
   const canRun = launcherAvailable && localNodeStatus !== null;
   const usageText = useMemo(() => {
     if (!result?.usage || Object.keys(result.usage).length === 0) return "暂无 usage 数据";
@@ -132,7 +133,7 @@ export function ConversationTestWorkspace({
             <div className="conversation-provider-row" role="tablist" aria-label="Conversation test providers">
               {([
                 { value: "current", label: "当前配置" },
-                { value: "openai", label: "OpenAI" },
+                { value: "openai", label: "DashScope" },
                 { value: "dify", label: "Dify" },
               ] as const).map((item) => (
                 <button
@@ -148,10 +149,10 @@ export function ConversationTestWorkspace({
 
             <CommandBar
               label="当前测试链路"
-              detail="先用短问题验证连通性，再切换到更长的业务提示词。"
+              detail="先用短问题验证连通性，再切换到更长的业务提示词。当前仅支持阿里云 DashScope / 通义千问模型。"
               className="conversation-test-command-bar"
             >
-              <SignalBadge tone="info">{provider === "current" ? "当前配置" : provider === "openai" ? "OpenAI" : "Dify"}</SignalBadge>
+              <SignalBadge tone="info">{provider === "current" ? "当前配置" : provider === "openai" ? "DashScope" : "Dify"}</SignalBadge>
             </CommandBar>
 
             <label className="conversation-test-editor">
@@ -187,8 +188,8 @@ export function ConversationTestWorkspace({
                 <MetricStrip
                   className="conversation-result-metrics"
                   items={[
-                    { label: "实际走的链路", value: result.provider },
-                    { label: "保存的 Provider", value: result.configured_provider || "未读取" },
+                    { label: "实际走的链路", value: formatModelProviderLabel(result.provider) || result.provider },
+                    { label: "保存的 Provider", value: formatModelProviderLabel(result.configured_provider) || "未读取" },
                     { label: "耗时", value: `${result.latency_ms} ms` },
                     { label: "结果", value: result.ok ? "已收到回复" : "失败" },
                   ]}

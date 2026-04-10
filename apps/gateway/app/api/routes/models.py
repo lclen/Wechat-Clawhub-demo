@@ -17,16 +17,33 @@ def _builtin_model_config(settings: Settings) -> tuple[str, str, str]:
     )
 
 
-@router.get("/builtin/status")
-async def get_builtin_model_status(
-    settings: Settings = Depends(get_settings_dep),
-) -> dict[str, object]:
+def _builtin_model_status(settings: Settings) -> dict[str, object]:
     base_url, api_key, model_name = _builtin_model_config(settings)
     return {
         "configured": bool(base_url and api_key and model_name),
         "base_url": base_url,
         "model": model_name,
+        "api_key_configured": bool(api_key),
+        "enable_thinking": settings.builtin_model_enable_thinking,
+        "temperature": settings.builtin_model_temperature,
+        "top_p": settings.builtin_model_top_p,
+        "max_tokens": settings.builtin_model_max_tokens,
+        "seed": settings.builtin_model_seed,
+        "thinking_budget": settings.builtin_model_thinking_budget,
+        "stop": settings.builtin_model_stop,
+        "enable_search": settings.builtin_model_enable_search,
+        "search_forced": settings.builtin_model_search_forced,
+        "search_strategy": settings.builtin_model_search_strategy,
+        "enable_search_extension": settings.builtin_model_enable_search_extension,
+        "multimodal_enabled": settings.builtin_model_multimodal_enabled,
     }
+
+
+@router.get("/builtin/status")
+async def get_builtin_model_status(
+    settings: Settings = Depends(get_settings_dep),
+) -> dict[str, object]:
+    return _builtin_model_status(settings)
 
 
 @router.post("/builtin/check")

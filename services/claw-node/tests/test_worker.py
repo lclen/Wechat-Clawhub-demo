@@ -28,7 +28,7 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         runtime_state = worker._diagnostics.export_runtime_state()
         self.assertEqual(runtime_state["effective_model_provider"], "openai")
         self.assertTrue(runtime_state["inference_ready"])
-        self.assertIn("OpenAI", str(runtime_state["inference_detail"]))
+        self.assertIn("DashScope", str(runtime_state["inference_detail"]))
 
     async def test_worker_reports_unavailable_inference_to_diagnostics(self) -> None:
         settings = NodeSettings(

@@ -112,5 +112,5 @@ export const DEFAULT_LOCAL_NODE_MODEL_CONFIG: LocalNodeModelConfigRequest = {
   restart_service: true,
 };
 
-export const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope OpenAI Compatible（默认 qwen3.5-plus）";
+export const DEFAULT_BUILTIN_MODEL_LABEL = "DashScope（阿里云通义千问，默认 qwen3.5-plus）";
 export const GATEWAY_NODE_TOKEN_LOCATION = "apps/gateway/.env → WCH_NODE_TOKENS";

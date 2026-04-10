@@ -51,7 +51,7 @@ import {
   SETUP_DRAFT_KEY,
   SUMMARY_STATE_CACHE_KEY,
 } from "./quickSetupDefaults";
-import { hasText, safeTrim } from "./stringUtils";
+import { formatModelProviderLabel, hasText, safeTrim } from "./stringUtils";
 import {
   buildLauncherStartPayload,
   findLauncherComponent,
@@ -1698,7 +1698,7 @@ export function App() {
   );
   const roleBadge = resolveRoleBadge(effectiveRole);
   const sidebarStatusSummary = currentRoleIsWorker
-    ? `${workerGatewayConnection.label} · ${localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider || "未配置"}`
+    ? `${workerGatewayConnection.label} · ${formatModelProviderLabel(localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider) || "未配置"}`
     : `${gatewayRuntimeSummary.value} · ${wechatRuntimeSummary.value} · ${nodeInventorySummary.online_total} 节点在线`;
   const topbarHighlights: Array<{ label: string; value: string; tone: "good" | "warn" }> = currentRoleIsWorker
     ? [
@@ -1729,7 +1729,7 @@ export function App() {
         },
         {
           label: "模型",
-          value: localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider || "未配置",
+          value: formatModelProviderLabel(localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider) || "未配置",
           tone: localNodeStatus?.inference_ready ? "good" : "warn",
         },
       ]

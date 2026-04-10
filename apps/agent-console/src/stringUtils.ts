@@ -11,3 +11,12 @@ export function safeTrim(value: unknown): string {
 export function hasText(value: unknown): boolean {
   return safeTrim(value).length > 0;
 }
+
+export function formatModelProviderLabel(value: unknown): string {
+  const normalized = safeTrim(value).toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "openai" || normalized === "openai_compatible") return "DashScope";
+  if (normalized === "dify") return "Dify";
+  if (normalized === "auto") return "自动";
+  return safeTrim(value);
+}

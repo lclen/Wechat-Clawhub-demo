@@ -236,6 +236,9 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 <div className="inline-tip">
                   基础安装信息直接展示，按地址直连和局域网扫描收纳到折叠区，降低首次配置时的认知负担。
                 </div>
+                <div className="inline-tip">
+                  当前远端节点模型仅支持阿里云 DashScope / 通义千问模型；这里的 DashScope 配置会映射到现有兼容字段。
+                </div>
                 <div className="connection-form-grid">
                   <label><span>节点 ID</span><input value={props.workerSetup.node_id} onChange={(event) => props.onUpdateWorkerSetup("node_id", event.target.value)} /></label>
                   <label><span>目标网关地址</span><input value={props.workerSetup.gateway_base_url} onChange={(event) => props.onUpdateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
@@ -253,12 +256,12 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 <details className="form-advanced-details connection-fold-card">
                   <summary>
                     <span className="section-kicker">高级选项</span>
-                    <span className="connection-fold-hint">模型配置、发现响应、并发与 bundle 路径</span>
+                    <span className="connection-fold-hint">DashScope 配置、发现响应、并发与 bundle 路径</span>
                   </summary>
                   <div className="connection-form-grid">
-                    <label><span>OpenAI Base URL</span><input value={props.workerSetup.openai_base_url} onChange={(event) => props.onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="留空时沿用网关内置模型" /></label>
-                    <label><span>OpenAI Model</span><input value={props.workerSetup.openai_model} onChange={(event) => props.onUpdateWorkerSetup("openai_model", event.target.value)} placeholder="qwen-plus / gpt-4o-mini / deepseek-chat" /></label>
-                    <label className="connection-full-span"><span>OpenAI API Key</span><ToggleSecretInput value={props.workerSetup.openai_api_key} onChange={(event) => props.onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="留空时沿用网关已继承的 Key" autoComplete="new-password" /></label>
+                    <label><span>DashScope Base URL</span><input value={props.workerSetup.openai_base_url} onChange={(event) => props.onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="留空时沿用网关内置 DashScope 配置" /></label>
+                    <label><span>DashScope 模型</span><input value={props.workerSetup.openai_model} onChange={(event) => props.onUpdateWorkerSetup("openai_model", event.target.value)} placeholder="qwen3.5-plus / qwen-plus / qwen-max" /></label>
+                    <label className="connection-full-span"><span>DashScope API Key</span><ToggleSecretInput value={props.workerSetup.openai_api_key} onChange={(event) => props.onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="留空时沿用网关已继承的 DashScope API Key" autoComplete="new-password" /></label>
                     <label><span>Dify Base URL</span><input value={props.workerSetup.dify_base_url} onChange={(event) => props.onUpdateWorkerSetup("dify_base_url", event.target.value)} /></label>
                     <label><span>Dify API Key</span><textarea value={props.workerSetup.dify_api_key} onChange={(event) => props.onUpdateWorkerSetup("dify_api_key", event.target.value)} /></label>
                     <label><span>最大并发</span><input type="number" value={props.workerSetup.max_concurrency} onChange={(event) => props.onUpdateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
@@ -280,7 +283,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                       </select>
                     </label>
                     <label className="connection-full-span"><span>Stop Sequences（每行一个，或 JSON 数组）</span><textarea value={props.workerSetup.openai_stop} onChange={(event) => props.onUpdateWorkerSetup("openai_stop", event.target.value)} placeholder={"Observation:\n[\"</answer>\", \"###\"]"} /></label>
-                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_thinking} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_thinking", event.target.checked)} /><span>启用 OpenAI Thinking</span></label>
+                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_thinking} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_thinking", event.target.checked)} /><span>启用 DashScope Thinking</span></label>
                     <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_search} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_search", event.target.checked)} /><span>启用联网搜索</span></label>
                     <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_search_forced} onChange={(event) => props.onUpdateWorkerSetup("openai_search_forced", event.target.checked)} /><span>强制搜索</span></label>
                     <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_search_extension} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_search_extension", event.target.checked)} /><span>垂域搜索扩展</span></label>

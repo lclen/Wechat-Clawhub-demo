@@ -5,7 +5,7 @@ import os
 import sys
 
 import uvicorn
-from launcher.runtime import resource_root
+from launcher.runtime import ensure_repo_pythonpath, resource_root
 
 
 def main() -> None:
@@ -45,6 +45,7 @@ def run_node() -> None:
 
 
 def run_launcher() -> None:
+    ensure_repo_pythonpath()
     from launcher.app import create_app
     from launcher.profile_store import load_profile
 
