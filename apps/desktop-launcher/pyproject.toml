@@ -10,6 +10,7 @@ dependencies = [
   "pydantic>=2.8.0,<3.0.0",
   "pydantic-settings>=2.4.0,<3.0.0",
   "uvicorn[standard]>=0.30.6,<1.0.0",
+  "wechat-claw-hub-claw-node",
 ]
 
 [project.optional-dependencies]
@@ -24,3 +25,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["launcher*"]
+
+[tool.uv.sources]
+wechat-claw-hub-claw-node = { path = "../../services/claw-node" }

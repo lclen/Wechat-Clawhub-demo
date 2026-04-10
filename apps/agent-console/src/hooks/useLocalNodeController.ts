@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { buildLocalNodeModelDraftFromStatus } from "../appBootstrap";
+import { DASHSCOPE_PROVIDER_LABEL } from "../modelProviderUi";
 import type {
   LauncherLogResponse,
   LauncherStatusResponse,
@@ -145,18 +146,18 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
   const saveLocalNodeModelConfig = useCallback(async () => {
     if (localNodeModelDraft.model_provider === "openai") {
       if (!localNodeModelDraft.openai_base_url.trim()) {
-        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Base URL。");
+        setNotice(`当前 Provider 已切换为 ${DASHSCOPE_PROVIDER_LABEL}，请先填写 ${DASHSCOPE_PROVIDER_LABEL} Base URL。`);
         return;
       }
       const openaiKeyAvailable =
         localNodeModelDraft.openai_api_key.trim()
         || (localNodeModelDraft.preserve_openai_api_key && !localNodeModelDraft.clear_openai_api_key);
       if (!openaiKeyAvailable) {
-        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI API Key。");
+        setNotice(`当前 Provider 已切换为 ${DASHSCOPE_PROVIDER_LABEL}，请先填写 ${DASHSCOPE_PROVIDER_LABEL} API Key。`);
         return;
       }
       if (!localNodeModelDraft.openai_model.trim()) {
-        setNotice("当前 Provider 已切换为 OpenAI，请先填写 OpenAI Model。");
+        setNotice(`当前 Provider 已切换为 ${DASHSCOPE_PROVIDER_LABEL}，请先填写 ${DASHSCOPE_PROVIDER_LABEL} 模型名称。`);
         return;
       }
     }

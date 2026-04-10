@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { DASHSCOPE_ONLY_NOTICE, DASHSCOPE_PROVIDER_LABEL, formatModelProviderLabel } from "../../../modelProviderUi";
 import type {
   LocalNodeConversationTestRequest,
   LocalNodeConversationTestResponse,
@@ -38,8 +39,8 @@ export function ConversationTestWorkspace({
   const [errorText, setErrorText] = useState<string | null>(null);
 
   const configuredProvider =
-    localNodeStatus?.configured_model_provider || "未读取";
-  const activeProvider = localNodeStatus?.active_model_provider || "未读取";
+    formatModelProviderLabel(localNodeStatus?.configured_model_provider) || "未读取";
+  const activeProvider = formatModelProviderLabel(localNodeStatus?.active_model_provider) || "未读取";
   const canRun = launcherAvailable && localNodeStatus !== null;
   const usageText = useMemo(() => {
     if (!result?.usage || Object.keys(result.usage).length === 0) return "暂无 usage 数据";
@@ -64,10 +65,10 @@ export function ConversationTestWorkspace({
           <div className="section-kicker">
             {currentRoleIsWorker ? "节点对话测试" : "模型对话测试"}
           </div>
-          <h2>直接发一条测试消息，确认当前 OpenAI 或 Dify 配置真的能收到回复</h2>
+          <h2>直接发一条测试消息，确认当前 {DASHSCOPE_PROVIDER_LABEL} 或 Dify 配置真的能收到回复</h2>
         </div>
         <div className="workspace-caption">
-          这个页面验证的是“可真正完成一轮对话”，而不只是模型列表可访问。
+          这个页面验证的是“可真正完成一轮对话”，而不只是模型列表可访问。{DASHSCOPE_ONLY_NOTICE}
         </div>
       </div>
 
@@ -141,7 +142,7 @@ export function ConversationTestWorkspace({
             <div className="conversation-provider-row" role="tablist" aria-label="Conversation test providers">
               {([
                 { value: "current", label: "当前配置" },
-                { value: "openai", label: "OpenAI" },
+                { value: "openai", label: DASHSCOPE_PROVIDER_LABEL },
                 { value: "dify", label: "Dify" },
               ] as const).map((item) => (
                 <button
@@ -189,11 +190,11 @@ export function ConversationTestWorkspace({
                 <div className="connection-fact-grid connection-fact-grid-wide">
                   <div className="connection-fact-tile">
                     <span>实际走的链路</span>
-                    <strong>{result.provider}</strong>
+                    <strong>{formatModelProviderLabel(result.provider) || result.provider}</strong>
                   </div>
                   <div className="connection-fact-tile">
                     <span>保存的 Provider</span>
-                    <strong>{result.configured_provider || "未读取"}</strong>
+                    <strong>{formatModelProviderLabel(result.configured_provider) || "未读取"}</strong>
                   </div>
                   <div className="connection-fact-tile">
                     <span>耗时</span>

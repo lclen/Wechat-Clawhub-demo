@@ -32,6 +32,7 @@ import {
 import { applyGatewaySummaryToState, resolvePreferredGatewayBaseUrl } from "./appBootstrap";
 import { clearQuickSetupCache, loadSetupDraft, loadSummaryStateCache, loadUiStateCache } from "./appStorage";
 import { syncNodeState } from "./consoleStateSync";
+import { DASHSCOPE_PROVIDER_LABEL } from "./modelProviderUi";
 import {
   DEFAULT_BUILTIN_MODEL_LABEL,
   DEFAULT_CONSOLE_SETUP,
@@ -173,6 +174,48 @@ const FAST_POLL_MS = 1200;
 const RETRY_POLL_MS = 1000; // backend unreachable — retry quickly
 const WS_RECONNECT_BASE_MS = 1500;
 const WS_RECONNECT_MAX_MS = 15000;
+
+function formatBuiltinModelStatusDetail(modelStatus: ModelStatus | null): string {
+  if (!modelStatus?.configured) {
+    return "先完成模型检测和配置保存，再开始接入联调。";
+  }
+
+  const parts = [
+    modelStatus.base_url,
+    `thinking ${modelStatus.enable_thinking ? "on" : "off"}`,
+    `search ${modelStatus.enable_search ? modelStatus.search_strategy : "off"}`,
+    `temperature ${modelStatus.temperature}`,
+    `top_p ${modelStatus.top_p}`,
+    modelStatus.multimodal_enabled ? "多模态 on" : "多模态 off",
+  ];
+
+  if (modelStatus.search_forced) {
+    parts.push("强制搜索 on");
+  }
+  if (modelStatus.enable_search_extension) {
+    parts.push("垂域搜索 on");
+  }
+  if (modelStatus.max_tokens > 0) {
+    parts.push(`max_tokens ${modelStatus.max_tokens}`);
+  }
+  if (modelStatus.thinking_budget > 0) {
+    parts.push(`thinking_budget ${modelStatus.thinking_budget}`);
+  }
+  if (modelStatus.seed > 0) {
+    parts.push(`seed ${modelStatus.seed}`);
+  }
+
+  return parts.join(" · ");
+}
+
+function formatBuiltinModelStatusMeta(modelStatus: ModelStatus | null): string {
+  if (!modelStatus?.configured) {
+    return "未配置模型";
+  }
+  const stopText = modelStatus.stop.trim() ? "已配置 stop" : "无 stop";
+  const keyText = modelStatus.api_key_configured ? "Key 已保存" : "Key 缺失";
+  return [modelStatus.provider || "dashscope", keyText, stopText].join(" · ");
+}
 
 async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, { headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }, ...init });
@@ -1298,7 +1341,7 @@ export function App() {
       {
         eyebrow: "模型基线",
         title: modelStatus?.model || "未配置",
-        detail: modelStatus?.base_url || "先完成模型检测和配置保存，再开始接入联调。",
+        detail: formatBuiltinModelStatusDetail(modelStatus),
         tone: modelStatus?.configured ? "good" : "warn",
       },
     ];
@@ -1310,9 +1353,22 @@ export function App() {
     gatewayRuntimeSummary.tone,
     gatewayRuntimeSummary.value,
     gatewaySetup.dispatch_mode_enabled,
-    modelStatus?.base_url,
+    modelStatus?.api_key_configured,
     modelStatus?.configured,
+    modelStatus?.enable_search,
+    modelStatus?.enable_search_extension,
+    modelStatus?.enable_thinking,
+    modelStatus?.max_tokens,
     modelStatus?.model,
+    modelStatus?.multimodal_enabled,
+    modelStatus?.provider,
+    modelStatus?.search_forced,
+    modelStatus?.search_strategy,
+    modelStatus?.seed,
+    modelStatus?.stop,
+    modelStatus?.temperature,
+    modelStatus?.thinking_budget,
+    modelStatus?.top_p,
     nodeInventorySummary.online_total,
     nodeInventorySummary.paired_total,
     nodeChannelOverview.onlineIdle,
@@ -1344,7 +1400,7 @@ export function App() {
     () => [
       {
         label: "模型可用",
-        detail: modelStatus?.configured ? modelStatus.model : "尚未检测",
+        detail: modelStatus?.configured ? formatBuiltinModelStatusMeta(modelStatus) : "尚未检测",
         tone: modelStatus?.configured ? "good" : "warn",
       },
       {
@@ -1358,14 +1414,23 @@ export function App() {
         tone: (systemStatus?.active_nodes ?? 0) > 0 ? "good" : "warn",
       },
     ],
-    [modelStatus?.configured, modelStatus?.model, systemStatus?.active_nodes, wechatRuntimeSummary.tone, wechatRuntimeSummary.value],
+    [
+      modelStatus?.api_key_configured,
+      modelStatus?.configured,
+      modelStatus?.model,
+      modelStatus?.provider,
+      modelStatus?.stop,
+      systemStatus?.active_nodes,
+      wechatRuntimeSummary.tone,
+      wechatRuntimeSummary.value,
+    ],
   );
   const connectionSignalCards = useMemo<Array<{ label: string; value: string; meta: string; tone: "good" | "warn" }>>(
     () => [
       {
         label: "模型",
         value: modelStatus?.configured ? "已就绪" : "待检测",
-        meta: modelStatus?.model || "未配置模型",
+        meta: formatBuiltinModelStatusMeta(modelStatus),
         tone: modelStatus?.configured ? "good" : "warn",
       },
       {
@@ -1605,7 +1670,7 @@ export function App() {
               {workspace === "connection"
                 ? "接入中心优先展示当前运行态、接入结果和关键配置。"
                 : workspace === "conversation_test"
-                  ? "对话测试直接验证当前已保存的 OpenAI 或 Dify 配置能否真正返回回复。"
+                  ? `对话测试直接验证当前已保存的 ${DASHSCOPE_PROVIDER_LABEL} 或 Dify 配置能否真正返回回复。`
                 : workspace === "logs"
                   ? "日志中心集中查看运行日志、配对日志和节点回连输出。"
                   : "把快速配置、接入联调、日志中心和会话观察拆成四个一级工作区，首次启动先走向导，后续也能随时重配。"}

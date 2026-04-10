@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -51,6 +51,96 @@ class Settings(BaseSettings):
     builtin_model_search_strategy: str = "turbo"
     builtin_model_enable_search_extension: bool = False
     builtin_model_multimodal_enabled: bool = True
+    legacy_openai_base_url: str = Field(
+        default="",
+        validation_alias=AliasChoices("WCH_OPENAI_BASE_URL", "OPENAI_BASE_URL"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("WCH_OPENAI_API_KEY", "OPENAI_API_KEY"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_model: str = Field(
+        default="",
+        validation_alias=AliasChoices("WCH_OPENAI_MODEL", "OPENAI_MODEL"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_enable_thinking: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("WCH_OPENAI_ENABLE_THINKING", "OPENAI_ENABLE_THINKING"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_temperature: float = Field(
+        default=0.3,
+        validation_alias=AliasChoices("WCH_OPENAI_TEMPERATURE", "OPENAI_TEMPERATURE"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_top_p: float = Field(
+        default=1.0,
+        validation_alias=AliasChoices("WCH_OPENAI_TOP_P", "OPENAI_TOP_P"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_max_tokens: int = Field(
+        default=0,
+        validation_alias=AliasChoices("WCH_OPENAI_MAX_TOKENS", "OPENAI_MAX_TOKENS"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_seed: int = Field(
+        default=0,
+        validation_alias=AliasChoices("WCH_OPENAI_SEED", "OPENAI_SEED"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_thinking_budget: int = Field(
+        default=0,
+        validation_alias=AliasChoices("WCH_OPENAI_THINKING_BUDGET", "OPENAI_THINKING_BUDGET"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_stop: str = Field(
+        default="",
+        validation_alias=AliasChoices("WCH_OPENAI_STOP", "OPENAI_STOP"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_enable_search: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("WCH_OPENAI_ENABLE_SEARCH", "OPENAI_ENABLE_SEARCH"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_search_forced: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("WCH_OPENAI_SEARCH_FORCED", "OPENAI_SEARCH_FORCED"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_search_strategy: str = Field(
+        default="turbo",
+        validation_alias=AliasChoices("WCH_OPENAI_SEARCH_STRATEGY", "OPENAI_SEARCH_STRATEGY"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_enable_search_extension: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("WCH_OPENAI_ENABLE_SEARCH_EXTENSION", "OPENAI_ENABLE_SEARCH_EXTENSION"),
+        exclude=True,
+        repr=False,
+    )
+    legacy_openai_multimodal_enabled: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("WCH_OPENAI_MULTIMODAL_ENABLED", "OPENAI_MULTIMODAL_ENABLED"),
+        exclude=True,
+        repr=False,
+    )
     cors_allow_origins: list[str] = Field(
         default_factory=lambda: [
             "http://127.0.0.1:5174",
@@ -66,6 +156,38 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @model_validator(mode="after")
+    def apply_legacy_builtin_model_env(self) -> "Settings":
+        has_builtin_identity = bool(
+            self.builtin_model_base_url.strip()
+            or self.builtin_model_api_key.strip()
+            or self.builtin_model_name.strip()
+        )
+        has_legacy_identity = bool(
+            self.legacy_openai_base_url.strip()
+            or self.legacy_openai_api_key.strip()
+            or self.legacy_openai_model.strip()
+        )
+        if has_builtin_identity or not has_legacy_identity:
+            return self
+
+        self.builtin_model_base_url = self.legacy_openai_base_url
+        self.builtin_model_api_key = self.legacy_openai_api_key
+        self.builtin_model_name = self.legacy_openai_model
+        self.builtin_model_enable_thinking = self.legacy_openai_enable_thinking
+        self.builtin_model_temperature = self.legacy_openai_temperature
+        self.builtin_model_top_p = self.legacy_openai_top_p
+        self.builtin_model_max_tokens = self.legacy_openai_max_tokens
+        self.builtin_model_seed = self.legacy_openai_seed
+        self.builtin_model_thinking_budget = self.legacy_openai_thinking_budget
+        self.builtin_model_stop = self.legacy_openai_stop
+        self.builtin_model_enable_search = self.legacy_openai_enable_search
+        self.builtin_model_search_forced = self.legacy_openai_search_forced
+        self.builtin_model_search_strategy = self.legacy_openai_search_strategy
+        self.builtin_model_enable_search_extension = self.legacy_openai_enable_search_extension
+        self.builtin_model_multimodal_enabled = self.legacy_openai_multimodal_enabled
+        return self
 
 
 @lru_cache
