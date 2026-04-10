@@ -1,4 +1,5 @@
-import { InfoRow, ToggleSecretInput } from "./ConnectionUi";
+import { ToggleSecretInput } from "./ConnectionUi";
+import { CommandBar, SectionHeader, SurfaceCard } from "../../shared/ConsolePrimitives";
 
 type WeChatConfigCardProps = {
   statusRows: Array<{ label: string; value: string; multiline?: boolean }>;
@@ -30,25 +31,30 @@ export function WeChatConfigCard({
   onDisconnectWeChat,
 }: WeChatConfigCardProps) {
   return (
-    <section className="surface surface-feature">
-      <div className="section-head">
-        <div>
-          <div className="section-kicker">基础平台配置</div>
-          <h3>微信接入</h3>
-        </div>
-        <div className="inline-actions">
-          <button type="button" onClick={onStartQrFlow} disabled={busyKey !== null}>
-            {busyKey === "wechat-qr" ? "生成中..." : "生成二维码"}
-          </button>
-          <button type="button" onClick={onPollQrStatus} disabled={busyKey !== null}>
-            {busyKey === "wechat-poll" ? "轮询中..." : "轮询状态"}
-          </button>
-        </div>
-      </div>
+    <SurfaceCard className="surface-feature wechat-command-surface">
+      <SectionHeader
+        kicker="基础平台配置"
+        title="微信接入"
+        description="扫码接入保持为主路径，手动 Token 模式收纳在折叠区里，只在联调和回归时展开。"
+        actions={
+          <div className="inline-actions">
+            <button type="button" onClick={onStartQrFlow} disabled={busyKey !== null}>
+              {busyKey === "wechat-qr" ? "生成中..." : "生成二维码"}
+            </button>
+            <button type="button" onClick={onPollQrStatus} disabled={busyKey !== null}>
+              {busyKey === "wechat-poll" ? "轮询中..." : "轮询状态"}
+            </button>
+          </div>
+        }
+      />
 
-      <div className="inline-tip">
-        扫码接入保持为主路径，手动 token 连接收纳在折叠区里，避免常规操作被冗余字段打断。
-      </div>
+      <CommandBar
+        label="接入策略"
+        detail="先扫码写入当前生效网关，再用手动 Token 做联调和回归验证。"
+        className="wechat-command-bar"
+      >
+        <span className="small-note">运行中的微信链路会在状态卡和二维码区同步反馈。</span>
+      </CommandBar>
 
       <div className="connection-wechat-layout">
         <div className="connection-fact-grid">
@@ -98,6 +104,6 @@ export function WeChatConfigCard({
           </div>
         </details>
       </div>
-    </section>
+    </SurfaceCard>
   );
 }

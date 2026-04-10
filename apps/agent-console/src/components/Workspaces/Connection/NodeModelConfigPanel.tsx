@@ -4,7 +4,7 @@ import type {
   LocalNodeModelConfigRequest,
   LocalNodeStatusResponse,
 } from "../../../types";
-import { DASHSCOPE_BASE_URL_PLACEHOLDER, DASHSCOPE_MODEL_PLACEHOLDER, DASHSCOPE_ONLY_NOTICE, DASHSCOPE_PROVIDER_HEADLINE, DASHSCOPE_PROVIDER_LABEL, formatModelProviderLabel } from "../../../modelProviderUi";
+import { formatModelProviderLabel, hasText } from "../../../stringUtils";
 import { InfoRow, SnippetBlock, ToggleSecretInput } from "./ConnectionUi";
 
 type NodeModelConfigPanelProps = {
@@ -88,14 +88,14 @@ export function NodeModelConfigPanel({
   const selectedProvider = draft.model_provider === "openai" || draft.model_provider === "dify" ? draft.model_provider : "auto";
   const providerHeadline =
     selectedProvider === "openai"
-      ? DASHSCOPE_PROVIDER_HEADLINE
+      ? "DashScope（阿里云通义千问）"
       : selectedProvider === "dify"
         ? "Dify 工作流"
         : "自动选择已完整配置的 Provider";
   const openaiKeyConfigured = Boolean(status?.model_settings?.openai_api_key_configured);
   const difyKeyConfigured = Boolean(status?.model_settings?.dify_api_key_configured);
-  const openaiKeyMode = draft.clear_openai_api_key ? "clear" : draft.openai_api_key.trim() ? "replace" : draft.preserve_openai_api_key ? "keep" : "missing";
-  const difyKeyMode = draft.clear_dify_api_key ? "clear" : draft.dify_api_key.trim() ? "replace" : draft.preserve_dify_api_key ? "keep" : "missing";
+  const openaiKeyMode = draft.clear_openai_api_key ? "clear" : hasText(draft.openai_api_key) ? "replace" : draft.preserve_openai_api_key ? "keep" : "missing";
+  const difyKeyMode = draft.clear_dify_api_key ? "clear" : hasText(draft.dify_api_key) ? "replace" : draft.preserve_dify_api_key ? "keep" : "missing";
 
   return (
     <section className="surface">
@@ -135,7 +135,7 @@ export function NodeModelConfigPanel({
         配置会写入节点自己的 <code>node.env</code>。密钥改成了显式的保留 / 替换 / 清空语义，留空不再默认为清空。
       </div>
       <div className="inline-tip">
-        {DASHSCOPE_ONLY_NOTICE} 现有兼容字段会继续沿用，避免影响已保存配置。
+        当前内置节点仅支持阿里云 DashScope / 通义千问模型。现有兼容字段会继续沿用，避免影响已保存配置。
       </div>
 
       <div className="connection-fact-grid connection-fact-grid-wide">
@@ -156,7 +156,7 @@ export function NodeModelConfigPanel({
           <strong>{formatModelProviderLabel(status?.active_model_provider || status?.configured_model_provider) || "未读取"}</strong>
         </div>
         <div className="connection-fact-tile">
-          <span>{DASHSCOPE_PROVIDER_LABEL} API Key</span>
+          <span>DashScope API Key</span>
           <strong>{openaiKeyConfigured ? "已保存" : "未保存"}</strong>
         </div>
         <div className="connection-fact-tile">
@@ -192,25 +192,25 @@ export function NodeModelConfigPanel({
                 className={`node-provider-chip ${draft.model_provider === provider ? "node-provider-chip-active" : ""}`}
                 onClick={() => onChange("model_provider", provider)}
               >
-                {provider === "auto" ? "自动" : provider === "openai" ? DASHSCOPE_PROVIDER_LABEL : "Dify"}
+                {provider === "auto" ? "自动" : provider === "openai" ? "DashScope" : "Dify"}
               </button>
             ))}
           </div>
           <div className="connection-form-grid">
             <label>
-              <span>{DASHSCOPE_PROVIDER_LABEL} Base URL</span>
+              <span>DashScope Base URL</span>
               <input
                 value={draft.openai_base_url}
                 onChange={(event) => onChange("openai_base_url", event.target.value)}
-                placeholder={DASHSCOPE_BASE_URL_PLACEHOLDER}
+                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
               />
             </label>
             <label>
-              <span>{DASHSCOPE_PROVIDER_LABEL} 模型</span>
+              <span>DashScope 模型</span>
               <input
                 value={draft.openai_model}
                 onChange={(event) => onChange("openai_model", event.target.value)}
-                placeholder={DASHSCOPE_MODEL_PLACEHOLDER}
+                placeholder="qwen3.5-plus / qwen-plus / qwen-max"
               />
             </label>
             <label className="connection-full-span">
@@ -226,14 +226,14 @@ export function NodeModelConfigPanel({
 
         <div className="node-model-secret-grid">
           <SecretCard
-            title={`${DASHSCOPE_PROVIDER_LABEL} API Key`}
-            subtitle={openaiKeyConfigured ? `当前节点已保存 ${DASHSCOPE_PROVIDER_LABEL} API Key，留空可以继续沿用。` : `当前节点还没有保存 ${DASHSCOPE_PROVIDER_LABEL} API Key。`}
+            title="DashScope API Key"
+            subtitle={openaiKeyConfigured ? "当前节点已保存 DashScope API Key，留空可以继续沿用。" : "当前节点还没有保存 DashScope API Key。"}
             status={openaiKeyMode}
             value={draft.openai_api_key}
             configured={openaiKeyConfigured}
             preserve={draft.preserve_openai_api_key}
             clear={draft.clear_openai_api_key}
-            placeholder={openaiKeyConfigured ? "输入新 Key 才会替换现有值" : `输入 ${DASHSCOPE_PROVIDER_LABEL} API Key`}
+            placeholder={openaiKeyConfigured ? "输入新 Key 才会替换现有值" : "输入阿里云 DashScope API Key"}
             onValueChange={(value) => onChange("openai_api_key", value)}
             onPreserveChange={(checked) => {
               onChange("preserve_openai_api_key", checked);
@@ -274,7 +274,7 @@ export function NodeModelConfigPanel({
 
       <details className="form-advanced-details connection-fold-card">
         <summary>
-          <span className="section-kicker">{DASHSCOPE_PROVIDER_LABEL} 高级参数</span>
+          <span className="section-kicker">DashScope 高级参数</span>
           <span className="connection-fold-hint">温度、搜索、thinking、多模态与 stop sequences</span>
         </summary>
         <div className="connection-form-grid">
@@ -315,7 +315,7 @@ export function NodeModelConfigPanel({
         <div className="connection-checkbox-grid">
           <label className="checkbox-row">
             <input type="checkbox" checked={draft.openai_enable_thinking} onChange={(event) => onChange("openai_enable_thinking", event.target.checked)} />
-            <span>启用 {DASHSCOPE_PROVIDER_LABEL} Thinking</span>
+            <span>启用 DashScope Thinking</span>
           </label>
           <label className="checkbox-row">
             <input type="checkbox" checked={draft.openai_enable_search} onChange={(event) => onChange("openai_enable_search", event.target.checked)} />

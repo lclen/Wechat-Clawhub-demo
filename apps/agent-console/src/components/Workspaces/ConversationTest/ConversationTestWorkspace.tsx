@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { DASHSCOPE_ONLY_NOTICE, DASHSCOPE_PROVIDER_LABEL, formatModelProviderLabel } from "../../../modelProviderUi";
+import { CommandBar, EmptyState, MetricStrip, SectionHeader, SignalBadge, SurfaceCard } from "../../shared/ConsolePrimitives";
+import { formatModelProviderLabel } from "../../../stringUtils";
 import type {
   LocalNodeConversationTestRequest,
   LocalNodeConversationTestResponse,
@@ -8,6 +9,10 @@ import type {
 
 type ConversationTestWorkspaceProps = {
   currentRoleIsWorker: boolean;
+  title: string;
+  description: string;
+  heroTitle: string;
+  heroDescription: string;
   launcherAvailable: boolean;
   busyKey: string | null;
   localNodeStatus: LocalNodeStatusResponse | null;
@@ -24,6 +29,10 @@ const DEFAULT_MESSAGE =
 
 export function ConversationTestWorkspace({
   currentRoleIsWorker,
+  title,
+  description,
+  heroTitle,
+  heroDescription,
   launcherAvailable,
   busyKey,
   localNodeStatus,
@@ -65,70 +74,52 @@ export function ConversationTestWorkspace({
           <div className="section-kicker">
             {currentRoleIsWorker ? "节点对话测试" : "模型对话测试"}
           </div>
-          <h2>直接发一条测试消息，确认当前 {DASHSCOPE_PROVIDER_LABEL} 或 Dify 配置真的能收到回复</h2>
+          <h2>{title}</h2>
         </div>
-        <div className="workspace-caption">
-          这个页面验证的是“可真正完成一轮对话”，而不只是模型列表可访问。{DASHSCOPE_ONLY_NOTICE}
-        </div>
+        <div className="workspace-caption">{description}</div>
       </div>
 
       {!launcherAvailable ? (
-        <section className="surface">
-          <div className="empty-state">
-            当前前端没有连接到本地 launcher，暂时无法发起本机节点对话测试。
-          </div>
-        </section>
+        <SurfaceCard>
+          <EmptyState title="当前前端没有连接到本地 launcher" detail="暂时无法发起本机节点对话测试。" />
+        </SurfaceCard>
       ) : !localNodeStatus ? (
-        <section className="surface">
-          <div className="section-head compact-head">
-            <div>
-              <div className="section-kicker">节点状态</div>
-              <h3>先读取本机节点运行态</h3>
-            </div>
-            <button type="button" className="ghost-button" onClick={onRefreshLocalNodeDiagnostics}>
-              刷新节点状态
-            </button>
-          </div>
-          <div className="empty-state">
-            还没有读到本机节点状态，请先刷新一次，确认 launcher 已经拿到当前节点配置。
-          </div>
-        </section>
+        <SurfaceCard>
+          <SectionHeader
+            kicker="节点状态"
+            title="先读取本机节点运行态"
+            actions={<button type="button" className="ghost-button" onClick={onRefreshLocalNodeDiagnostics}>刷新节点状态</button>}
+          />
+          <EmptyState title="还没有读到本机节点状态" detail="请先刷新一次，确认 launcher 已经拿到当前节点配置。" />
+        </SurfaceCard>
       ) : (
         <div className="conversation-test-layout">
-          <section className="surface">
-            <div className="section-head">
-              <div>
-                <div className="section-kicker">Test Setup</div>
-                <h3>选择测试链路</h3>
-              </div>
-              <div className="inline-actions">
-                <button type="button" className="ghost-button" onClick={onRefreshLocalNodeDiagnostics} disabled={busyKey !== null}>
-                  刷新节点状态
-                </button>
-                <button type="button" onClick={handleRunTest} disabled={busyKey !== null || !canRun}>
-                  {busyKey === "local-node-conversation-test" ? "测试中..." : "发送测试消息"}
-                </button>
-              </div>
-            </div>
+          <SurfaceCard className="conversation-command-shell" tone="accent">
+            <SectionHeader
+              kicker="Test Setup"
+              title={heroTitle}
+              description={heroDescription}
+              actions={
+                <div className="inline-actions">
+                  <button type="button" className="ghost-button" onClick={onRefreshLocalNodeDiagnostics} disabled={busyKey !== null}>
+                    刷新节点状态
+                  </button>
+                  <button type="button" onClick={handleRunTest} disabled={busyKey !== null || !canRun}>
+                    {busyKey === "local-node-conversation-test" ? "测试中..." : "发送测试消息"}
+                  </button>
+                </div>
+              }
+            />
 
-            <div className="conversation-test-facts">
-              <div className="connection-fact-tile">
-                <span>已保存 Provider</span>
-                <strong>{configuredProvider}</strong>
-              </div>
-              <div className="connection-fact-tile">
-                <span>当前生效 Provider</span>
-                <strong>{activeProvider}</strong>
-              </div>
-              <div className="connection-fact-tile">
-                <span>推理后端状态</span>
-                <strong>{localNodeStatus.inference_ready ? "已就绪" : "未就绪"}</strong>
-              </div>
-              <div className="connection-fact-tile">
-                <span>配置文件</span>
-                <strong>{localNodeStatus.config_path || "未读取"}</strong>
-              </div>
-            </div>
+            <MetricStrip
+              className="conversation-test-metrics"
+              items={[
+                { label: "已保存 Provider", value: configuredProvider },
+                { label: "当前生效 Provider", value: activeProvider },
+                { label: "推理状态", value: localNodeStatus.inference_ready ? "已就绪" : "未就绪" },
+                { label: "配置文件", value: localNodeStatus.config_path || "未读取" },
+              ]}
+            />
 
             {localNodeModelDirty ? (
               <div className="inline-tip conversation-test-warning">
@@ -142,7 +133,7 @@ export function ConversationTestWorkspace({
             <div className="conversation-provider-row" role="tablist" aria-label="Conversation test providers">
               {([
                 { value: "current", label: "当前配置" },
-                { value: "openai", label: DASHSCOPE_PROVIDER_LABEL },
+                { value: "openai", label: "DashScope" },
                 { value: "dify", label: "Dify" },
               ] as const).map((item) => (
                 <button
@@ -156,6 +147,14 @@ export function ConversationTestWorkspace({
               ))}
             </div>
 
+            <CommandBar
+              label="当前测试链路"
+              detail="先用短问题验证连通性，再切换到更长的业务提示词。当前仅支持阿里云 DashScope / 通义千问模型。"
+              className="conversation-test-command-bar"
+            >
+              <SignalBadge tone="info">{provider === "current" ? "当前配置" : provider === "openai" ? "DashScope" : "Dify"}</SignalBadge>
+            </CommandBar>
+
             <label className="conversation-test-editor">
               <span>测试消息</span>
               <textarea
@@ -168,15 +167,14 @@ export function ConversationTestWorkspace({
             <div className="inline-tip">
               建议先用一句短问题测试连通性，确认成功后再试业务提示词。
             </div>
-          </section>
+          </SurfaceCard>
 
-          <section className="surface">
-            <div className="section-head">
-              <div>
-                <div className="section-kicker">Test Result</div>
-                <h3>本次对话回执</h3>
-              </div>
-            </div>
+          <SurfaceCard className="conversation-result-shell" tone="strong">
+            <SectionHeader
+              kicker="Test Result"
+              title="本次对话回执"
+              description="右侧专门承接 provider、耗时、结果与回复正文，形成固定排障视角。"
+            />
 
             {errorText ? (
               <div className="conversation-test-error">
@@ -187,24 +185,15 @@ export function ConversationTestWorkspace({
 
             {result ? (
               <div className="conversation-test-result">
-                <div className="connection-fact-grid connection-fact-grid-wide">
-                  <div className="connection-fact-tile">
-                    <span>实际走的链路</span>
-                    <strong>{formatModelProviderLabel(result.provider) || result.provider}</strong>
-                  </div>
-                  <div className="connection-fact-tile">
-                    <span>保存的 Provider</span>
-                    <strong>{formatModelProviderLabel(result.configured_provider) || "未读取"}</strong>
-                  </div>
-                  <div className="connection-fact-tile">
-                    <span>耗时</span>
-                    <strong>{result.latency_ms} ms</strong>
-                  </div>
-                  <div className="connection-fact-tile">
-                    <span>结果</span>
-                    <strong>{result.ok ? "已收到回复" : "失败"}</strong>
-                  </div>
-                </div>
+                <MetricStrip
+                  className="conversation-result-metrics"
+                  items={[
+                    { label: "实际走的链路", value: formatModelProviderLabel(result.provider) || result.provider },
+                    { label: "保存的 Provider", value: formatModelProviderLabel(result.configured_provider) || "未读取" },
+                    { label: "耗时", value: `${result.latency_ms} ms` },
+                    { label: "结果", value: result.ok ? "已收到回复" : "失败" },
+                  ]}
+                />
 
                 <div className="info-stack connection-inline-info">
                   <div className="info-row">
@@ -228,11 +217,9 @@ export function ConversationTestWorkspace({
                 </div>
               </div>
             ) : !errorText ? (
-              <div className="empty-state">
-                还没有执行测试。发送一条消息后，这里会显示实际走的 provider、耗时和 AI 回复正文。
-              </div>
+              <EmptyState title="还没有执行测试" detail="发送一条消息后，这里会显示实际走的 provider、耗时和 AI 回复正文。" />
             ) : null}
-          </section>
+          </SurfaceCard>
         </div>
       )}
     </section>

@@ -1,0 +1,12 @@
+{
+  "mode_requested": "deep",
+  "mode_effective": "default",
+  "reason": "installed graphifyy version exposes no deep-mode CLI or extract API",
+  "nodes": 1187,
+  "edges": 2743,
+  "communities": 42,
+  "tokens": {
+    "input": 0,
+    "output": 0
+  }
+}

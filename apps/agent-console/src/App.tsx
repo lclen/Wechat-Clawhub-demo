@@ -30,9 +30,15 @@ import {
   truncateText,
 } from "./components/Workspaces/Sessions/sessionUi";
 import { applyGatewaySummaryToState, resolvePreferredGatewayBaseUrl } from "./appBootstrap";
-import { clearQuickSetupCache, loadSetupDraft, loadSummaryStateCache, loadUiStateCache } from "./appStorage";
+import { clearQuickSetupCache, loadSetupDraft, loadSummaryStateCache, loadUiStateCache, saveUiStateCache } from "./appStorage";
 import { syncNodeState } from "./consoleStateSync";
-import { DASHSCOPE_PROVIDER_LABEL } from "./modelProviderUi";
+import {
+  buildRoleCapabilities,
+  resolveVisibleWorkspaces,
+  roleVariantDescription,
+  roleVariantLabel,
+  workspacePresentation,
+} from "./roleCapabilities";
 import {
   DEFAULT_BUILTIN_MODEL_LABEL,
   DEFAULT_CONSOLE_SETUP,
@@ -44,8 +50,8 @@ import {
   GATEWAY_NODE_TOKEN_LOCATION,
   SETUP_DRAFT_KEY,
   SUMMARY_STATE_CACHE_KEY,
-  UI_STATE_CACHE_KEY,
 } from "./quickSetupDefaults";
+import { formatModelProviderLabel, hasText, safeTrim } from "./stringUtils";
 import {
   buildLauncherStartPayload,
   findLauncherComponent,
@@ -116,7 +122,6 @@ import { useWechatOnboarding } from "./hooks/useWechatOnboarding";
 import { useWorkspacePollingEffects } from "./hooks/useWorkspacePollingEffects";
 import type {
   AppSummaryStateCache,
-  AppUiStateCache,
   ConsoleSetupConfig,
   GatewaySetupConfig,
   GatewaySummaryResponse,
@@ -174,48 +179,6 @@ const FAST_POLL_MS = 1200;
 const RETRY_POLL_MS = 1000; // backend unreachable — retry quickly
 const WS_RECONNECT_BASE_MS = 1500;
 const WS_RECONNECT_MAX_MS = 15000;
-
-function formatBuiltinModelStatusDetail(modelStatus: ModelStatus | null): string {
-  if (!modelStatus?.configured) {
-    return "先完成模型检测和配置保存，再开始接入联调。";
-  }
-
-  const parts = [
-    modelStatus.base_url,
-    `thinking ${modelStatus.enable_thinking ? "on" : "off"}`,
-    `search ${modelStatus.enable_search ? modelStatus.search_strategy : "off"}`,
-    `temperature ${modelStatus.temperature}`,
-    `top_p ${modelStatus.top_p}`,
-    modelStatus.multimodal_enabled ? "多模态 on" : "多模态 off",
-  ];
-
-  if (modelStatus.search_forced) {
-    parts.push("强制搜索 on");
-  }
-  if (modelStatus.enable_search_extension) {
-    parts.push("垂域搜索 on");
-  }
-  if (modelStatus.max_tokens > 0) {
-    parts.push(`max_tokens ${modelStatus.max_tokens}`);
-  }
-  if (modelStatus.thinking_budget > 0) {
-    parts.push(`thinking_budget ${modelStatus.thinking_budget}`);
-  }
-  if (modelStatus.seed > 0) {
-    parts.push(`seed ${modelStatus.seed}`);
-  }
-
-  return parts.join(" · ");
-}
-
-function formatBuiltinModelStatusMeta(modelStatus: ModelStatus | null): string {
-  if (!modelStatus?.configured) {
-    return "未配置模型";
-  }
-  const stopText = modelStatus.stop.trim() ? "已配置 stop" : "无 stop";
-  const keyText = modelStatus.api_key_configured ? "Key 已保存" : "Key 缺失";
-  return [modelStatus.provider || "dashscope", keyText, stopText].join(" · ");
-}
 
 async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, { headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }, ...init });
@@ -392,23 +355,54 @@ export function App() {
   const previousMessageSessionIdRef = useRef<string | null>(null);
   const pendingHistoryRestoreRef = useRef<{ sessionId: string; scrollHeight: number; scrollTop: number } | null>(null);
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
+  const restoredSessionScrollRef = useRef(initialUiState.session_scroll);
   const nodeDiagnosticsCacheRef = useRef<Map<string, NodeDiagnosticsRecord>>(new Map());
   const runtimeMachineRole = launcherMachineRoleValue(launcherStatus);
   const effectiveRole = resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? [], runtimeMachineRole);
+  const roleCapabilities = useMemo(() => buildRoleCapabilities(effectiveRole), [effectiveRole]);
+  const visibleWorkspaces = useMemo(() => resolveVisibleWorkspaces(roleCapabilities), [roleCapabilities]);
   const currentRoleIsWorker = isWorkerRole(effectiveRole);
   const currentRoleIsConsole = isConsoleRole(effectiveRole);
+  const activeWorkspacePresentation = useMemo(
+    () => workspacePresentation(roleCapabilities, workspace),
+    [roleCapabilities, workspace],
+  );
+  const connectionWorkspacePresentation = useMemo(
+    () => workspacePresentation(roleCapabilities, "connection"),
+    [roleCapabilities],
+  );
+  const sessionWorkspacePresentation = useMemo(
+    () => workspacePresentation(roleCapabilities, "sessions"),
+    [roleCapabilities],
+  );
+  const conversationWorkspacePresentation = useMemo(
+    () => workspacePresentation(roleCapabilities, "conversation_test"),
+    [roleCapabilities],
+  );
+  const quickSetupPresentation = useMemo(
+    () => workspacePresentation(roleCapabilities, "quick_setup"),
+    [roleCapabilities],
+  );
+  const activeRoleLabel = useMemo(() => roleVariantLabel(roleCapabilities), [roleCapabilities]);
+  const activeRoleDescription = useMemo(() => roleVariantDescription(roleCapabilities), [roleCapabilities]);
   const localGatewayManaged = launcherAvailable ? launcherShouldRunGateway(launcherStatus) : null;
   const shouldUseLocalGatewayApi = shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
   const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
   const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
   const sessionRemoteGatewayBaseUrl = currentRoleIsWorker
-    ? workerSetup.gateway_base_url.trim()
+    ? safeTrim(workerSetup.gateway_base_url)
     : currentRoleIsConsole
-      ? (consoleSetup.gateway_base_url.trim() || setupProfile?.console.gateway_base_url || "")
+      ? (safeTrim(consoleSetup.gateway_base_url) || setupProfile?.console.gateway_base_url || "")
       : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");
-  const sessionRemoteNodeId = currentRoleIsWorker ? workerSetup.node_id.trim() : "";
+  const sessionRemoteNodeId = currentRoleIsWorker ? safeTrim(workerSetup.node_id) : "";
   const currentNodeLanIp = launcherStatus?.local_lan_ip || setupTask?.metadata.lan_ip || "";
   const currentGatewayBaseUrl = consoleSetup.gateway_base_url || window.location.origin;
+
+  useEffect(() => {
+    if (!roleCapabilities.workspace[workspace]?.visible) {
+      setWorkspace(roleCapabilities.primaryWorkspace);
+    }
+  }, [roleCapabilities, workspace]);
 
   const syncNodeStateView = useCallback((next: NodeListResponse, options?: { selectNode?: boolean }) => {
     syncNodeState(
@@ -539,20 +533,30 @@ export function App() {
   });
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem(
-        UI_STATE_CACHE_KEY,
-        JSON.stringify({
-          workspace,
-          selected_session_id: selectedSessionId,
-          selected_node_id: null,
-        } satisfies AppUiStateCache),
-      );
-    } catch {
-      // ui state cache is best-effort
-    }
+    saveUiStateCache(
+      selectedSessionId
+        ? {
+            workspace,
+            selected_session_id: selectedSessionId,
+            selected_node_id: null,
+          }
+        : {
+            workspace,
+            selected_session_id: null,
+            selected_node_id: null,
+            session_scroll: null,
+          },
+    );
     persistWorkspace(workspace);
-  }, [selectedNodeId, selectedSessionId, workspace]);
+  }, [selectedSessionId, workspace]);
+
+  const getPersistedSessionScroll = useCallback((sessionId: string | null) => {
+    const persistedScroll = loadUiStateCache().session_scroll;
+    if (!sessionId || !persistedScroll || persistedScroll.session_id !== sessionId) {
+      return null;
+    }
+    return persistedScroll;
+  }, []);
 
   useEffect(() => {
     try {
@@ -758,6 +762,7 @@ export function App() {
     upsertSessionInView,
     refreshSessionDetail,
     switchSessionNode,
+    persistSessionScrollState,
   } = useSessionConsoleController({
     requestJson,
     withBusy,
@@ -785,6 +790,7 @@ export function App() {
     setMessageHistoryLoading,
     setNotice,
     refreshGatewaySummarySnapshot,
+    saveUiStateCache,
   });
   useSessionWorkspaceEffects({
     requestJson,
@@ -807,7 +813,9 @@ export function App() {
     previousMessageSessionIdRef,
     shouldAutoFollowMessagesRef,
     pendingHistoryRestoreRef,
+    restoredSessionScrollRef,
     messagesRef,
+    getPersistedSessionScroll,
     getSessionMessageCache,
     applySessionMessageEntry,
     fetchSessionMessages,
@@ -822,6 +830,7 @@ export function App() {
     setMessageHasMoreBefore,
     setMessagesLoaded,
     setNotice,
+    persistSessionScrollState,
   });
   useNodeDiagnosticsEffects({
     requestJson,
@@ -868,21 +877,21 @@ export function App() {
         await refreshLauncherStatus();
         stoppedActions.push("已停止所有本地组件");
       }
-      if ((setupCompletedRoles.has("worker_node") || workerSetup.node_id.trim()) && workerSetup.install_dir.trim()) {
+      if ((setupCompletedRoles.has("worker_node") || hasText(workerSetup.node_id)) && hasText(workerSetup.install_dir)) {
         const resetUrl = launcherMachineRoleValue(launcherStatus) === "node" ? "/local/node/reset-credentials" : "/api/setup/node/reset-credentials";
         const result = await withBusy(
           "reconfigure-reset-worker-token",
           () => requestJson<SetupTaskEnvelope>(resetUrl, {
             method: "POST",
             body: JSON.stringify({
-              node_id: workerSetup.node_id.trim(),
-              install_dir: workerSetup.install_dir.trim(),
+              node_id: safeTrim(workerSetup.node_id),
+              install_dir: safeTrim(workerSetup.install_dir),
             } satisfies NodeCredentialResetRequest),
           }),
         );
         setSetupTask(result.task);
         setWorkerSetup((current) => ({ ...current, node_token: "" }));
-        clearNodeDiagnosticsCache(workerSetup.node_id.trim());
+        clearNodeDiagnosticsCache(safeTrim(workerSetup.node_id));
         stoppedActions.push("已清空节点配置");
       }
       // 重置后端内存状态（仅网关角色需要）
@@ -955,8 +964,8 @@ export function App() {
     });
   }, [selectedSession, sessionBindingOptions]);
   const workerGatewayConnection = useMemo(() => {
-    const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
-    const nodeId = workerSetup.node_id.trim();
+    const gatewayBaseUrl = safeTrim(workerSetup.gateway_base_url);
+    const nodeId = safeTrim(workerSetup.node_id);
     if (!gatewayBaseUrl || !nodeId) {
       return {
         state: "idle" as WorkerGatewayConnectionState,
@@ -983,7 +992,7 @@ export function App() {
       };
     }
     const connectionState = task.metadata.node_connection_state || "";
-    const lastError = task.metadata.node_last_error?.trim() || task.metadata.local_node_last_error?.trim() || "";
+    const lastError = safeTrim(task.metadata.node_last_error) || safeTrim(task.metadata.local_node_last_error) || "";
     const tokenMismatchHint = gatewayTokenMismatchHint(nodeId);
     const inventoryNode = nodeInventory.find((item) => item.node_id === nodeId) ?? null;
     const onlineNode = nodes.find((item) => item.node_id === nodeId) ?? null;
@@ -1073,8 +1082,8 @@ export function App() {
         {
           title: "节点凭据",
           value: "等待网关下发",
-          tone: workerSetup.pairing_key.trim() ? "good" : "warn",
-          detail: workerSetup.pairing_key.trim() ? "安装阶段不会生成 token；配对时会由网关自动下发。" : "请先填写配对密钥，后续由网关自动下发 token。",
+          tone: hasText(workerSetup.pairing_key) ? "good" : "warn",
+          detail: hasText(workerSetup.pairing_key) ? "安装阶段不会生成 token；配对时会由网关自动下发。" : "请先填写配对密钥，后续由网关自动下发 token。",
         },
         {
           title: "发现响应",
@@ -1151,7 +1160,7 @@ export function App() {
     },
     {
       label: "配对密钥状态",
-      value: workerSetup.pairing_key.trim() ? "当前草稿已填写，可通过“显示密钥”临时查看。" : "当前草稿未填写；若已安装节点，请到节点本机 .env 查看或重新设置。",
+      value: hasText(workerSetup.pairing_key) ? "当前草稿已填写，可通过“显示密钥”临时查看。" : "当前草稿未填写；若已安装节点，请到节点本机 .env 查看或重新设置。",
     },
     { label: "网关侧查看位置", value: `配对成功后可在 ${GATEWAY_NODE_TOKEN_LOCATION} 查看` },
     { label: "节点侧查看位置", value: `配对成功后可在 ${workerEnvLocations(workerSetup.install_dir)} 查看` },
@@ -1166,8 +1175,8 @@ export function App() {
   const workerConnectionLog = useMemo(() => {
     if (!currentRoleIsWorker) return "";
     const lines: string[] = [
-      `当前节点 ID：${workerSetup.node_id.trim() || "未填写"}`,
-      `目标网关：${workerSetup.gateway_base_url.trim() || "未填写"}`,
+      `当前节点 ID：${safeTrim(workerSetup.node_id) || "未填写"}`,
+      `目标网关：${safeTrim(workerSetup.gateway_base_url) || "未填写"}`,
       `当前连接状态：${workerGatewayConnection.label}`,
       `状态摘要：${workerGatewayConnection.detail}`,
     ];
@@ -1292,6 +1301,50 @@ export function App() {
       `已配对 ${nodeInventorySummary.paired_total} / 在线 ${nodeInventorySummary.online_total} / 空闲 ${nodeChannelOverview.onlineIdle} / 占用 ${nodeChannelOverview.onlineInUse}`,
     [nodeChannelOverview.onlineIdle, nodeChannelOverview.onlineInUse, nodeInventorySummary.online_total, nodeInventorySummary.paired_total],
   );
+  const builtinModelStatusDetail = useMemo(() => {
+    if (!modelStatus?.configured) {
+      return modelStatus?.base_url || "先完成模型检测和配置保存，再开始接入联调。";
+    }
+    const flags: string[] = [
+      modelStatus.enable_thinking ? "Thinking 开" : "Thinking 关",
+      `Temp ${modelStatus.temperature}`,
+      modelStatus.multimodal_enabled ? "多模态开" : "多模态关",
+    ];
+    if (modelStatus.top_p < 1) flags.push(`TopP ${modelStatus.top_p}`);
+    if (modelStatus.max_tokens > 0) flags.push(`MaxTok ${modelStatus.max_tokens}`);
+    if (modelStatus.enable_search) {
+      flags.push(`搜索 ${modelStatus.search_strategy}`);
+      if (modelStatus.search_forced) flags.push("强制");
+      if (modelStatus.enable_search_extension) flags.push("扩展");
+    }
+    return [modelStatus.base_url, flags.join(" · ")].filter(Boolean).join(" | ");
+  }, [
+    modelStatus?.base_url,
+    modelStatus?.configured,
+    modelStatus?.enable_search,
+    modelStatus?.enable_search_extension,
+    modelStatus?.enable_thinking,
+    modelStatus?.max_tokens,
+    modelStatus?.multimodal_enabled,
+    modelStatus?.search_forced,
+    modelStatus?.search_strategy,
+    modelStatus?.temperature,
+    modelStatus?.top_p,
+  ]);
+  const builtinModelStatusMeta = useMemo(() => {
+    if (!modelStatus?.configured) return modelStatus?.model || "未配置模型";
+    const parts: string[] = [modelStatus.model];
+    if (modelStatus.api_key_configured) parts.push("Key 已保存");
+    if (modelStatus.thinking_budget > 0) parts.push(`Budget ${modelStatus.thinking_budget}`);
+    if (hasText(modelStatus.stop)) parts.push("Stop 已配置");
+    return parts.join(" · ");
+  }, [
+    modelStatus?.api_key_configured,
+    modelStatus?.configured,
+    modelStatus?.model,
+    modelStatus?.stop,
+    modelStatus?.thinking_budget,
+  ]);
   const connectionHeroCards = useMemo<Array<{ eyebrow: string; title: string; detail: string; tone: "good" | "warn" }>>(() => {
     if (currentRoleIsWorker) {
       return [
@@ -1341,7 +1394,7 @@ export function App() {
       {
         eyebrow: "模型基线",
         title: modelStatus?.model || "未配置",
-        detail: formatBuiltinModelStatusDetail(modelStatus),
+        detail: builtinModelStatusDetail,
         tone: modelStatus?.configured ? "good" : "warn",
       },
     ];
@@ -1353,22 +1406,9 @@ export function App() {
     gatewayRuntimeSummary.tone,
     gatewayRuntimeSummary.value,
     gatewaySetup.dispatch_mode_enabled,
-    modelStatus?.api_key_configured,
+    builtinModelStatusDetail,
     modelStatus?.configured,
-    modelStatus?.enable_search,
-    modelStatus?.enable_search_extension,
-    modelStatus?.enable_thinking,
-    modelStatus?.max_tokens,
     modelStatus?.model,
-    modelStatus?.multimodal_enabled,
-    modelStatus?.provider,
-    modelStatus?.search_forced,
-    modelStatus?.search_strategy,
-    modelStatus?.seed,
-    modelStatus?.stop,
-    modelStatus?.temperature,
-    modelStatus?.thinking_budget,
-    modelStatus?.top_p,
     nodeInventorySummary.online_total,
     nodeInventorySummary.paired_total,
     nodeChannelOverview.onlineIdle,
@@ -1400,7 +1440,7 @@ export function App() {
     () => [
       {
         label: "模型可用",
-        detail: modelStatus?.configured ? formatBuiltinModelStatusMeta(modelStatus) : "尚未检测",
+        detail: modelStatus?.configured ? builtinModelStatusMeta : "尚未检测",
         tone: modelStatus?.configured ? "good" : "warn",
       },
       {
@@ -1414,23 +1454,14 @@ export function App() {
         tone: (systemStatus?.active_nodes ?? 0) > 0 ? "good" : "warn",
       },
     ],
-    [
-      modelStatus?.api_key_configured,
-      modelStatus?.configured,
-      modelStatus?.model,
-      modelStatus?.provider,
-      modelStatus?.stop,
-      systemStatus?.active_nodes,
-      wechatRuntimeSummary.tone,
-      wechatRuntimeSummary.value,
-    ],
+    [builtinModelStatusMeta, modelStatus?.configured, systemStatus?.active_nodes, wechatRuntimeSummary.tone, wechatRuntimeSummary.value],
   );
   const connectionSignalCards = useMemo<Array<{ label: string; value: string; meta: string; tone: "good" | "warn" }>>(
     () => [
       {
         label: "模型",
         value: modelStatus?.configured ? "已就绪" : "待检测",
-        meta: formatBuiltinModelStatusMeta(modelStatus),
+        meta: builtinModelStatusMeta,
         tone: modelStatus?.configured ? "good" : "warn",
       },
       {
@@ -1462,8 +1493,8 @@ export function App() {
       },
     ],
     [
+      builtinModelStatusMeta,
       modelStatus?.configured,
-      modelStatus?.model,
       nodeChannelOverview.onlineCapacity,
       nodeChannelOverview.onlineIdle,
       nodeChannelOverview.onlineInUse,
@@ -1657,66 +1688,127 @@ export function App() {
       })),
     [pairingDebugEntries],
   );
+  const sidebarWorkspaceItems = useMemo(
+    () =>
+      visibleWorkspaces.map((item) => ({
+        key: item,
+        ...workspacePresentation(roleCapabilities, item),
+      })),
+    [roleCapabilities, visibleWorkspaces],
+  );
+  const roleBadge = resolveRoleBadge(effectiveRole);
+  const sidebarStatusSummary = currentRoleIsWorker
+    ? `${workerGatewayConnection.label} · ${formatModelProviderLabel(localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider) || "未配置"}`
+    : `${gatewayRuntimeSummary.value} · ${wechatRuntimeSummary.value} · ${nodeInventorySummary.online_total} 节点在线`;
+  const topbarHighlights: Array<{ label: string; value: string; tone: "good" | "warn" }> = currentRoleIsWorker
+    ? [
+        {
+          label: "目标网关",
+          value:
+            workerGatewayConnection.state === "gateway_reachable_node_connected"
+              ? "已连接"
+              : workerSetup.gateway_base_url
+                ? "可达"
+                : "未填写",
+          tone: workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn",
+        },
+        {
+          label: "节点",
+          value: workerSetup.node_id || "未配置",
+          tone: workerSetup.node_id ? "good" : "warn",
+        },
+        {
+          label: "注册状态",
+          value:
+            workerGatewayConnection.state === "gateway_reachable_node_connected"
+              ? "已注册"
+              : workerGatewayConnection.state === "idle"
+                ? "未检测"
+                : workerGatewayConnection.label,
+          tone: workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn",
+        },
+        {
+          label: "模型",
+          value: formatModelProviderLabel(localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider) || "未配置",
+          tone: localNodeStatus?.inference_ready ? "good" : "warn",
+        },
+      ]
+    : [
+        { label: "网关", value: gatewayRuntimeSummary.value, tone: gatewayRuntimeSummary.tone },
+        { label: "微信", value: wechatRuntimeSummary.value, tone: wechatRuntimeSummary.tone },
+        { label: "节点", value: `${nodeInventorySummary.online_total} 在线`, tone: nodeInventorySummary.online_total > 0 ? "good" : "warn" },
+        { label: "模型", value: modelStatus?.model || "未配置", tone: modelStatus?.configured ? "good" : "warn" },
+      ];
 
   return (
-    <div className="console-app">
-      <div className="console-grain" />
-      <div className="console-shell">
+    <div className="console-app-desktop">
+      <aside className="console-sidebar">
+        <div className="sidebar-brand sidebar-brand-command">
+          <div className="sidebar-logo"></div>
+          <div className="sidebar-brand-copy">
+            <span className="sidebar-overline">Wechat Hub</span>
+            <h2>运维指挥台</h2>
+            <p>{activeRoleDescription}</p>
+          </div>
+        </div>
+        <div className="sidebar-role-panel">
+          <div className="sidebar-role-topline">
+            <span className="sidebar-role-label">{activeRoleLabel}</span>
+            {roleBadge ? <span className={`role-badge role-badge-${roleBadge.variant}`}>{roleBadge.label}</span> : null}
+          </div>
+          <div className="sidebar-role-summary">{sidebarStatusSummary}</div>
+        </div>
+        <nav className="workspace-tabs-vertical" role="tablist" aria-label="Primary workspaces">
+          {sidebarWorkspaceItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              className={`workspace-tab workspace-tab-rich ${workspace === item.key ? "workspace-tab-active" : ""}`}
+              onClick={() => setWorkspace(item.key)}
+            >
+              <span className="workspace-tab-copy">
+                <span className="workspace-tab-title-row">
+                  <span>{item.label}</span>
+                  {roleBadge?.tab === item.key ? <span className={`role-badge role-badge-${roleBadge.variant}`}>{roleBadge.label}</span> : null}
+                </span>
+                <span className="workspace-tab-detail">{item.description}</span>
+              </span>
+            </button>
+          ))}
+        </nav>
+        <div className="sidebar-footer-note">
+          <span>PRIMARY</span>
+          <strong>{activeWorkspacePresentation.label}</strong>
+        </div>
+      </aside>
+
+      <div className="console-main-content">
         <header className="console-topbar">
           <div className="topbar-main">
-            <div className="topbar-kicker">wechat-claw-hub</div>
-            <div className="topbar-title">微信 Agent 运维工作台</div>
-            <div className="topbar-copy">
-              {workspace === "connection"
-                ? "接入中心优先展示当前运行态、接入结果和关键配置。"
-                : workspace === "conversation_test"
-                  ? `对话测试直接验证当前已保存的 ${DASHSCOPE_PROVIDER_LABEL} 或 Dify 配置能否真正返回回复。`
-                : workspace === "logs"
-                  ? "日志中心集中查看运行日志、配对日志和节点回连输出。"
-                  : "把快速配置、接入联调、日志中心和会话观察拆成四个一级工作区，首次启动先走向导，后续也能随时重配。"}
+            <div className="topbar-kicker">{activeWorkspacePresentation.kicker}</div>
+            <div className="topbar-title">{activeWorkspacePresentation.label}</div>
+            <div className="topbar-copy">{activeWorkspacePresentation.description}</div>
+          </div>
+          <div className="topbar-side">
+            <div className="topbar-role-card">
+              <span>当前角色</span>
+              <strong>{activeRoleLabel}</strong>
+              <small>{activeRoleDescription}</small>
+            </div>
+            <div className="topbar-status-row">
+              {topbarHighlights.map((item) => (
+                <StatusChip key={item.label} label={item.label} value={item.value} tone={item.tone} />
+              ))}
             </div>
           </div>
-          <div className="topbar-status-row">
-            {currentRoleIsWorker ? (
-              <>
-                <StatusChip label="目标网关" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已连接" : workerSetup.gateway_base_url ? "可达" : "未填写"} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
-                <StatusChip label="节点" value={workerSetup.node_id || "未配置"} tone={workerSetup.node_id ? "good" : "warn"} />
-                <StatusChip label="注册状态" value={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "已注册" : workerGatewayConnection.state === "idle" ? "未检测" : workerGatewayConnection.label} tone={workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn"} />
-                <StatusChip label="模型" value={localNodeStatus?.active_model_provider || localNodeStatus?.configured_model_provider || "未配置"} tone={localNodeStatus?.inference_ready ? "good" : "warn"} />
-              </>
-            ) : (
-              <>
-                <StatusChip label="网关" value={gatewayRuntimeSummary.value} tone={gatewayRuntimeSummary.tone} />
-                <StatusChip label="微信" value={wechatRuntimeSummary.value} tone={wechatRuntimeSummary.tone} />
-                <StatusChip label="节点" value={`${nodeInventorySummary.online_total} 在线`} tone={nodeInventorySummary.online_total > 0 ? "good" : "warn"} />
-                <StatusChip label="模型" value={modelStatus?.model || "未配置"} tone={modelStatus?.configured ? "good" : "warn"} />
-              </>
-            )}
-          </div>
-          <div className="topbar-notice">{notice}</div>
+          {notice && <div className="topbar-notice">{notice}</div>}
         </header>
-
-        <div className="workspace-tabs" role="tablist" aria-label="Primary workspaces">
-          <button type="button" className={`workspace-tab ${workspace === "quick_setup" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("quick_setup")}>快速配置</button>
-          <button type="button" className={`workspace-tab ${workspace === "sessions" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("sessions")}>
-            {(() => { const badge = resolveRoleBadge(effectiveRole); return badge?.tab === "sessions" ? <span className="workspace-tab-badge">会话观察台<span className={`role-badge role-badge-${badge.variant}`}>{badge.label}</span></span> : "会话观察台"; })()}
-          </button>
-          <button type="button" className={`workspace-tab ${workspace === "connection" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("connection")}>
-            {(() => { const badge = resolveRoleBadge(effectiveRole); return badge?.tab === "connection" ? <span className="workspace-tab-badge">接入中心<span className={`role-badge role-badge-${badge.variant}`}>{badge.label}</span></span> : "接入中心"; })()}
-          </button>
-          <button type="button" className={`workspace-tab ${workspace === "conversation_test" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("conversation_test")}>
-            对话测试
-          </button>
-          <button type="button" className={`workspace-tab ${workspace === "logs" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("logs")}>
-            日志中心
-          </button>
-        </div>
 
         {workspace === "quick_setup" ? (
           <QuickSetupWorkspace
             currentRoleIsWorker={currentRoleIsWorker}
             currentRoleIsConsole={currentRoleIsConsole}
-            currentRoleDisplay={currentRoleDisplay}
+            currentRoleDisplay={currentRoleDisplay || quickSetupPresentation.label}
             effectiveRole={effectiveRole}
             setupMode={setupMode}
             setupRole={setupRole}
@@ -1805,7 +1897,21 @@ export function App() {
         ) : workspace === "connection" ? (
           <ConnectionWorkspace
             currentRoleIsWorker={currentRoleIsWorker}
-            currentRoleIsConsole={currentRoleIsConsole}
+            roleTitle={connectionWorkspacePresentation.heroTitle}
+            roleDescription={connectionWorkspacePresentation.heroDescription}
+            heroTitle={connectionWorkspacePresentation.heroTitle}
+            heroDescription={connectionWorkspacePresentation.heroDescription}
+            roleSections={{
+              showGatewayOverview: roleCapabilities.sections.showGatewayOverview,
+              showWeChatAccess: roleCapabilities.sections.showWeChatAccess,
+              showRemoteNodeInventory: roleCapabilities.sections.showRemoteNodeInventory,
+              showLocalNodePanel: roleCapabilities.sections.showLocalNodePanel,
+            }}
+            roleActions={{
+              canManageGateway: roleCapabilities.actions.canManageGateway,
+              canManageWeChat: roleCapabilities.actions.canManageWeChat,
+              canManageNodes: roleCapabilities.actions.canManageNodes,
+            }}
             currentNodeLanIp={currentNodeLanIp}
             currentGatewayBaseUrl={currentGatewayBaseUrl}
             setupCompletedRoles={setupCompletedRoles}
@@ -1872,6 +1978,10 @@ export function App() {
         ) : workspace === "conversation_test" ? (
           <ConversationTestWorkspace
             currentRoleIsWorker={currentRoleIsWorker}
+            title={conversationWorkspacePresentation.label}
+            description={conversationWorkspacePresentation.description}
+            heroTitle={conversationWorkspacePresentation.heroTitle}
+            heroDescription={conversationWorkspacePresentation.heroDescription}
             launcherAvailable={launcherAvailable}
             busyKey={busy}
             localNodeStatus={localNodeStatus}
@@ -1893,6 +2003,10 @@ export function App() {
         ) : (
           <SessionsWorkspace
             effectiveRole={effectiveRole}
+            title={sessionWorkspacePresentation.label}
+            description={sessionWorkspacePresentation.description}
+            heroTitle={sessionWorkspacePresentation.heroTitle}
+            heroDescription={sessionWorkspacePresentation.heroDescription}
             systemStatus={systemStatus}
             currentGatewayBaseUrl={currentGatewayBaseUrl}
             sessionsLoaded={sessionsLoaded}
@@ -1916,6 +2030,7 @@ export function App() {
             inspectorOpen={inspectorOpen}
             busyKey={busy}
             currentRoleIsWorker={currentRoleIsWorker}
+            canBindSessions={roleCapabilities.actions.canBindSessions}
             messagesRef={messagesRef}
             onGoToQuickSetup={() => setWorkspace("quick_setup")}
             onChangeFilter={setSessionFilter}

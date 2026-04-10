@@ -3,6 +3,7 @@ import { NodeInventoryPanel } from "./NodeInventoryPanel";
 import { NodeModelConfigPanel } from "./NodeModelConfigPanel";
 import { OverviewPanel } from "./OverviewPanel";
 import { WeChatConfigCard } from "./WeChatConfigCard";
+import { hasText, safeTrim } from "../../../stringUtils";
 import type {
   ConnectionHeroCardData,
   ConnectionPrepItem,
@@ -76,7 +77,21 @@ type WorkerGatewayConnectionView = {
 
 type ConnectionWorkspaceProps = {
   currentRoleIsWorker: boolean;
-  currentRoleIsConsole: boolean;
+  roleTitle: string;
+  roleDescription: string;
+  heroTitle: string;
+  heroDescription: string;
+  roleSections: {
+    showGatewayOverview: boolean;
+    showWeChatAccess: boolean;
+    showRemoteNodeInventory: boolean;
+    showLocalNodePanel: boolean;
+  };
+  roleActions: {
+    canManageGateway: boolean;
+    canManageWeChat: boolean;
+    canManageNodes: boolean;
+  };
   currentNodeLanIp: string;
   currentGatewayBaseUrl: string;
   setupCompletedRoles: Set<SetupRole>;
@@ -142,59 +157,75 @@ type ConnectionWorkspaceProps = {
 };
 
 export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
+  const showOverview = props.roleSections.showGatewayOverview;
+  const showWeChat = props.roleSections.showWeChatAccess;
+  const showInventory = props.roleSections.showRemoteNodeInventory;
+  const showLocalNodePanel = props.roleSections.showLocalNodePanel;
+  const showNodeOnboarding = props.roleActions.canManageNodes;
+  const showGatewayControls = props.roleActions.canManageGateway;
+  const nonWorkerSecondaryPanelCount = [showInventory, showWeChat].filter(Boolean).length;
+  const nonWorkerTertiaryPanelCount = [showNodeOnboarding, showLocalNodePanel].filter(Boolean).length;
+
   return (
     <section className="workspace-frame connection-workspace">
       <div className="workspace-heading">
         <div>
           <div className="section-kicker">{props.currentRoleIsWorker ? "节点工作台" : "接入中心"}</div>
-          <h2>{props.currentRoleIsWorker ? "聚焦本机节点安装、回连与发现响应" : "先确认网关、微信、节点和模型都处于可用状态"}</h2>
+          <h2>{props.roleTitle}</h2>
         </div>
-        <div className="workspace-caption">
-          {props.currentRoleIsWorker
-            ? "当前角色不会展示网关纳管、微信接入和分发模式操作。"
-            : "摘要优先，细节折叠，常规联调不再需要一路向下翻整页表单。"}
-        </div>
+        <div className="workspace-caption">{props.roleDescription}</div>
       </div>
 
       {!props.currentRoleIsWorker ? (
         <div className="connection-layout-stack">
-          <OverviewPanel
-            heroCards={props.connectionHeroCards}
-            prepItems={props.connectionPrepItems}
-            signalCards={props.connectionSignalCards}
-            consoleTarget={props.setupProfileConsoleGatewayBaseUrl || props.currentGatewayBaseUrl}
-            modelCheckText={props.modelCheckText}
-            lastError={props.wechatLastError}
-            dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。" : null}
-            onRunModelCheck={props.onRunModelCheck}
-            onToggleDispatch={props.onToggleDispatch}
-            onRefreshAllStatus={props.onRefreshAllStatus}
-            runModelCheckLabel={props.busyKey === "model-check" ? "检测中..." : "检测模型"}
-            toggleDispatchLabel={props.busyKey === "dispatch-mode-toggle" ? "切换中..." : props.gatewaySetupDispatchModeEnabled ? "关闭分发模式" : "开启分发模式"}
-            refreshAllLabel={props.busyKey === "connection-refresh-all" ? "刷新中..." : "刷新全部状态"}
-            busy={props.busyKey !== null}
-          />
-
-          <div className="connection-section-grid">
-            <NodeInventoryPanel headline={props.nodeInventoryHeadline} cards={props.nodeInventoryCards} selectedDiagnostics={props.selectedNodeDiagnosticsView} />
-            <WeChatConfigCard
-              statusRows={props.wechatStatusRows}
-              qrImageSrc={props.qrImageSrc}
-              pollStatus={props.pollStatus}
-              wechatBaseUrl={props.wechatBaseUrl}
-              manualToken={props.manualToken}
-              busyKey={props.busyKey}
-              onWechatBaseUrlChange={props.onWechatBaseUrlChange}
-              onManualTokenChange={props.onManualTokenChange}
-              onStartQrFlow={props.onStartQrFlow}
-              onPollQrStatus={props.onPollQrStatus}
-              onConnectManualToken={props.onConnectManualToken}
-              onDisconnectWeChat={props.onDisconnectWeChat}
+          {showOverview ? (
+            <OverviewPanel
+              heroCards={props.connectionHeroCards}
+              prepItems={props.connectionPrepItems}
+              signalCards={props.connectionSignalCards}
+              canManageGateway={showGatewayControls}
+              consoleTarget={props.setupProfileConsoleGatewayBaseUrl || props.currentGatewayBaseUrl}
+              modelCheckText={props.modelCheckText}
+              lastError={props.wechatLastError}
+              dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。" : null}
+              onRunModelCheck={props.onRunModelCheck}
+              onToggleDispatch={props.onToggleDispatch}
+              onRefreshAllStatus={props.onRefreshAllStatus}
+              runModelCheckLabel={props.busyKey === "model-check" ? "检测中..." : "检测模型"}
+              toggleDispatchLabel={props.busyKey === "dispatch-mode-toggle" ? "切换中..." : props.gatewaySetupDispatchModeEnabled ? "关闭分发模式" : "开启分发模式"}
+              refreshAllLabel={props.busyKey === "connection-refresh-all" ? "刷新中..." : "刷新全部状态"}
+              busy={props.busyKey !== null}
             />
-          </div>
+          ) : null}
 
-          <div className="connection-section-grid">
-            <div className="connection-panel-stack">
+          {(showInventory || showWeChat) ? (
+            <div className={`connection-section-grid ${nonWorkerSecondaryPanelCount < 2 ? "connection-section-grid-single" : ""}`}>
+              {showInventory ? (
+                <NodeInventoryPanel headline={props.nodeInventoryHeadline} cards={props.nodeInventoryCards} selectedDiagnostics={props.selectedNodeDiagnosticsView} />
+              ) : null}
+              {showWeChat ? (
+                <WeChatConfigCard
+                  statusRows={props.wechatStatusRows}
+                  qrImageSrc={props.qrImageSrc}
+                  pollStatus={props.pollStatus}
+                  wechatBaseUrl={props.wechatBaseUrl}
+                  manualToken={props.manualToken}
+                  busyKey={props.busyKey}
+                  onWechatBaseUrlChange={props.onWechatBaseUrlChange}
+                  onManualTokenChange={props.onManualTokenChange}
+                  onStartQrFlow={props.onStartQrFlow}
+                  onPollQrStatus={props.onPollQrStatus}
+                  onConnectManualToken={props.onConnectManualToken}
+                  onDisconnectWeChat={props.onDisconnectWeChat}
+                />
+              ) : null}
+            </div>
+          ) : null}
+
+          {(showNodeOnboarding || showLocalNodePanel) ? (
+            <div className={`connection-section-grid ${nonWorkerTertiaryPanelCount < 2 ? "connection-section-grid-single" : ""}`}>
+              {showNodeOnboarding ? (
+                <div className="connection-panel-stack">
               <section className="surface">
                 <div className="section-head">
                   <div><div className="section-kicker">节点与模型参数</div><h3>添加或修复远端工作节点</h3></div>
@@ -204,6 +235,9 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 </div>
                 <div className="inline-tip">
                   基础安装信息直接展示，按地址直连和局域网扫描收纳到折叠区，降低首次配置时的认知负担。
+                </div>
+                <div className="inline-tip">
+                  当前远端节点模型仅支持阿里云 DashScope / 通义千问模型；这里的 DashScope 配置会映射到现有兼容字段。
                 </div>
                 <div className="connection-form-grid">
                   <label><span>节点 ID</span><input value={props.workerSetup.node_id} onChange={(event) => props.onUpdateWorkerSetup("node_id", event.target.value)} /></label>
@@ -222,15 +256,38 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 <details className="form-advanced-details connection-fold-card">
                   <summary>
                     <span className="section-kicker">高级选项</span>
-                    <span className="connection-fold-hint">发现响应、并发与 bundle 路径</span>
+                    <span className="connection-fold-hint">DashScope 配置、发现响应、并发与 bundle 路径</span>
                   </summary>
                   <div className="connection-form-grid">
+                    <label><span>DashScope Base URL</span><input value={props.workerSetup.openai_base_url} onChange={(event) => props.onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="留空时沿用网关内置 DashScope 配置" /></label>
+                    <label><span>DashScope 模型</span><input value={props.workerSetup.openai_model} onChange={(event) => props.onUpdateWorkerSetup("openai_model", event.target.value)} placeholder="qwen3.5-plus / qwen-plus / qwen-max" /></label>
+                    <label className="connection-full-span"><span>DashScope API Key</span><ToggleSecretInput value={props.workerSetup.openai_api_key} onChange={(event) => props.onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="留空时沿用网关已继承的 DashScope API Key" autoComplete="new-password" /></label>
                     <label><span>Dify Base URL</span><input value={props.workerSetup.dify_base_url} onChange={(event) => props.onUpdateWorkerSetup("dify_base_url", event.target.value)} /></label>
                     <label><span>Dify API Key</span><textarea value={props.workerSetup.dify_api_key} onChange={(event) => props.onUpdateWorkerSetup("dify_api_key", event.target.value)} /></label>
                     <label><span>最大并发</span><input type="number" value={props.workerSetup.max_concurrency} onChange={(event) => props.onUpdateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
                     <label><span>发现响应端口</span><input type="number" value={props.workerSetup.discovery_port} onChange={(event) => props.onUpdateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
                     <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.discovery_enabled} onChange={(event) => props.onUpdateWorkerSetup("discovery_enabled", event.target.checked)} /><span>启用局域网发现</span></label>
                     <label><span>Bundle 路径（可选）</span><input value={props.workerSetup.bundle_path} onChange={(event) => props.onUpdateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
+                    <label><span>Temperature</span><input type="number" step="0.1" min="0" max="2" value={props.workerSetup.openai_temperature} onChange={(event) => props.onUpdateWorkerSetup("openai_temperature", Number(event.target.value) || 0)} /></label>
+                    <label><span>Top P</span><input type="number" step="0.1" min="0" max="1" value={props.workerSetup.openai_top_p} onChange={(event) => props.onUpdateWorkerSetup("openai_top_p", Number(event.target.value) || 0)} /></label>
+                    <label><span>Max Tokens</span><input type="number" min="0" value={props.workerSetup.openai_max_tokens} onChange={(event) => props.onUpdateWorkerSetup("openai_max_tokens", Number(event.target.value) || 0)} /></label>
+                    <label><span>Seed</span><input type="number" min="0" value={props.workerSetup.openai_seed} onChange={(event) => props.onUpdateWorkerSetup("openai_seed", Number(event.target.value) || 0)} /></label>
+                    <label><span>Thinking Budget</span><input type="number" min="0" value={props.workerSetup.openai_thinking_budget} onChange={(event) => props.onUpdateWorkerSetup("openai_thinking_budget", Number(event.target.value) || 0)} /></label>
+                    <label>
+                      <span>搜索策略</span>
+                      <select value={props.workerSetup.openai_search_strategy} onChange={(event) => props.onUpdateWorkerSetup("openai_search_strategy", event.target.value)}>
+                        <option value="turbo">turbo</option>
+                        <option value="max">max</option>
+                        <option value="agent">agent</option>
+                        <option value="agent_max">agent_max</option>
+                      </select>
+                    </label>
+                    <label className="connection-full-span"><span>Stop Sequences（每行一个，或 JSON 数组）</span><textarea value={props.workerSetup.openai_stop} onChange={(event) => props.onUpdateWorkerSetup("openai_stop", event.target.value)} placeholder={"Observation:\n[\"</answer>\", \"###\"]"} /></label>
+                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_thinking} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_thinking", event.target.checked)} /><span>启用 DashScope Thinking</span></label>
+                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_search} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_search", event.target.checked)} /><span>启用联网搜索</span></label>
+                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_search_forced} onChange={(event) => props.onUpdateWorkerSetup("openai_search_forced", event.target.checked)} /><span>强制搜索</span></label>
+                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_search_extension} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_search_extension", event.target.checked)} /><span>垂域搜索扩展</span></label>
+                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_multimodal_enabled} onChange={(event) => props.onUpdateWorkerSetup("openai_multimodal_enabled", event.target.checked)} /><span>启用多模态输入</span></label>
                   </div>
                 </details>
                 <div className="inline-actions" style={{ marginTop: 14 }}>
@@ -310,31 +367,35 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   )}
                 </details>
               </section>
-            </div>
+                </div>
+              ) : null}
 
-            <NodeModelConfigPanel
-              launcherAvailable={props.launcherAvailable}
-              busyKey={props.busyKey}
-              dirty={props.localNodeModelDirty}
-              status={props.localNodeStatus}
-              runtimeSummary={props.localNodeRuntimeSummary}
-              gatewayControl={{
-                managed: props.launcherGatewayManaged,
-                state: props.launcherGatewayState,
-                onRestart: props.onRestartGatewayService,
-                disabled: props.busyKey !== null || !props.launcherAvailable || !props.launcherGatewayManaged,
-                busy: props.busyKey === "launcher-gateway-restart",
-              }}
-              eventPreview=""
-              draft={props.localNodeModelDraft}
-              onChange={props.onUpdateLocalNodeModelDraft}
-              onRefresh={props.onRefreshLocalNodeDiagnostics}
-              onRestart={props.onRestartLocalNodeService}
-              onSave={props.onSaveLocalNodeModelConfig}
-              onExport={props.onExportLocalNodeDiagnostics}
-              onRunConversationTest={props.onRunLocalNodeConversationTest}
-            />
-          </div>
+              {showLocalNodePanel ? (
+                <NodeModelConfigPanel
+                  launcherAvailable={props.launcherAvailable}
+                  busyKey={props.busyKey}
+                  dirty={props.localNodeModelDirty}
+                  status={props.localNodeStatus}
+                  runtimeSummary={props.localNodeRuntimeSummary}
+                  gatewayControl={{
+                    managed: props.launcherGatewayManaged,
+                    state: props.launcherGatewayState,
+                    onRestart: props.onRestartGatewayService,
+                    disabled: props.busyKey !== null || !props.launcherAvailable || !props.launcherGatewayManaged || !showGatewayControls,
+                    busy: props.busyKey === "launcher-gateway-restart",
+                  }}
+                  eventPreview=""
+                  draft={props.localNodeModelDraft}
+                  onChange={props.onUpdateLocalNodeModelDraft}
+                  onRefresh={props.onRefreshLocalNodeDiagnostics}
+                  onRestart={props.onRestartLocalNodeService}
+                  onSave={props.onSaveLocalNodeModelConfig}
+                  onExport={props.onExportLocalNodeDiagnostics}
+                  onRunConversationTest={props.onRunLocalNodeConversationTest}
+                />
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="connection-layout-stack">
@@ -361,7 +422,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 <div className="section-head">
                   <div>
                     <div className="section-kicker">节点工作台</div>
-                    <h3>当前节点状态</h3>
+                    <h3>{props.heroTitle}</h3>
                   </div>
                 </div>
                 <div className="prep-strip-list">
@@ -425,7 +486,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 <div className="section-head">
                   <div>
                     <div className="section-kicker">节点说明</div>
-                    <h3>节点角色只配置当前机器，不纳管其它节点</h3>
+                    <h3>{props.heroDescription}</h3>
                   </div>
                 </div>
                 <div className="inline-tip">
@@ -437,7 +498,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   <InfoRow label="网关连接状态" value={props.workerGatewayConnection.label} multiline />
                   <InfoRow label="连接详情" value={props.workerGatewayConnection.detail} multiline />
                   <InfoRow label="节点 ID" value={props.workerSetup.node_id || "未填写"} multiline />
-                  <InfoRow label="配对密钥" value={props.workerSetup.pairing_key.trim() ? "已填写，可在上方显示/修改" : "未填写"} multiline />
+                  <InfoRow label="配对密钥" value={hasText(props.workerSetup.pairing_key) ? "已填写，可在上方显示/修改" : "未填写"} multiline />
                   {props.workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点记录" value={summarizeRemoteNode(props.workerGatewayConnection.remoteNode)} multiline /> : null}
                 </div>
               </section>
@@ -496,8 +557,8 @@ function pairingStatusTone(status: PairingStatus) {
           : "idle";
 }
 
-function resolveTokenDisplayState(token: string) {
-  const trimmed = token.trim();
+function resolveTokenDisplayState(token: string | null | undefined) {
+  const trimmed = safeTrim(token);
   if (!trimmed) return { status: "waiting" as const };
   if (trimmed.startsWith("pending:")) return { status: "waiting" as const };
   return { status: "paired" as const };

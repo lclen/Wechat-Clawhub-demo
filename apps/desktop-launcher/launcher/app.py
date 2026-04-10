@@ -42,8 +42,9 @@ from launcher.environment import detect_environment
 from launcher.process_manager import ProcessManager
 from launcher.profile_store import build_layout, default_state_path, ensure_layout, load_profile, redis_state, save_profile
 from launcher.redis_runtime import ensure_redis_binary
-from launcher.runtime import resource_root
-from claw_node.inference import create_inference_client
+from launcher.runtime import ensure_repo_pythonpath, resource_root
+
+ensure_repo_pythonpath()
 
 
 def create_app() -> FastAPI:
@@ -1032,7 +1033,7 @@ async def _run_local_node_conversation_test(
         raise HTTPException(status_code=422, detail="当前保存的 node.env 里还没有完整的 Dify Base URL / API Key。")
 
     settings = _build_local_node_inference_settings(model_settings, provider=provider)
-    inference_client, inference_error = create_inference_client(settings)
+    inference_client, inference_error = _create_local_node_inference_client(settings)
     if inference_client is None:
         raise HTTPException(status_code=502, detail=inference_error or "当前模型配置不可用，无法创建推理客户端。")
 
@@ -1117,6 +1118,12 @@ def _build_local_node_inference_settings(
         openai_enable_search_extension=model_settings.openai_enable_search_extension,
         openai_multimodal_enabled=model_settings.openai_multimodal_enabled,
     )
+
+
+def _create_local_node_inference_client(settings: _LocalNodeInferenceSettings):
+    from claw_node.inference import create_inference_client
+
+    return create_inference_client(settings)
 
 
 def _format_local_node_test_error(exc: httpx.HTTPStatusError) -> str:

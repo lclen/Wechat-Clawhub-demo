@@ -1,3 +1,5 @@
+import { hasText } from "./stringUtils";
+
 // roleWorkspace.ts
 // 角色感知工作区纯函数集合
 // 所有函数均为纯函数，支持属性测试
@@ -84,7 +86,7 @@ export function resolveWorkspaceOnTaskComplete(
  * 空字符串或纯空白 → false
  */
 export function validateWorkerGatewayUrl(url: string): boolean {
-  return url.trim().length > 0;
+  return hasText(url);
 }
 
 /**
@@ -96,7 +98,7 @@ export function resolveTokenDisplayState(token: string): {
   showToken: false;
 } {
   return {
-    status: token.trim().length === 0 ? "waiting" : "paired",
+    status: hasText(token) ? "paired" : "waiting",
     showToken: false,
   };
 }

@@ -1,12 +1,12 @@
 # Graph Report - .  (2026-04-10)
 
 ## Corpus Check
-- 2088 files ， ~0 words
+- 2091 files ， ~0 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2074 nodes ， 3800 edges ， 303 communities detected
-- Extraction: 51% EXTRACTED ， 49% INFERRED ， 0% AMBIGUOUS ， INFERRED: 1855 edges (avg confidence: 0.5)
+- 2090 nodes ， 3837 edges ， 303 communities detected
+- Extraction: 51% EXTRACTED ， 49% INFERRED ， 0% AMBIGUOUS ， INFERRED: 1863 edges (avg confidence: 0.5)
 - Token cost: 0 input ， 0 output
 
 ## God Nodes (most connected - your core abstractions)
@@ -36,180 +36,180 @@
 ## Communities
 
 ### Community 0 - "Community 0"
-Cohesion: 0.02
-Nodes (33): Position, buildLauncherStartPayload(), findLauncherComponent(), isExternalGatewayConflict(), isLauncherGatewayOwned(), launcherMachineRoleLabel(), launcherMachineRoleValue(), launcherRoleUsesLocalNode() (+25 more)
+Cohesion: 0.03
+Nodes (70): Settings, ChannelReleasedRequest, DispatchTask, PullTaskRequest, PullTaskResponse, TaskFailureRequest, TaskResultRequest, NodeStreamBroker (+62 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.03
-Nodes (122): appendPairingClientError(), _apply_local_node_model_config_in_background(), applyDispatchMode(), applyGatewaySummaryToState(), applyLauncherPolicyForRole(), applyLauncherStatusState(), applyOverview(), applyPreferredGatewayBaseUrlToWorker() (+114 more)
+Cohesion: 0.02
+Nodes (43): loadSetupDraft(), loadUiStateCache(), saveUiStateCache(), stripNullableValues(), Position, buildLauncherStartPayload(), findLauncherComponent(), isExternalGatewayConflict() (+35 more)
 
 ### Community 2 - "Community 2"
-Cohesion: 0.04
-Nodes (73): Settings, ChannelReleasedRequest, DispatchTask, PullTaskRequest, PullTaskResponse, TaskFailureRequest, TaskResultRequest, NodeStreamBroker (+65 more)
+Cohesion: 0.03
+Nodes (123): appendPairingClientError(), _apply_local_node_model_config_in_background(), applyDispatchMode(), applyGatewaySummaryToState(), applyLauncherPolicyForRole(), applyLauncherStatusState(), applyOverview(), applyPreferredGatewayBaseUrlToWorker() (+115 more)
 
 ### Community 3 - "Community 3"
+Cohesion: 0.03
+Nodes (22): NodeDiagnosticsStreamBroker, ConsoleSetupConfig, DiscoveredNodeRecord, DiscoveryPairRequest, DiscoveryPairResponse, DiscoveryScanResponse, GatewaySetupConfig, ManualPairRequest (+14 more)
+
+### Community 4 - "Community 4"
 Cohesion: 0.02
 Nodes (24): BaseSettings, get_settings(), NodeSettings, DifyClient, Best-effort Dify client for the worker node., Best-effort Dify client for the worker node., _DiscoveryProtocol, DiscoveryService (+16 more)
 
-### Community 4 - "Community 4"
-Cohesion: 0.04
-Nodes (64): _LocalNodeInferenceSettings, BaseModel, apply_machine_role(), apply_start_request(), _builtin_model_config(), _builtin_model_status(), check_builtin_model(), ComponentState (+56 more)
-
 ### Community 5 - "Community 5"
-Cohesion: 0.05
-Nodes (37): GatewaySummaryResponse, GatewaySummaryBuildError, GatewaySummaryService, Raised when the latest gateway summary truth cannot be assembled., GatewaySummaryStreamBroker, NodeDeleteResponse, NodeDiagnosticsEvent, NodeDiagnosticsRecord (+29 more)
+Cohesion: 0.04
+Nodes (40): GatewaySummaryResponse, GatewaySummaryBuildError, GatewaySummaryService, Raised when the latest gateway summary truth cannot be assembled., GatewaySummaryStreamBroker, NodeDeleteResponse, NodeDiagnosticsEvent, NodeDiagnosticsRecord (+32 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.04
-Nodes (64): binarySearch(), memoizedBinarySearch(), asArray(), build(), buildSourceMapTree(), addSection(), append(), getLine() (+56 more)
+Cohesion: 0.03
+Nodes (51): _LocalNodeInferenceSettings, BaseModel, apply_machine_role(), apply_start_request(), _builtin_model_config(), _builtin_model_status(), check_builtin_model(), ComponentState (+43 more)
 
 ### Community 7 - "Community 7"
-Cohesion: 0.07
-Nodes (1): SetupService
+Cohesion: 0.04
+Nodes (64): binarySearch(), memoizedBinarySearch(), asArray(), build(), buildSourceMapTree(), addSection(), append(), getLine() (+56 more)
 
 ### Community 8 - "Community 8"
 Cohesion: 0.03
 Nodes (58): ChildProcess, Certificate, Cipher, Decipher, DiffieHellman, ECDH, Hash, Hmac (+50 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.06
-Nodes (19): RuntimeError, _aes_ecb_padded_size(), _emit_wechat_debug(), _encode_wechat_media_aes_key(), _encrypt_aes_ecb(), _extract_markdown_image_url(), _guess_extension(), _guess_remote_filename() (+11 more)
+Cohesion: 0.07
+Nodes (17): RuntimeError, _aes_ecb_padded_size(), _emit_wechat_debug(), _encode_wechat_media_aes_key(), _encrypt_aes_ecb(), _extract_markdown_image_url(), _guess_extension(), _guess_remote_filename() (+9 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.1
-Nodes (2): DispatchQueue, DispatchQueueSlotTests
-
-### Community 11 - "Community 11"
-Cohesion: 0.06
-Nodes (6): build_console_config(), build_gateway_config(), build_worker_config(), FakeAsyncClient, FakeResponse, SetupServiceTests
-
-### Community 12 - "Community 12"
 Cohesion: 0.12
 Nodes (1): ProcessManager
 
-### Community 13 - "Community 13"
+### Community 11 - "Community 11"
 Cohesion: 0.08
 Nodes (9): GatewayClient, build_advertised_address(), build_node_identity(), detect_lan_ip(), _ipv4_rank(), is_preferred_lan_ip(), NodeIdentity, DifyClientTests (+1 more)
 
-### Community 14 - "Community 14"
-Cohesion: 0.07
-Nodes (3): Thin async Redis wrapper used by gateway services., RedisStore, RedisStoreTests
-
-### Community 15 - "Community 15"
+### Community 12 - "Community 12"
 Cohesion: 0.12
 Nodes (18): detect_lan_ip(), directed_broadcast_targets(), _extract_rfc1918_ipv4(), IPv4InterfaceRecord, is_preferred_lan_ip(), is_usable_ipv4(), is_virtual_nic_ip(), launcher_cors_origins() (+10 more)
 
-### Community 16 - "Community 16"
+### Community 13 - "Community 13"
+Cohesion: 0.07
+Nodes (27): And, Binding, Code, CodeGenerator, Component, Exclude, FSWatcher, Hub (+19 more)
+
+### Community 14 - "Community 14"
 Cohesion: 0.17
 Nodes (2): NodeDiagnosticEvent, NodeDiagnostics
 
-### Community 17 - "Community 17"
-Cohesion: 0.07
-Nodes (25): And, Binding, Code, CodeGenerator, Component, Exclude, FSWatcher, Hub (+17 more)
-
-### Community 18 - "Community 18"
+### Community 15 - "Community 15"
 Cohesion: 0.1
 Nodes (6): catchupLine(), encodeGeneratedRanges(), decode(), sort(), StringReader, StringWriter
 
-### Community 19 - "Community 19"
+### Community 16 - "Community 16"
 Cohesion: 0.09
 Nodes (21): BalancedPoolMissingUpstreamError, BodyTimeoutError, ClientClosedError, ClientDestroyedError, ConnectTimeoutError, HeadersOverflowError, HeadersTimeoutError, HTTPParserError (+13 more)
 
-### Community 20 - "Community 20"
+### Community 17 - "Community 17"
 Cohesion: 0.17
 Nodes (5): _known_local_hosts(), NodeAuthService, Validate node credentials against pre-shared tokens., build_request(), NodeAuthServiceTests
 
-### Community 21 - "Community 21"
+### Community 18 - "Community 18"
+Cohesion: 0.2
+Nodes (1): DispatchQueueSlotTests
+
+### Community 19 - "Community 19"
 Cohesion: 0.11
 Nodes (0): 
 
-### Community 22 - "Community 22"
+### Community 20 - "Community 20"
 Cohesion: 0.12
 Nodes (1): WeChatBotServiceTests
 
-### Community 23 - "Community 23"
+### Community 21 - "Community 21"
 Cohesion: 0.15
 Nodes (3): disconnect_node(), get_node_diagnostics(), stream_node_diagnostics()
 
-### Community 24 - "Community 24"
+### Community 22 - "Community 22"
 Cohesion: 0.29
 Nodes (5): configure_logging(), _main(), run_gateway(), run_launcher(), run_node()
 
-### Community 25 - "Community 25"
+### Community 23 - "Community 23"
 Cohesion: 0.22
 Nodes (2): _FakeSocket, NodeIdentityTests
 
-### Community 26 - "Community 26"
+### Community 24 - "Community 24"
 Cohesion: 0.22
 Nodes (8): AutoImportProviderProject, ConfiguredProject, ExternalProject, InferredProject, OperationCanceledException, ProjectService, ScriptInfo, Session
 
-### Community 27 - "Community 27"
-Cohesion: 0.22
-Nodes (1): LocalNodeModelConfigTests
-
-### Community 28 - "Community 28"
+### Community 25 - "Community 25"
 Cohesion: 0.39
 Nodes (8): claim_session(), get_session(), get_session_messages(), list_sessions(), release_session(), stream_session_messages(), stream_session_overview(), switch_session_node()
 
-### Community 29 - "Community 29"
+### Community 26 - "Community 26"
+Cohesion: 0.5
+Nodes (3): build_encoded_messages(), build_session(), SessionMessageWindowTests
+
+### Community 27 - "Community 27"
 Cohesion: 0.5
 Nodes (6): cast(), get(), pop(), put(), remove(), SetArray
 
-### Community 30 - "Community 30"
+### Community 28 - "Community 28"
 Cohesion: 0.25
 Nodes (7): PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceNodeTiming, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming
 
-### Community 31 - "Community 31"
+### Community 29 - "Community 29"
 Cohesion: 0.46
 Nodes (7): apply_runtime_overrides(), detect_provider(), interactive_chat(), load_settings(), main(), mask_secret(), parse_args()
 
-### Community 32 - "Community 32"
+### Community 30 - "Community 30"
 Cohesion: 0.29
 Nodes (6): Duplex, PassThrough, Readable, Stream, Transform, Writable
 
-### Community 33 - "Community 33"
+### Community 31 - "Community 31"
 Cohesion: 0.38
 Nodes (3): default_state_path(), load_profile(), save_profile()
 
-### Community 34 - "Community 34"
+### Community 32 - "Community 32"
 Cohesion: 0.33
 Nodes (0): 
 
-### Community 35 - "Community 35"
+### Community 33 - "Community 33"
 Cohesion: 0.73
 Nodes (5): _audio_block(), build_message_content(), _normalize_block(), _parse_content_blocks(), _video_block()
 
-### Community 36 - "Community 36"
+### Community 34 - "Community 34"
 Cohesion: 0.4
 Nodes (4): Module, Script, SourceTextModule, SyntheticModule
 
-### Community 37 - "Community 37"
+### Community 35 - "Community 35"
 Cohesion: 0.4
 Nodes (4): BodyMixin, Headers, Request, Response
 
-### Community 38 - "Community 38"
+### Community 36 - "Community 36"
 Cohesion: 0.4
 Nodes (4): DecodedMap, HMRClient, HMRMessenger, ModuleCacheMap
 
-### Community 39 - "Community 39"
+### Community 37 - "Community 37"
+Cohesion: 0.4
+Nodes (1): NodeDiagnosticsStreamBrokerTests
+
+### Community 38 - "Community 38"
 Cohesion: 0.5
 Nodes (0): 
 
-### Community 40 - "Community 40"
+### Community 39 - "Community 39"
 Cohesion: 0.5
 Nodes (3): SourceMapConsumer, SourceMapGenerator, SourceNode
 
-### Community 41 - "Community 41"
+### Community 40 - "Community 40"
 Cohesion: 0.5
 Nodes (0): 
 
-### Community 42 - "Community 42"
+### Community 41 - "Community 41"
 Cohesion: 0.83
 Nodes (3): build_node_inventory(), build_node_list_response(), _parse_optional_datetime()
 
-### Community 43 - "Community 43"
+### Community 42 - "Community 42"
 Cohesion: 0.83
 Nodes (3): create_inference_client(), _ensure_dify_config(), _ensure_openai_config()
+
+### Community 43 - "Community 43"
+Cohesion: 0.67
+Nodes (0): 
 
 ### Community 44 - "Community 44"
 Cohesion: 0.67
@@ -221,79 +221,79 @@ Nodes (0):
 
 ### Community 46 - "Community 46"
 Cohesion: 0.67
-Nodes (0): 
+Nodes (2): AssertionError, CallTracker
 
 ### Community 47 - "Community 47"
 Cohesion: 0.67
-Nodes (2): AssertionError, CallTracker
+Nodes (2): AsyncLocalStorage, AsyncResource
 
 ### Community 48 - "Community 48"
 Cohesion: 0.67
-Nodes (2): AsyncLocalStorage, AsyncResource
+Nodes (2): Blob, File
 
 ### Community 49 - "Community 49"
 Cohesion: 0.67
-Nodes (2): Blob, File
+Nodes (2): Channel, TracingChannel
 
 ### Community 50 - "Community 50"
 Cohesion: 0.67
-Nodes (2): Channel, TracingChannel
+Nodes (2): EventEmitter, EventEmitterAsyncResource
 
 ### Community 51 - "Community 51"
 Cohesion: 0.67
-Nodes (2): EventEmitter, EventEmitterAsyncResource
+Nodes (2): Module, SourceMap
 
 ### Community 52 - "Community 52"
 Cohesion: 0.67
-Nodes (2): Module, SourceMap
+Nodes (2): Recoverable, REPLServer
 
 ### Community 53 - "Community 53"
 Cohesion: 0.67
-Nodes (2): Recoverable, REPLServer
+Nodes (2): DatabaseSync, StatementSync
 
 ### Community 54 - "Community 54"
 Cohesion: 0.67
-Nodes (2): DatabaseSync, StatementSync
+Nodes (2): Server, TLSSocket
 
 ### Community 55 - "Community 55"
 Cohesion: 0.67
-Nodes (2): Server, TLSSocket
+Nodes (2): ReadStream, WriteStream
 
 ### Community 56 - "Community 56"
 Cohesion: 0.67
-Nodes (2): ReadStream, WriteStream
+Nodes (2): URL, URLSearchParams
 
 ### Community 57 - "Community 57"
 Cohesion: 0.67
-Nodes (2): URL, URLSearchParams
+Nodes (2): SafeArray, VarDate
 
 ### Community 58 - "Community 58"
 Cohesion: 0.67
-Nodes (2): SafeArray, VarDate
+Nodes (2): FileReader, ProgressEvent
 
 ### Community 59 - "Community 59"
 Cohesion: 0.67
-Nodes (2): FileReader, ProgressEvent
+Nodes (2): DecoratorHandler, RedirectHandler
 
 ### Community 60 - "Community 60"
 Cohesion: 0.67
-Nodes (2): DecoratorHandler, RedirectHandler
+Nodes (2): MockInterceptor, MockScope
 
 ### Community 61 - "Community 61"
 Cohesion: 0.67
-Nodes (2): MockInterceptor, MockScope
+Nodes (2): ESModulesRunner, ViteRuntime
 
 ### Community 62 - "Community 62"
 Cohesion: 0.67
-Nodes (2): ESModulesRunner, ViteRuntime
-
-### Community 63 - "Community 63"
-Cohesion: 0.67
 Nodes (0): 
 
-### Community 64 - "Community 64"
+### Community 63 - "Community 63"
 Cohesion: 1.0
 Nodes (2): _gateway_summary_loop(), lifespan()
+
+### Community 64 - "Community 64"
+Cohesion: 0.67
+Nodes (1): RedisStoreTests
 
 ### Community 65 - "Community 65"
 Cohesion: 0.67
@@ -1728,11 +1728,11 @@ Nodes (0):
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Settings` connect `Community 2` to `Community 3`, `Community 4`, `Community 5`, `Community 7`, `Community 9`, `Community 10`, `Community 11`, `Community 20`, `Community 22`?**
+- **Why does `Settings` connect `Community 0` to `Community 3`, `Community 4`, `Community 5`, `Community 9`, `Community 17`, `Community 18`, `Community 20`, `Community 26`?**
   _High betweenness centrality (0.200) - this node is a cross-community bridge._
-- **Why does `OpenAICompatibleClient` connect `Community 3` to `Community 2`?**
-  _High betweenness centrality (0.082) - this node is a cross-community bridge._
-- **Why does `_LocalNodeInferenceSettings` connect `Community 4` to `Community 1`, `Community 12`?**
+- **Why does `OpenAICompatibleClient` connect `Community 4` to `Community 0`?**
+  _High betweenness centrality (0.081) - this node is a cross-community bridge._
+- **Why does `_LocalNodeInferenceSettings` connect `Community 6` to `Community 2`, `Community 10`?**
   _High betweenness centrality (0.076) - this node is a cross-community bridge._
 - **Are the 24 inferred relationships involving `SetupService` (e.g. with `Remove node from Redis active set only, keeping pairing token intact.     The n` and `GatewaySummaryBuildError`) actually correct?**
   _`SetupService` has 24 INFERRED edges - model-reasoned connections that need verification._

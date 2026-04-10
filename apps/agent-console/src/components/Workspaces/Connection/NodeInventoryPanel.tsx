@@ -1,5 +1,6 @@
 import type { NodeKind } from "../../../types";
 import { InfoRow, SnippetBlock } from "./ConnectionUi";
+import { EmptyState, SectionHeader, SignalBadge, SurfaceCard } from "../../shared/ConsolePrimitives";
 
 type InventoryAction = {
   label: string;
@@ -55,16 +56,15 @@ type NodeInventoryPanelProps = {
 export function NodeInventoryPanel({ headline, cards, selectedDiagnostics }: NodeInventoryPanelProps) {
   return (
     <div className="connection-panel-stack">
-      <section className="surface">
-        <div className="section-head compact-head">
-          <div>
-            <div className="section-kicker">节点清单</div>
-            <h3>已接入节点总览</h3>
-          </div>
-          <span className="small-note">{headline}</span>
-        </div>
+      <SurfaceCard className="inventory-command-surface">
+        <SectionHeader
+          kicker="节点清单"
+          title="已接入节点总览"
+          description="统一查看本机内置节点与远端工作节点，优先突出在线状态、空闲通道和角色来源。"
+          actions={<SignalBadge tone="info">{headline}</SignalBadge>}
+        />
         {!cards.length ? (
-          <div className="empty-state">当前还没有已接入节点。本机内置节点和远端工作节点会在这里统一显示，但会明确区分角色来源。</div>
+          <EmptyState title="当前还没有已接入节点" detail="本机内置节点和远端工作节点会在这里统一显示，但会明确区分角色来源。" />
         ) : (
           <div className="connection-node-grid connection-node-grid-compact">
             {cards.map((card) => (
@@ -130,36 +130,34 @@ export function NodeInventoryPanel({ headline, cards, selectedDiagnostics }: Nod
             ))}
           </div>
         )}
-      </section>
+      </SurfaceCard>
 
       {selectedDiagnostics ? (
-        <section className="surface">
-          <div className="section-head compact-head">
-            <div>
-              <div className="section-kicker">节点诊断</div>
-              <h3 className="connection-diagnostics-title">
-                {selectedDiagnostics.nodeId}
+        <SurfaceCard className="inventory-diagnostics-surface" tone="strong">
+          <SectionHeader
+            kicker="节点诊断"
+            title={selectedDiagnostics.nodeId}
+            actions={
+              <div className="inline-actions">
                 {selectedDiagnostics.kind ? (
                   <span className={`node-kind-tag node-kind-tag-${selectedDiagnostics.kind}`}>
                     {selectedDiagnostics.kind === "local" ? "网关内置" : "远端工作节点"}
                   </span>
                 ) : null}
-              </h3>
-            </div>
-            <div className="inline-actions">
-              {selectedDiagnostics.traceId ? <span className="small-note connection-trace-note">trace: {selectedDiagnostics.traceId.slice(0, 16)}…</span> : null}
-              <button type="button" className="ghost-button launcher-row-btn" onClick={selectedDiagnostics.onClose}>
-                关闭
-              </button>
-            </div>
-          </div>
+                {selectedDiagnostics.traceId ? <span className="small-note connection-trace-note">trace: {selectedDiagnostics.traceId.slice(0, 16)}…</span> : null}
+                <button type="button" className="ghost-button launcher-row-btn" onClick={selectedDiagnostics.onClose}>
+                  关闭
+                </button>
+              </div>
+            }
+          />
           <div className="info-stack">
             {selectedDiagnostics.rows.map((row) => (
               <InfoRow key={row.label} label={row.label} value={row.value} multiline={row.multiline} />
             ))}
           </div>
           {selectedDiagnostics.timelineText ? <SnippetBlock label="诊断时间线" content={selectedDiagnostics.timelineText} /> : null}
-        </section>
+        </SurfaceCard>
       ) : null}
     </div>
   );

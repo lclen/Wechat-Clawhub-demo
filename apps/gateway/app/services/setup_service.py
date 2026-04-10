@@ -1574,7 +1574,7 @@ class SetupService:
         has_openai = bool(config.openai_base_url and config.openai_api_key and config.openai_model)
         if has_dify or has_openai:
             if has_openai:
-                self._append_log(task, f"工作节点将使用 OpenAI 兼容模型：{config.openai_model}。")
+                self._append_log(task, f"工作节点将使用 DashScope（阿里云）模型：{config.openai_model}。")
             return config
 
         inherited_base_url = self._settings.builtin_model_base_url.strip()
@@ -1583,7 +1583,7 @@ class SetupService:
         if inherited_base_url and inherited_api_key and inherited_model:
             self._append_log(
                 task,
-                f"工作节点未单独填写模型配置，自动沿用网关的 OpenAI 兼容模型：{inherited_model}。",
+                f"工作节点未单独填写模型配置，自动沿用网关的 DashScope（阿里云）模型：{inherited_model}。",
             )
             return config.model_copy(
                 update={
@@ -1607,7 +1607,7 @@ class SetupService:
 
         self._append_log(
             task,
-            "当前工作节点尚未获得可用推理后端；将保持可发现状态，待补充 OpenAI 兼容模型或 Dify 配置后再参与处理。",
+            "当前工作节点尚未获得可用推理后端；将保持可发现状态，待补充 DashScope（阿里云）模型或 Dify 配置后再参与处理。",
         )
         return config
 

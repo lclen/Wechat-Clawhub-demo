@@ -1,4 +1,5 @@
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
+import { hasText, safeTrim } from "../stringUtils";
 import type {
   DiscoveryPairResponse,
   DiscoveryScanResponse,
@@ -153,7 +154,7 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
       setPairingSecrets((current) => {
         const next = { ...current };
         for (const item of result.nodes) {
-          if (!next[item.discovery_id] && workerSetup.pairing_key.trim()) next[item.discovery_id] = workerSetup.pairing_key.trim();
+          if (!next[item.discovery_id] && hasText(workerSetup.pairing_key)) next[item.discovery_id] = safeTrim(workerSetup.pairing_key);
         }
         return next;
       });
@@ -165,12 +166,12 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
   }
 
   async function probeWorkerGateway(options?: { silent?: boolean; reason?: "manual" | "auto" | "post-install" }) {
-    const gatewayBaseUrl = workerSetup.gateway_base_url.trim();
+    const gatewayBaseUrl = safeTrim(workerSetup.gateway_base_url);
     if (!gatewayBaseUrl) {
       setNotice("请先填写目标网关地址。");
       return;
     }
-    const nodeId = workerSetup.node_id.trim();
+    const nodeId = safeTrim(workerSetup.node_id);
     const silent = options?.silent ?? false;
     try {
       pushPairingDebugEntry({
@@ -210,7 +211,7 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
   }
 
   async function pairLanNode(discovered: DiscoveredNodeRecord) {
-    const pairingKey = pairingSecrets[discovered.discovery_id]?.trim();
+    const pairingKey = safeTrim(pairingSecrets[discovered.discovery_id]);
     if (!pairingKey) {
       setNotice(`请先为 ${discovered.pairing_label || discovered.hostname} 输入配对密钥。`);
       return;
@@ -257,11 +258,11 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
 
   async function manualPairNode() {
     const payload: ManualPairRequest = {
-      host: manualPair.host.trim(),
+      host: safeTrim(manualPair.host),
       pairing_port: manualPair.pairing_port || 9532,
-      pairing_key: manualPair.pairing_key.trim(),
+      pairing_key: safeTrim(manualPair.pairing_key),
       gateway_base_url: currentGatewayBaseUrl,
-      node_id: manualPair.node_id.trim() || undefined,
+      node_id: safeTrim(manualPair.node_id) || undefined,
     };
     if (!payload.host) {
       setNotice("请先填写目标节点的 IP 或主机名。");
@@ -318,7 +319,7 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
       clearNodeDiagnosticsCache(node.node_id);
       await refreshGatewaySummarySnapshot();
       setNotice(result.detail || `已删除节点 ${node.node_id}。`);
-      if (workerSetup.node_id.trim() === node.node_id) {
+      if (safeTrim(workerSetup.node_id) === node.node_id) {
         setWorkerGatewayProbeTask(null);
       }
     } catch (error) {

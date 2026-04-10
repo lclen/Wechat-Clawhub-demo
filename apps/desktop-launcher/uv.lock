@@ -735,7 +735,9 @@ dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "redis" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
     { name = "wechat-claw-hub-claw-node" },
 ]
 
@@ -751,7 +753,9 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.8.0,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.4.0,<3.0.0" },
     { name = "pyinstaller", marker = "extra == 'build'", specifier = ">=6.10.0,<7.0.0" },
+    { name = "redis", specifier = ">=5.0.8,<6.0.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30.6,<1.0.0" },
+    { name = "websockets", specifier = ">=11.0.0,<16.0.0" },
     { name = "wechat-claw-hub-claw-node", directory = "../../services/claw-node" },
 ]
 provides-extras = ["build"]

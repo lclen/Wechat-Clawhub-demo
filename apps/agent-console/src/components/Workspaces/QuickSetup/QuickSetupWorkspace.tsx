@@ -6,6 +6,7 @@ import { QuickSetupRolePanel } from "./QuickSetupRolePanel";
 import { QuickSetupStatusPanel } from "./QuickSetupStatusPanel";
 import { DEFAULT_BUILTIN_MODEL_LABEL, DEFAULT_SETUP_ROLES } from "../../../quickSetupDefaults";
 import { roleAction, roleDescription, roleName } from "../../../selectors/quickSetupSelectors";
+import { hasText } from "../../../stringUtils";
 import type {
   ConsoleSetupConfig,
   DiscoveredNodeRecord,
@@ -198,7 +199,7 @@ export function QuickSetupWorkspace(props: QuickSetupWorkspaceProps) {
               consoleGatewayBaseUrl={props.setupProfile?.console.gateway_base_url || "-"}
               gatewayRuntimeText={props.gatewayRuntimeText}
               nodeSummaryText={props.nodeSummaryText}
-              pairingKeyFilled={props.workerSetup.pairing_key.trim().length > 0}
+              pairingKeyFilled={hasText(props.workerSetup.pairing_key)}
               envExpanded={props.envExpanded}
               statusRows={props.quickSetupStatusRows}
               workerCredentialRows={props.workerCredentialRows}

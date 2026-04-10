@@ -1,5 +1,4 @@
 import { ToggleSecretInput } from "../Connection/ConnectionUi";
-import { DASHSCOPE_BASE_URL_PLACEHOLDER, DASHSCOPE_DEFAULT_MODEL_LABEL, DASHSCOPE_MODEL_PLACEHOLDER, DASHSCOPE_ONLY_NOTICE, DASHSCOPE_PROVIDER_LABEL } from "../../../modelProviderUi";
 import type {
   ConsoleSetupConfig,
   DiscoveredNodeRecord,
@@ -88,16 +87,18 @@ export function QuickSetupConfigStage({
           <label><span>主网关访问地址</span><input value={consoleSetup.gateway_base_url} onChange={(event) => onUpdateConsoleSetup("gateway_base_url", event.target.value)} placeholder="节点回连主机时使用这个地址" /></label>
           <label><span>Dify Base URL（留空则默认走内置模型）</span><input value={gatewaySetup.dify_base_url} onChange={(event) => onUpdateGatewaySetup("dify_base_url", event.target.value)} placeholder="https://api.dify.ai/v1" /></label>
           <label><span>Dify API Key</span><textarea value={gatewaySetup.dify_api_key} onChange={(event) => onUpdateGatewaySetup("dify_api_key", event.target.value)} placeholder="留空时保留当前已保存值；若同时未填 Dify Base URL，则回退到内置模型。" /></label>
-          <label><span>{DASHSCOPE_PROVIDER_LABEL} Base URL</span><input value={gatewaySetup.builtin_model_base_url} onChange={(event) => onUpdateGatewaySetup("builtin_model_base_url", event.target.value)} placeholder={`留空时默认使用 ${DASHSCOPE_BASE_URL_PLACEHOLDER}`} /></label>
-          <label><span>{DASHSCOPE_PROVIDER_LABEL} API Key</span><textarea value={gatewaySetup.builtin_model_api_key} onChange={(event) => onUpdateGatewaySetup("builtin_model_api_key", event.target.value)} placeholder={`留空则保留当前已保存的 ${DASHSCOPE_PROVIDER_LABEL} API Key。`} /></label>
-          <label><span>{DASHSCOPE_PROVIDER_LABEL} 模型</span><input value={gatewaySetup.builtin_model_name} onChange={(event) => onUpdateGatewaySetup("builtin_model_name", event.target.value)} placeholder="留空时默认使用 qwen3.5-plus" /></label>
+          <label><span>DashScope Base URL</span><input value={gatewaySetup.builtin_model_base_url} onChange={(event) => onUpdateGatewaySetup("builtin_model_base_url", event.target.value)} placeholder="留空时默认使用 https://dashscope.aliyuncs.com/compatible-mode/v1" /></label>
+          <label><span>DashScope API Key</span><textarea value={gatewaySetup.builtin_model_api_key} onChange={(event) => onUpdateGatewaySetup("builtin_model_api_key", event.target.value)} placeholder="留空则保留当前已保存的 DashScope API Key。" /></label>
+          <label><span>DashScope 模型</span><input value={gatewaySetup.builtin_model_name} onChange={(event) => onUpdateGatewaySetup("builtin_model_name", event.target.value)} placeholder="留空时默认使用 qwen3.5-plus" /></label>
           <label><span>微信 Base URL</span><input value={gatewaySetup.wechat_base_url} onChange={(event) => onUpdateGatewaySetup("wechat_base_url", event.target.value)} /></label>
           <label><span>微信 Token</span><textarea value={gatewaySetup.wechat_token} onChange={(event) => onUpdateGatewaySetup("wechat_token", event.target.value)} placeholder="留空则保留当前已保存 token；填写后保存会尝试直接刷新连接。" /></label>
         </div>
-        <div className="inline-tip">{DASHSCOPE_ONLY_NOTICE} 暂不提供其他兼容供应商入口。</div>
+        <div className="inline-tip">
+          当前网关内置模型仅支持阿里云 DashScope / 通义千问模型，暂不提供其他兼容供应商入口。
+        </div>
         <details className="form-advanced-details connection-fold-card">
           <summary>
-            <span className="section-kicker">{DASHSCOPE_PROVIDER_LABEL} 高级参数</span>
+            <span className="section-kicker">DashScope 高级参数</span>
             <span className="connection-fold-hint">thinking、采样、搜索、多模态与 stop sequences</span>
           </summary>
           <div className="connection-form-grid">
@@ -121,7 +122,7 @@ export function QuickSetupConfigStage({
             </label>
           </div>
           <div className="connection-checkbox-grid">
-            <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_enable_thinking} onChange={(event) => onUpdateGatewaySetup("builtin_model_enable_thinking", event.target.checked)} /><span>启用 {DASHSCOPE_PROVIDER_LABEL} Thinking</span></label>
+            <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_enable_thinking} onChange={(event) => onUpdateGatewaySetup("builtin_model_enable_thinking", event.target.checked)} /><span>启用 DashScope Thinking</span></label>
             <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_enable_search} onChange={(event) => onUpdateGatewaySetup("builtin_model_enable_search", event.target.checked)} /><span>启用联网搜索</span></label>
             <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_search_forced} onChange={(event) => onUpdateGatewaySetup("builtin_model_search_forced", event.target.checked)} /><span>强制搜索</span></label>
             <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_enable_search_extension} onChange={(event) => onUpdateGatewaySetup("builtin_model_enable_search_extension", event.target.checked)} /><span>垂域搜索扩展</span></label>
@@ -225,22 +226,24 @@ export function QuickSetupConfigStage({
           </div>
           {!workerModelExpanded ? (
             <div style={{ padding: "8px 14px", fontSize: 12, color: "var(--muted)" }}>
-              模型配置可选，不填写时使用网关内置模型（{gatewaySetup.builtin_model_name || builtinModelLabel || DASHSCOPE_DEFAULT_MODEL_LABEL}）
+              模型配置可选，不填写时使用网关内置模型（{gatewaySetup.builtin_model_name || builtinModelLabel}）
             </div>
           ) : (
             <div className="worker-model-collapse-body">
-              <div className="inline-tip">{DASHSCOPE_ONLY_NOTICE} 留空时会继承网关内置 {DASHSCOPE_PROVIDER_LABEL} 配置。</div>
+              <div className="inline-tip">
+                当前节点侧仅支持阿里云 DashScope / 通义千问模型；留空时会继承网关内置 DashScope 配置。
+              </div>
               <div className="form-grid">
-                <label><span>{DASHSCOPE_PROVIDER_LABEL} Base URL</span><input value={workerSetup.openai_base_url} onChange={(event) => onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder={`留空时沿用网关内置 ${DASHSCOPE_PROVIDER_LABEL} 配置`} /></label>
-                <label><span>{DASHSCOPE_PROVIDER_LABEL} 模型</span><input value={workerSetup.openai_model} onChange={(event) => onUpdateWorkerSetup("openai_model", event.target.value)} placeholder={DASHSCOPE_MODEL_PLACEHOLDER} /></label>
-                <label className="connection-full-span"><span>{DASHSCOPE_PROVIDER_LABEL} API Key</span><ToggleSecretInput value={workerSetup.openai_api_key} onChange={(event) => onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder={`留空时沿用网关已继承的 ${DASHSCOPE_PROVIDER_LABEL} API Key`} autoComplete="new-password" /></label>
+                <label><span>DashScope Base URL</span><input value={workerSetup.openai_base_url} onChange={(event) => onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="留空时沿用网关内置 DashScope 配置" /></label>
+                <label><span>DashScope 模型</span><input value={workerSetup.openai_model} onChange={(event) => onUpdateWorkerSetup("openai_model", event.target.value)} placeholder="qwen3.5-plus / qwen-plus / qwen-max" /></label>
+                <label className="connection-full-span"><span>DashScope API Key</span><ToggleSecretInput value={workerSetup.openai_api_key} onChange={(event) => onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="留空时沿用网关已继承的 DashScope API Key" autoComplete="new-password" /></label>
                 <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => onUpdateWorkerSetup("dify_base_url", event.target.value)} /></label>
                 <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => onUpdateWorkerSetup("dify_api_key", event.target.value)} /></label>
                 <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => onUpdateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
               </div>
               <details className="form-advanced-details connection-fold-card">
                 <summary>
-                  <span className="section-kicker">{DASHSCOPE_PROVIDER_LABEL} 高级参数</span>
+                  <span className="section-kicker">DashScope 高级参数</span>
                   <span className="connection-fold-hint">继承网关默认值后，也可在节点侧单独覆盖</span>
                 </summary>
                 <div className="connection-form-grid">
@@ -264,7 +267,7 @@ export function QuickSetupConfigStage({
                   </label>
                 </div>
                 <div className="connection-checkbox-grid">
-                  <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_enable_thinking} onChange={(event) => onUpdateWorkerSetup("openai_enable_thinking", event.target.checked)} /><span>启用 {DASHSCOPE_PROVIDER_LABEL} Thinking</span></label>
+                  <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_enable_thinking} onChange={(event) => onUpdateWorkerSetup("openai_enable_thinking", event.target.checked)} /><span>启用 DashScope Thinking</span></label>
                   <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_enable_search} onChange={(event) => onUpdateWorkerSetup("openai_enable_search", event.target.checked)} /><span>启用联网搜索</span></label>
                   <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_search_forced} onChange={(event) => onUpdateWorkerSetup("openai_search_forced", event.target.checked)} /><span>强制搜索</span></label>
                   <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_enable_search_extension} onChange={(event) => onUpdateWorkerSetup("openai_enable_search_extension", event.target.checked)} /><span>垂域搜索扩展</span></label>

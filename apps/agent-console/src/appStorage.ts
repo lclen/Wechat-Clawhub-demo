@@ -16,6 +16,13 @@ import type {
   WorkerNodeSetupConfig,
 } from "./types";
 
+function stripNullableValues<T extends Record<string, unknown>>(value: T | undefined): Partial<T> {
+  if (!value) return {};
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null),
+  ) as Partial<T>;
+}
+
 export function loadSetupDraft() {
   const emptyDraft = {
     role: null as SetupRole | null,
@@ -35,9 +42,9 @@ export function loadSetupDraft() {
     };
     return {
       role: null,
-      gateway: { ...DEFAULT_GATEWAY_SETUP, ...(parsed.gateway ?? {}) },
-      worker: { ...DEFAULT_WORKER_SETUP, ...(parsed.worker ?? {}), node_token: "" },
-      console: { ...DEFAULT_CONSOLE_SETUP, ...(parsed.console ?? {}) },
+      gateway: { ...DEFAULT_GATEWAY_SETUP, ...stripNullableValues(parsed.gateway) },
+      worker: { ...DEFAULT_WORKER_SETUP, ...stripNullableValues(parsed.worker), node_token: "" },
+      console: { ...DEFAULT_CONSOLE_SETUP, ...stripNullableValues(parsed.console) },
     };
   } catch {
     return emptyDraft;
@@ -54,7 +61,7 @@ export function clearQuickSetupCache() {
 
 export function loadUiStateCache(): AppUiStateCache {
   if (typeof window === "undefined") {
-    return { workspace: null, selected_session_id: null, selected_node_id: null };
+    return { workspace: null, selected_session_id: null, selected_node_id: null, session_scroll: null };
   }
   try {
     const raw = window.localStorage.getItem(UI_STATE_CACHE_KEY);
@@ -67,13 +74,45 @@ export function loadUiStateCache(): AppUiStateCache {
       workspace,
       selected_session_id: typeof parsed.selected_session_id === "string" ? parsed.selected_session_id : null,
       selected_node_id: null,
+      session_scroll:
+        parsed.session_scroll &&
+        typeof parsed.session_scroll.session_id === "string" &&
+        typeof parsed.session_scroll.scroll_top === "number" &&
+        typeof parsed.session_scroll.offset_from_bottom === "number"
+          ? {
+              session_id: parsed.session_scroll.session_id,
+              scroll_top: parsed.session_scroll.scroll_top,
+              offset_from_bottom: parsed.session_scroll.offset_from_bottom,
+              follow_bottom: Boolean(parsed.session_scroll.follow_bottom),
+            }
+          : null,
     };
   } catch {
     return {
       workspace: loadPersistedWorkspace(),
       selected_session_id: null,
       selected_node_id: null,
+      session_scroll: null,
     };
+  }
+}
+
+export function saveUiStateCache(patch: Partial<AppUiStateCache>) {
+  if (typeof window === "undefined") return;
+  try {
+    const current = loadUiStateCache();
+    const nextPatch = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    ) as Partial<AppUiStateCache>;
+    window.localStorage.setItem(
+      UI_STATE_CACHE_KEY,
+      JSON.stringify({
+        ...current,
+        ...nextPatch,
+      } satisfies AppUiStateCache),
+    );
+  } catch {
+    // ui state cache is best-effort
   }
 }
 

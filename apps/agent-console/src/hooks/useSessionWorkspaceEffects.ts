@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "react";
 import { syncSessions } from "../consoleStateSync";
 import { launcherShouldRunGateway } from "../selectors/launcherSelectors";
@@ -11,6 +11,7 @@ import type {
   SessionOverviewEnvelope,
   SessionMessagesResponse,
   SessionRecord,
+  SessionScrollState,
   SessionsResponse,
   SessionStreamEnvelope,
 } from "../types";
@@ -38,7 +39,9 @@ type UseSessionWorkspaceEffectsOptions = {
   previousMessageSessionIdRef: MutableRefObject<string | null>;
   shouldAutoFollowMessagesRef: MutableRefObject<boolean>;
   pendingHistoryRestoreRef: MutableRefObject<{ sessionId: string; scrollHeight: number; scrollTop: number } | null>;
+  restoredSessionScrollRef: MutableRefObject<SessionScrollState | null>;
   messagesRef: RefObject<HTMLDivElement | null>;
+  getPersistedSessionScroll: (sessionId: string | null) => SessionScrollState | null;
   getSessionMessageCache: (sessionId: string | null) => SessionMessageCacheEntry | null;
   applySessionMessageEntry: (sessionId: string, entry: SessionMessageCacheEntry) => void;
   fetchSessionMessages: (
@@ -60,6 +63,7 @@ type UseSessionWorkspaceEffectsOptions = {
   setMessageHasMoreBefore: (next: boolean) => void;
   setMessagesLoaded: (next: boolean) => void;
   setNotice: (next: string) => void;
+  persistSessionScrollState: () => void;
 };
 
 export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOptions) {
@@ -84,7 +88,9 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
     previousMessageSessionIdRef,
     shouldAutoFollowMessagesRef,
     pendingHistoryRestoreRef,
+    restoredSessionScrollRef,
     messagesRef,
+    getPersistedSessionScroll,
     getSessionMessageCache,
     applySessionMessageEntry,
     fetchSessionMessages,
@@ -99,7 +105,9 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
     setMessageHasMoreBefore,
     setMessagesLoaded,
     setNotice,
+    persistSessionScrollState,
   } = options;
+  const previousSelectedSessionIdRef = useRef<string | null>(selectedSessionId);
 
   useEffect(() => {
     const pendingRestore = pendingHistoryRestoreRef.current;
@@ -111,11 +119,55 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
       if (container) {
         const delta = container.scrollHeight - pendingRestore.scrollHeight;
         container.scrollTop = pendingRestore.scrollTop + delta;
+        persistSessionScrollState();
       }
       pendingHistoryRestoreRef.current = null;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [messagesLength, selectedSessionId]);
+  }, [messagesLength, messagesRef, persistSessionScrollState, selectedSessionId]);
+
+  useEffect(() => {
+    if (workspace !== "sessions" || !messagesLoaded || !selectedSessionId) {
+      return;
+    }
+    const persistedScroll =
+      restoredSessionScrollRef.current?.session_id === selectedSessionId
+        ? restoredSessionScrollRef.current
+        : getPersistedSessionScroll(selectedSessionId);
+    if (!persistedScroll) {
+      return;
+    }
+    if (pendingHistoryRestoreRef.current?.sessionId === selectedSessionId) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const container = messagesRef.current;
+      if (!container) return;
+      const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+      if (persistedScroll.follow_bottom) {
+        container.scrollTop = maxScrollTop;
+      } else {
+        container.scrollTop = Math.min(maxScrollTop, Math.max(0, maxScrollTop - persistedScroll.offset_from_bottom));
+      }
+      shouldAutoFollowMessagesRef.current = persistedScroll.follow_bottom;
+      previousMessageSessionIdRef.current = selectedSessionId;
+      restoredSessionScrollRef.current = null;
+      persistSessionScrollState();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    messagesLoaded,
+    messagesLength,
+    messagesRef,
+    getPersistedSessionScroll,
+    pendingHistoryRestoreRef,
+    persistSessionScrollState,
+    previousMessageSessionIdRef,
+    restoredSessionScrollRef,
+    selectedSessionId,
+    shouldAutoFollowMessagesRef,
+    workspace,
+  ]);
 
   useEffect(() => {
     const sessionChanged = previousMessageSessionIdRef.current !== selectedSessionId;
@@ -242,8 +294,13 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
   }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, sessionsLoaded, shouldUseLocalGatewayApi, workspace]);
 
   useEffect(() => {
-    shouldAutoFollowMessagesRef.current = true;
-    pendingHistoryRestoreRef.current = null;
+    const sessionChanged = previousSelectedSessionIdRef.current !== selectedSessionId;
+    previousSelectedSessionIdRef.current = selectedSessionId;
+    if (sessionChanged) {
+      shouldAutoFollowMessagesRef.current = true;
+      pendingHistoryRestoreRef.current = null;
+      restoredSessionScrollRef.current = getPersistedSessionScroll(selectedSessionId);
+    }
     if (!selectedSessionId) {
       setActiveSession(null);
       setMessages([]);
@@ -269,7 +326,7 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
     setMessageHistoryStart(0);
     setMessageHasMoreBefore(false);
     setMessagesLoaded(false);
-  }, [getSessionMessageCache, selectedSessionId, sessions]);
+  }, [getPersistedSessionScroll, getSessionMessageCache, pendingHistoryRestoreRef, restoredSessionScrollRef, selectedSessionId, sessions, shouldAutoFollowMessagesRef]);
 
   useEffect(() => {
     if (workspace !== "sessions") return;

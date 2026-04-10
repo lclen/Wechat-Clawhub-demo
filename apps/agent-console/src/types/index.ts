@@ -178,6 +178,14 @@ export type AppUiStateCache = {
   workspace: WorkspaceTab | null;
   selected_session_id: string | null;
   selected_node_id: string | null;
+  session_scroll: SessionScrollState | null;
+};
+
+export type SessionScrollState = {
+  session_id: string;
+  scroll_top: number;
+  offset_from_bottom: number;
+  follow_bottom: boolean;
 };
 
 export type AppSummaryStateCache = {

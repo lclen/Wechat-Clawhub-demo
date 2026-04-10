@@ -547,7 +547,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(config.openai_temperature, 0.6)
         self.assertTrue(config.openai_enable_search)
         self.assertEqual(config.openai_search_strategy, "max")
-        self.assertTrue(any("自动沿用网关的 OpenAI 兼容模型" in line for line in task.logs))
+        self.assertTrue(any("自动沿用网关的 DashScope（阿里云）模型" in line for line in task.logs))
 
     async def test_prepare_worker_install_config_keeps_discovery_mode_when_model_missing(self) -> None:
         task = self.service._create_task("node_install", "安装工作节点 node-b")

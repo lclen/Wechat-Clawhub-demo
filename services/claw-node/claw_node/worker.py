@@ -1003,7 +1003,7 @@ class Worker:
                 metadata=metadata,
             )
             return
-        provider_label = "Dify" if effective_provider == "dify" else "OpenAI 兼容"
+        provider_label = "Dify" if effective_provider == "dify" else "DashScope（阿里云）"
         model_label = self._settings.openai_model.strip() if effective_provider == "openai" else ""
         detail = f"已加载 {provider_label} 推理后端"
         if model_label:
