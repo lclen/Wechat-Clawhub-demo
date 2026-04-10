@@ -5,6 +5,8 @@ import type {
   LauncherLogResponse,
   LauncherStatusResponse,
   LocalNodeActionResponse,
+  LocalNodeConversationTestRequest,
+  LocalNodeConversationTestResponse,
   LocalNodeExportResponse,
   LocalNodeLogsResponse,
   LocalNodeModelConfigRequest,
@@ -216,6 +218,24 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     }
   }, [requestJson, setNotice, withBusy]);
 
+  const runLocalNodeConversationTest = useCallback(async (payload: LocalNodeConversationTestRequest) => {
+    try {
+      const result = await withBusy(
+        "local-node-conversation-test",
+        () => requestJson<LocalNodeConversationTestResponse>("/local/node/conversation-test", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      );
+      setNotice(result.detail || "当前模型配置已成功返回回复。");
+      return result;
+    } catch (error) {
+      const message = `当前模型对话测试失败：${(error as Error).message}`;
+      setNotice(message);
+      throw error;
+    }
+  }, [requestJson, setNotice, withBusy]);
+
   return {
     refreshLocalNodeStatus,
     refreshLocalNodeLogs,
@@ -225,5 +245,6 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     saveLocalNodeModelConfig,
     restartLocalNodeService,
     exportLocalNodeDiagnostics,
+    runLocalNodeConversationTest,
   };
 }

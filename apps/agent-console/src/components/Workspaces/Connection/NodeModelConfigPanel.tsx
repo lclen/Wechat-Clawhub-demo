@@ -1,4 +1,9 @@
-import type { LocalNodeModelConfigRequest, LocalNodeStatusResponse } from "../../../types";
+import type {
+  LocalNodeConversationTestRequest,
+  LocalNodeConversationTestResponse,
+  LocalNodeModelConfigRequest,
+  LocalNodeStatusResponse,
+} from "../../../types";
 import { InfoRow, SnippetBlock, ToggleSecretInput } from "./ConnectionUi";
 
 type NodeModelConfigPanelProps = {
@@ -21,6 +26,7 @@ type NodeModelConfigPanelProps = {
   onRestart: () => void;
   onSave: () => void;
   onExport: () => void;
+  onRunConversationTest?: (payload: LocalNodeConversationTestRequest) => Promise<LocalNodeConversationTestResponse>;
 };
 
 export function NodeModelConfigPanel({

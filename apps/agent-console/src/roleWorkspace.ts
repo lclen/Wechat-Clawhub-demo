@@ -3,7 +3,7 @@
 // 所有函数均为纯函数，支持属性测试
 
 type SetupRole = "gateway_host" | "gateway_host_console" | "worker_node" | "console_only";
-type WorkspaceTab = "quick_setup" | "sessions" | "connection" | "logs";
+type WorkspaceTab = "quick_setup" | "sessions" | "connection" | "conversation_test" | "logs";
 type SetupTaskStatus = "pending" | "running" | "succeeded" | "failed";
 
 export type RoleBadge = {
@@ -134,7 +134,7 @@ export function clearPersistedWorkspace(): void {
 export function loadPersistedWorkspace(): WorkspaceTab | null {
   try {
     const value = localStorage.getItem(WORKSPACE_STATE_KEY);
-    if (value === "quick_setup" || value === "sessions" || value === "connection") {
+    if (value === "quick_setup" || value === "sessions" || value === "connection" || value === "conversation_test" || value === "logs") {
       return value;
     }
     return null;

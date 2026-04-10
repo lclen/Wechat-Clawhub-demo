@@ -242,6 +242,22 @@ class LocalNodeModelConfigRequest(BaseModel):
     restart_service: bool = True
 
 
+class LocalNodeConversationTestRequest(BaseModel):
+    provider: str = "current"
+    message: str = ""
+
+
+class LocalNodeConversationTestResponse(BaseModel):
+    ok: bool = True
+    provider: str = ""
+    configured_provider: str = ""
+    config_path: str = ""
+    latency_ms: int = 0
+    detail: str = ""
+    reply: str = ""
+    usage: dict[str, object] = Field(default_factory=dict)
+
+
 def apply_machine_role(profile: LauncherProfile, machine_role: LauncherMachineRole) -> LauncherProfile:
     if machine_role == LauncherMachineRole.GATEWAY:
         profile.enable_gateway = True

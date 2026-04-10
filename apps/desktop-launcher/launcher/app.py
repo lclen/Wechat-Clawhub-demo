@@ -6,9 +6,11 @@ import inspect
 import json
 import time
 import zipfile
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, urlunsplit
+from uuid import uuid4
 
 import httpx
 import websockets
@@ -25,6 +27,8 @@ from launcher.models import (
     derive_runtime_model,
     LogResponse,
     LocalNodeActionResponse,
+    LocalNodeConversationTestRequest,
+    LocalNodeConversationTestResponse,
     LocalNodeExportResponse,
     LocalNodeLogsResponse,
     LocalNodeModelConfig,
@@ -39,6 +43,7 @@ from launcher.process_manager import ProcessManager
 from launcher.profile_store import build_layout, default_state_path, ensure_layout, load_profile, redis_state, save_profile
 from launcher.redis_runtime import ensure_redis_binary
 from launcher.runtime import resource_root
+from claw_node.inference import create_inference_client
 
 
 def create_app() -> FastAPI:
@@ -463,12 +468,6 @@ def create_app() -> FastAPI:
                     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
             apply_state = _read_local_node_apply_state(apply_state_path)
             model_settings = _read_local_node_model_config(config_path)
-            response_model_settings = model_settings.model_copy(
-                update={
-                    "openai_api_key": "",
-                    "dify_api_key": "",
-                }
-            )
             node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
             status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
             runtime_state = str(diagnostics.get("current_state", "") or "").strip()
@@ -541,7 +540,7 @@ def create_app() -> FastAPI:
                 inference_ready=inference_ready,
                 inference_detail=inference_detail,
                 diagnostics=diagnostics,
-                model_settings=response_model_settings,
+                model_settings=model_settings,
             )
 
         return await load_cached_response(
@@ -723,6 +722,22 @@ def create_app() -> FastAPI:
         invalidate_cached_response("local_node_status_cache")
         status = await local_node_status()
         return LocalNodeActionResponse(detail=detail, status=status)
+
+    @app.post("/local/node/conversation-test", response_model=LocalNodeConversationTestResponse)
+    async def test_local_node_conversation(payload: LocalNodeConversationTestRequest) -> LocalNodeConversationTestResponse:
+        profile = app.state.profile
+        layout = build_layout(profile)
+        ensure_layout(layout)
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
+        config_path = install_dir / "config" / "node.env"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
+        model_settings = _read_local_node_model_config(config_path)
+        return await _run_local_node_conversation_test(
+            config_path=config_path,
+            model_settings=model_settings,
+            payload=payload,
+        )
 
     @app.post("/local/node/diagnostics/export", response_model=LocalNodeExportResponse)
     async def export_local_node_diagnostics() -> LocalNodeExportResponse:
@@ -977,6 +992,140 @@ async def _apply_local_node_model_config_in_background(
         )
         return
     _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
+
+
+@dataclass(slots=True)
+class _LocalNodeInferenceSettings:
+    model_provider: str
+    dify_base_url: str
+    dify_api_key: str
+    openai_base_url: str
+    openai_api_key: str
+    openai_model: str
+    openai_enable_thinking: bool
+    openai_temperature: float
+    openai_top_p: float
+    openai_max_tokens: int
+    openai_seed: int
+    openai_thinking_budget: int
+    openai_stop: str
+    openai_enable_search: bool
+    openai_search_forced: bool
+    openai_search_strategy: str
+    openai_enable_search_extension: bool
+    openai_multimodal_enabled: bool
+
+
+async def _run_local_node_conversation_test(
+    *,
+    config_path: Path,
+    model_settings: LocalNodeModelConfig,
+    payload: LocalNodeConversationTestRequest,
+) -> LocalNodeConversationTestResponse:
+    message = str(payload.message or "").strip()
+    if not message:
+        raise HTTPException(status_code=422, detail="请先输入一条测试消息。")
+    provider = _resolve_local_node_test_provider(payload.provider, model_settings)
+    if provider == "openai" and not _has_openai_model_config(model_settings):
+        raise HTTPException(status_code=422, detail="当前保存的 node.env 里还没有完整的 OpenAI Base URL / API Key / Model。")
+    if provider == "dify" and not _has_dify_model_config(model_settings):
+        raise HTTPException(status_code=422, detail="当前保存的 node.env 里还没有完整的 Dify Base URL / API Key。")
+
+    settings = _build_local_node_inference_settings(model_settings, provider=provider)
+    inference_client, inference_error = create_inference_client(settings)
+    if inference_client is None:
+        raise HTTPException(status_code=502, detail=inference_error or "当前模型配置不可用，无法创建推理客户端。")
+
+    test_session = f"launcher-test-{uuid4().hex[:12]}"
+    test_user = f"launcher-user-{uuid4().hex[:8]}"
+    started_at = time.perf_counter()
+    try:
+        reply, usage = await inference_client.ask(
+            session_id=test_session,
+            user_id=test_user,
+            agent_id="launcher-conversation-test",
+            query=message,
+            context_summary="This is a launcher-side connectivity test for the node model configuration.",
+            recent_messages=[],
+        )
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=_format_local_node_test_error(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"对话测试失败：{exc}") from exc
+    finally:
+        close_method = getattr(inference_client, "close", None)
+        if callable(close_method):
+            with contextlib.suppress(Exception):
+                await close_method()
+
+    configured_provider = (model_settings.model_provider or "auto").strip() or "auto"
+    detail = (
+        f"已通过 {provider} 链路收到回复。"
+        if provider == configured_provider or configured_provider == "auto"
+        else f"已通过 {provider} 链路收到回复（当前保存的 provider 为 {configured_provider}）。"
+    )
+    return LocalNodeConversationTestResponse(
+        ok=True,
+        provider=provider,
+        configured_provider=configured_provider,
+        config_path=str(config_path),
+        latency_ms=max(1, int((time.perf_counter() - started_at) * 1000)),
+        detail=detail,
+        reply=str(reply or "").strip(),
+        usage=usage if isinstance(usage, dict) else {},
+    )
+
+
+def _resolve_local_node_test_provider(requested_provider: str, model_settings: LocalNodeModelConfig) -> str:
+    provider = str(requested_provider or "current").strip().lower()
+    if provider in {"openai", "dify"}:
+        return provider
+    configured_provider = (model_settings.model_provider or "auto").strip().lower()
+    if configured_provider in {"openai", "openai_compatible"}:
+        return "openai"
+    if configured_provider == "dify":
+        return "dify"
+    if _has_openai_model_config(model_settings):
+        return "openai"
+    if _has_dify_model_config(model_settings):
+        return "dify"
+    raise HTTPException(status_code=422, detail="当前保存的 node.env 中既没有可用的 OpenAI 配置，也没有可用的 Dify 配置。")
+
+
+def _build_local_node_inference_settings(
+    model_settings: LocalNodeModelConfig,
+    *,
+    provider: str,
+) -> _LocalNodeInferenceSettings:
+    return _LocalNodeInferenceSettings(
+        model_provider=provider,
+        dify_base_url=model_settings.dify_base_url,
+        dify_api_key=model_settings.dify_api_key,
+        openai_base_url=model_settings.openai_base_url,
+        openai_api_key=model_settings.openai_api_key,
+        openai_model=model_settings.openai_model,
+        openai_enable_thinking=model_settings.openai_enable_thinking,
+        openai_temperature=model_settings.openai_temperature,
+        openai_top_p=model_settings.openai_top_p,
+        openai_max_tokens=model_settings.openai_max_tokens,
+        openai_seed=model_settings.openai_seed,
+        openai_thinking_budget=model_settings.openai_thinking_budget,
+        openai_stop=model_settings.openai_stop,
+        openai_enable_search=model_settings.openai_enable_search,
+        openai_search_forced=model_settings.openai_search_forced,
+        openai_search_strategy=model_settings.openai_search_strategy,
+        openai_enable_search_extension=model_settings.openai_enable_search_extension,
+        openai_multimodal_enabled=model_settings.openai_multimodal_enabled,
+    )
+
+
+def _format_local_node_test_error(exc: httpx.HTTPStatusError) -> str:
+    summary = f"对话测试失败：HTTP {exc.response.status_code}"
+    with contextlib.suppress(Exception):
+        payload = exc.response.text.strip()
+        if payload:
+            return f"{summary} {payload[:400]}"
+    return summary
 
 
 def _write_env_file(path: Path, values: dict[str, str]) -> None:

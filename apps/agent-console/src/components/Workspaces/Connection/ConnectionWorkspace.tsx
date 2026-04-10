@@ -8,6 +8,8 @@ import type {
   ConnectionPrepItem,
   ConnectionSignalCardData,
   DiscoveredNodeRecord,
+  LocalNodeConversationTestRequest,
+  LocalNodeConversationTestResponse,
   LocalNodeModelConfigRequest,
   LocalNodeStatusResponse,
   ManualPairDraft,
@@ -135,6 +137,7 @@ type ConnectionWorkspaceProps = {
   onRestartLocalNodeService: () => void;
   onSaveLocalNodeModelConfig: () => void;
   onExportLocalNodeDiagnostics: () => void;
+  onRunLocalNodeConversationTest: (payload: LocalNodeConversationTestRequest) => Promise<LocalNodeConversationTestResponse>;
   onRestartGatewayService: () => void;
 };
 
@@ -329,6 +332,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
               onRestart={props.onRestartLocalNodeService}
               onSave={props.onSaveLocalNodeModelConfig}
               onExport={props.onExportLocalNodeDiagnostics}
+              onRunConversationTest={props.onRunLocalNodeConversationTest}
             />
           </div>
         </div>
@@ -454,6 +458,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 onRestart={props.onRestartLocalNodeService}
                 onSave={props.onSaveLocalNodeModelConfig}
                 onExport={props.onExportLocalNodeDiagnostics}
+                onRunConversationTest={props.onRunLocalNodeConversationTest}
               />
             </div>
           </div>

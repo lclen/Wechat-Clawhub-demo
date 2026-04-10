@@ -8,6 +8,7 @@ import type {
   SetupRole,
   SetupTaskEnvelope,
   SetupTaskResult,
+  WorkspaceTab,
 } from "../types";
 
 type RequestJson = <T>(input: string, init?: RequestInit) => Promise<T>;
@@ -19,7 +20,7 @@ type UseSetupTaskEffectsOptions = {
   setupTask: SetupTaskResult | null;
   setSetupTask: (next: SetupTaskResult | null) => void;
   setSetupProfile: (next: SetupProfileResponse | null) => void;
-  setWorkspace: Dispatch<SetStateAction<"quick_setup" | "sessions" | "connection" | "logs">>;
+  setWorkspace: Dispatch<SetStateAction<WorkspaceTab>>;
   setNotice: (next: string) => void;
   applyLauncherPolicyForRole: (role: SetupRole) => Promise<void>;
 };

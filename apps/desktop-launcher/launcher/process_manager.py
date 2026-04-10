@@ -190,7 +190,7 @@ class ProcessManager:
         if current.state == ComponentState.RUNNING and not self._local_node_service_requires_repair(profile, layout, node_spec):
             self._statuses["local-node"] = current
             return
-        if node_spec["node_kind"] == "remote" and not self._read_existing_local_node_config(layout):
+        if node_spec["node_kind"] == "remote" and self._query_windows_service(self._local_node_service_name(profile)) is None:
             self._statuses["local-node"] = LauncherComponentStatus(
                 name="local-node",
                 state=ComponentState.FAILED,
@@ -207,10 +207,10 @@ class ProcessManager:
 
     def _install_or_restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         node_spec = self._resolved_local_node_spec(profile)
-        existing_config = self._read_local_node_runtime_config(profile, layout) or self._read_existing_local_node_config(layout)
+        existing_config = self._read_local_node_runtime_config(profile, layout)
         gateway_base_url = node_spec["gateway_base_url"] or existing_config.get("CLAW_GATEWAY_BASE_URL", "").strip()
         local_node_id = node_spec["node_id"]
-        install_dir = self._local_node_install_dir(layout)
+        install_dir = self._managed_local_node_install_dir(profile, layout, node_spec)
         install_dir.mkdir(parents=True, exist_ok=True)
         log_path = Path(layout.log_dir) / "local-node-install.log"
         script_path = self._repo_root / "scripts" / "install-claw-node.ps1"
@@ -375,6 +375,21 @@ class ProcessManager:
     def _local_node_install_dir(self, layout: LauncherWorkdirLayout) -> Path:
         return Path(layout.runtime_dir) / "local-node-service"
 
+    def _managed_local_node_install_dir(
+        self,
+        profile: LauncherProfile,
+        layout: LauncherWorkdirLayout,
+        node_spec: dict[str, Any] | None = None,
+    ) -> Path:
+        resolved_node_spec = node_spec or self._resolved_local_node_spec(profile)
+        if resolved_node_spec.get("node_kind") == "remote":
+            service = self._query_windows_service(self._local_node_service_name(profile))
+            path_name = str((service or {}).get("path_name", "") or "").strip()
+            executable_path = self._extract_windows_service_executable_path(path_name)
+            if executable_path is not None:
+                return executable_path.parent
+        return self._local_node_install_dir(layout)
+
     def local_node_runtime_install_dir(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> Path:
         service = self._query_windows_service(self._local_node_service_name(profile))
         path_name = str((service or {}).get("path_name", "") or "").strip()
@@ -382,10 +397,6 @@ class ProcessManager:
         if executable_path is not None:
             return executable_path.parent
         return self._local_node_install_dir(layout)
-
-    def _read_existing_local_node_config(self, layout: LauncherWorkdirLayout) -> dict[str, str]:
-        config_path = self._local_node_install_dir(layout) / "config" / "node.env"
-        return self._read_env_file(config_path)
 
     def _read_local_node_runtime_config(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> dict[str, str]:
         config_path = self.local_node_runtime_install_dir(profile, layout) / "config" / "node.env"
@@ -411,7 +422,7 @@ class ProcessManager:
     ) -> bool:
         runtime_install_dir = self.local_node_runtime_install_dir(profile, layout)
         desired_install_dir = self._local_node_install_dir(layout)
-        if runtime_install_dir != desired_install_dir:
+        if node_spec.get("node_kind") == "local" and runtime_install_dir != desired_install_dir:
             return True
         diagnostics = self._read_local_node_diagnostics(profile, layout)
         runtime_state = str(diagnostics.get("current_state", "") or "").strip().lower()

@@ -9,6 +9,7 @@ import {
 import { DiagnosticsConsole } from "./components/Workspaces/Connection/DiagnosticsConsole";
 import { InfoRow, MetaPill, Metric, SnippetBlock, StatusChip } from "./components/Workspaces/Connection/ConnectionUi";
 import { ConnectionWorkspace } from "./components/Workspaces/Connection/ConnectionWorkspace";
+import { ConversationTestWorkspace } from "./components/Workspaces/ConversationTest/ConversationTestWorkspace";
 import { PairingStatusModal } from "./components/Workspaces/Connection/PairingStatusModal";
 import { RuntimeLogsPanel } from "./components/Workspaces/Connection/RuntimeLogsPanel";
 import { LogsWorkspace } from "./components/Workspaces/Logs/LogsWorkspace";
@@ -132,6 +133,8 @@ import type {
   LauncherStatusResponse,
   LauncherWorkdirLayout,
   LocalNodeConfigApplyState,
+  LocalNodeConversationTestRequest,
+  LocalNodeConversationTestResponse,
   LocalNodeLogsResponse,
   LocalNodeModelConfig,
   LocalNodeModelConfigRequest,
@@ -435,6 +438,7 @@ export function App() {
     saveLocalNodeModelConfig,
     restartLocalNodeService,
     exportLocalNodeDiagnostics,
+    runLocalNodeConversationTest,
   } = useLocalNodeController({
     requestJson,
     withBusy,
@@ -1600,6 +1604,8 @@ export function App() {
             <div className="topbar-copy">
               {workspace === "connection"
                 ? "接入中心优先展示当前运行态、接入结果和关键配置。"
+                : workspace === "conversation_test"
+                  ? "对话测试直接验证当前已保存的 OpenAI 或 Dify 配置能否真正返回回复。"
                 : workspace === "logs"
                   ? "日志中心集中查看运行日志、配对日志和节点回连输出。"
                   : "把快速配置、接入联调、日志中心和会话观察拆成四个一级工作区，首次启动先走向导，后续也能随时重配。"}
@@ -1632,6 +1638,9 @@ export function App() {
           </button>
           <button type="button" className={`workspace-tab ${workspace === "connection" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("connection")}>
             {(() => { const badge = resolveRoleBadge(effectiveRole); return badge?.tab === "connection" ? <span className="workspace-tab-badge">接入中心<span className={`role-badge role-badge-${badge.variant}`}>{badge.label}</span></span> : "接入中心"; })()}
+          </button>
+          <button type="button" className={`workspace-tab ${workspace === "conversation_test" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("conversation_test")}>
+            对话测试
           </button>
           <button type="button" className={`workspace-tab ${workspace === "logs" ? "workspace-tab-active" : ""}`} onClick={() => setWorkspace("logs")}>
             日志中心
@@ -1792,7 +1801,19 @@ export function App() {
             onRestartLocalNodeService={() => void restartLocalNodeService()}
             onSaveLocalNodeModelConfig={() => void saveLocalNodeModelConfig()}
             onExportLocalNodeDiagnostics={() => void exportLocalNodeDiagnostics()}
+            onRunLocalNodeConversationTest={(payload: LocalNodeConversationTestRequest): Promise<LocalNodeConversationTestResponse> => runLocalNodeConversationTest(payload)}
             onRestartGatewayService={() => void restartGatewayService()}
+          />
+        ) : workspace === "conversation_test" ? (
+          <ConversationTestWorkspace
+            currentRoleIsWorker={currentRoleIsWorker}
+            launcherAvailable={launcherAvailable}
+            busyKey={busy}
+            localNodeStatus={localNodeStatus}
+            localNodeModelDirty={localNodeModelDirty}
+            onSaveLocalNodeModelConfig={() => void saveLocalNodeModelConfig()}
+            onRefreshLocalNodeDiagnostics={() => void refreshLocalNodeDiagnostics()}
+            onRunLocalNodeConversationTest={(payload: LocalNodeConversationTestRequest): Promise<LocalNodeConversationTestResponse> => runLocalNodeConversationTest(payload)}
           />
         ) : workspace === "logs" ? (
           <LogsWorkspace
