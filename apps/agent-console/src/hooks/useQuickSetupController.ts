@@ -10,6 +10,7 @@ import {
   DEFAULT_WORKER_SETUP,
 } from "../quickSetupDefaults";
 import { resolveWorkerGatewayBaseUrl, resolveWorkerNodeId } from "../selectors/quickSetupSelectors";
+import { hasText, safeTrim } from "../stringUtils";
 import type {
   ConsoleSetupConfig,
   DiscoveredNodeRecord,
@@ -147,8 +148,8 @@ export function useQuickSetupController(options: QuickSetupControllerOptions) {
   }, [gatewaySetup, workerSetup, consoleSetup]);
 
   useEffect(() => {
-    if (!workerSetup.pairing_key.trim()) return;
-    setManualPair((current) => (current.pairing_key.trim() ? current : { ...current, pairing_key: workerSetup.pairing_key.trim() }));
+    if (!hasText(workerSetup.pairing_key)) return;
+    setManualPair((current) => (hasText(current.pairing_key) ? current : { ...current, pairing_key: safeTrim(workerSetup.pairing_key) }));
   }, [workerSetup.pairing_key]);
 
   function selectSetupRole(role: SetupRole) {

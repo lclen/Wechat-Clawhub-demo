@@ -1,6 +1,7 @@
 import { SnippetBlock } from "../Connection/ConnectionUi";
 import { DiagnosticsConsole, type DiagnosticsConsoleEntry } from "../Connection/DiagnosticsConsole";
 import { RuntimeLogsPanel, type RuntimeLogEntry } from "../Connection/RuntimeLogsPanel";
+import { CommandBar } from "../../shared/ConsolePrimitives";
 
 type LogsWorkspaceProps = {
   currentRoleIsWorker: boolean;
@@ -32,6 +33,15 @@ export function LogsWorkspace({
           {currentRoleIsWorker ? "这里不再混入安装配置表单，只保留当前机器节点的关键日志。" : "接入中心负责配置与状态，日志中心负责集中排障与运行追踪。"}
         </div>
       </div>
+
+      <CommandBar
+        label="日志视角"
+        detail={currentRoleIsWorker ? "优先看回连、节点服务和配对过程。" : "优先看主机组件、本机节点和纳管过程的串联日志。"}
+      >
+        <button type="button" className="ghost-button" onClick={onRefreshRuntimeLogs}>
+          刷新运行日志
+        </button>
+      </CommandBar>
 
       <div className="logs-workspace-stack">
         {currentRoleIsWorker ? <SnippetBlock label="节点连接日志" content={workerConnectionLog} /> : null}

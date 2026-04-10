@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { applyGatewaySummaryToState, resolvePreferredGatewayBaseUrl } from "../appBootstrap";
+import { hasText, safeTrim } from "../stringUtils";
 import type {
   ConsoleSetupConfig,
   GatewayConsoleSetupRequest,
@@ -102,7 +103,7 @@ export function useQuickSetupOperations(options: UseQuickSetupOperationsOptions)
   const refreshQuickSetupStatus = useCallback(async (options?: { silent?: boolean }) => {
     try {
       if (!shouldUseLocalGatewayApi) {
-        const remoteGateway = sessionRemoteGatewayBaseUrl.trim();
+        const remoteGateway = safeTrim(sessionRemoteGatewayBaseUrl);
         const [profile, remoteSummary] = await Promise.all([
           requestJson<SetupProfileResponse>("/local/setup/profile"),
           remoteGateway
@@ -222,10 +223,10 @@ export function useQuickSetupOperations(options: UseQuickSetupOperationsOptions)
       if (launcherAvailable && runtimeMachineRole !== "node") {
         await applyLauncherPolicyForRole("worker_node");
       }
-      if (launcherAvailable && workerSetup.gateway_base_url.trim()) {
+      if (launcherAvailable && hasText(workerSetup.gateway_base_url)) {
         await requestJson<LauncherStatusResponse>("/local/bootstrap/set-gateway-url", {
           method: "POST",
-          body: JSON.stringify({ gateway_base_url: workerSetup.gateway_base_url.trim() }),
+          body: JSON.stringify({ gateway_base_url: safeTrim(workerSetup.gateway_base_url) }),
         });
         await refreshLauncherStatus();
       }

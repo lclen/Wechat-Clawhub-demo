@@ -93,6 +93,39 @@ export function QuickSetupConfigStage({
           <label><span>微信 Base URL</span><input value={gatewaySetup.wechat_base_url} onChange={(event) => onUpdateGatewaySetup("wechat_base_url", event.target.value)} /></label>
           <label><span>微信 Token</span><textarea value={gatewaySetup.wechat_token} onChange={(event) => onUpdateGatewaySetup("wechat_token", event.target.value)} placeholder="留空则保留当前已保存 token；填写后保存会尝试直接刷新连接。" /></label>
         </div>
+        <details className="form-advanced-details connection-fold-card">
+          <summary>
+            <span className="section-kicker">内置模型高级参数</span>
+            <span className="connection-fold-hint">thinking、采样、搜索、多模态与 stop sequences</span>
+          </summary>
+          <div className="connection-form-grid">
+            <label><span>Temperature</span><input type="number" step="0.1" min="0" max="2" value={gatewaySetup.builtin_model_temperature} onChange={(event) => onUpdateGatewaySetup("builtin_model_temperature", Number(event.target.value) || 0)} /></label>
+            <label><span>Top P</span><input type="number" step="0.1" min="0" max="1" value={gatewaySetup.builtin_model_top_p} onChange={(event) => onUpdateGatewaySetup("builtin_model_top_p", Number(event.target.value) || 0)} /></label>
+            <label><span>Max Tokens</span><input type="number" min="0" value={gatewaySetup.builtin_model_max_tokens} onChange={(event) => onUpdateGatewaySetup("builtin_model_max_tokens", Number(event.target.value) || 0)} /></label>
+            <label><span>Seed</span><input type="number" min="0" value={gatewaySetup.builtin_model_seed} onChange={(event) => onUpdateGatewaySetup("builtin_model_seed", Number(event.target.value) || 0)} /></label>
+            <label><span>Thinking Budget</span><input type="number" min="0" value={gatewaySetup.builtin_model_thinking_budget} onChange={(event) => onUpdateGatewaySetup("builtin_model_thinking_budget", Number(event.target.value) || 0)} /></label>
+            <label>
+              <span>搜索策略</span>
+              <select value={gatewaySetup.builtin_model_search_strategy} onChange={(event) => onUpdateGatewaySetup("builtin_model_search_strategy", event.target.value)}>
+                <option value="turbo">turbo</option>
+                <option value="max">max</option>
+                <option value="agent">agent</option>
+                <option value="agent_max">agent_max</option>
+              </select>
+            </label>
+            <label className="connection-full-span">
+              <span>Stop Sequences（每行一个，或 JSON 数组）</span>
+              <textarea value={gatewaySetup.builtin_model_stop} onChange={(event) => onUpdateGatewaySetup("builtin_model_stop", event.target.value)} placeholder={"Observation:\n[\"</answer>\", \"###\"]"} />
+            </label>
+          </div>
+          <div className="connection-checkbox-grid">
+            <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_enable_thinking} onChange={(event) => onUpdateGatewaySetup("builtin_model_enable_thinking", event.target.checked)} /><span>启用 OpenAI Thinking</span></label>
+            <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_enable_search} onChange={(event) => onUpdateGatewaySetup("builtin_model_enable_search", event.target.checked)} /><span>启用联网搜索</span></label>
+            <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_search_forced} onChange={(event) => onUpdateGatewaySetup("builtin_model_search_forced", event.target.checked)} /><span>强制搜索</span></label>
+            <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_enable_search_extension} onChange={(event) => onUpdateGatewaySetup("builtin_model_enable_search_extension", event.target.checked)} /><span>垂域搜索扩展</span></label>
+            <label className="checkbox-row"><input type="checkbox" checked={gatewaySetup.builtin_model_multimodal_enabled} onChange={(event) => onUpdateGatewaySetup("builtin_model_multimodal_enabled", event.target.checked)} /><span>启用多模态输入</span></label>
+          </div>
+        </details>
         <section className="surface surface-subsection">
           <div className="section-head">
             <div><div className="section-kicker">自动发现</div><h3>搜索局域网内已运行的工作节点</h3></div>
@@ -195,10 +228,46 @@ export function QuickSetupConfigStage({
           ) : (
             <div className="worker-model-collapse-body">
               <div className="form-grid">
+                <label><span>OpenAI Base URL</span><input value={workerSetup.openai_base_url} onChange={(event) => onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="留空时沿用网关内置模型" /></label>
+                <label><span>OpenAI Model</span><input value={workerSetup.openai_model} onChange={(event) => onUpdateWorkerSetup("openai_model", event.target.value)} placeholder="qwen-plus / gpt-4o-mini / deepseek-chat" /></label>
+                <label className="connection-full-span"><span>OpenAI API Key</span><ToggleSecretInput value={workerSetup.openai_api_key} onChange={(event) => onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="留空时沿用网关已继承的 Key" autoComplete="new-password" /></label>
                 <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => onUpdateWorkerSetup("dify_base_url", event.target.value)} /></label>
                 <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => onUpdateWorkerSetup("dify_api_key", event.target.value)} /></label>
                 <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => onUpdateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
               </div>
+              <details className="form-advanced-details connection-fold-card">
+                <summary>
+                  <span className="section-kicker">OpenAI 高级参数</span>
+                  <span className="connection-fold-hint">继承网关默认值后，也可在节点侧单独覆盖</span>
+                </summary>
+                <div className="connection-form-grid">
+                  <label><span>Temperature</span><input type="number" step="0.1" min="0" max="2" value={workerSetup.openai_temperature} onChange={(event) => onUpdateWorkerSetup("openai_temperature", Number(event.target.value) || 0)} /></label>
+                  <label><span>Top P</span><input type="number" step="0.1" min="0" max="1" value={workerSetup.openai_top_p} onChange={(event) => onUpdateWorkerSetup("openai_top_p", Number(event.target.value) || 0)} /></label>
+                  <label><span>Max Tokens</span><input type="number" min="0" value={workerSetup.openai_max_tokens} onChange={(event) => onUpdateWorkerSetup("openai_max_tokens", Number(event.target.value) || 0)} /></label>
+                  <label><span>Seed</span><input type="number" min="0" value={workerSetup.openai_seed} onChange={(event) => onUpdateWorkerSetup("openai_seed", Number(event.target.value) || 0)} /></label>
+                  <label><span>Thinking Budget</span><input type="number" min="0" value={workerSetup.openai_thinking_budget} onChange={(event) => onUpdateWorkerSetup("openai_thinking_budget", Number(event.target.value) || 0)} /></label>
+                  <label>
+                    <span>搜索策略</span>
+                    <select value={workerSetup.openai_search_strategy} onChange={(event) => onUpdateWorkerSetup("openai_search_strategy", event.target.value)}>
+                      <option value="turbo">turbo</option>
+                      <option value="max">max</option>
+                      <option value="agent">agent</option>
+                      <option value="agent_max">agent_max</option>
+                    </select>
+                  </label>
+                  <label className="connection-full-span">
+                    <span>Stop Sequences（每行一个，或 JSON 数组）</span>
+                    <textarea value={workerSetup.openai_stop} onChange={(event) => onUpdateWorkerSetup("openai_stop", event.target.value)} placeholder={"Observation:\n[\"</answer>\", \"###\"]"} />
+                  </label>
+                </div>
+                <div className="connection-checkbox-grid">
+                  <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_enable_thinking} onChange={(event) => onUpdateWorkerSetup("openai_enable_thinking", event.target.checked)} /><span>启用 OpenAI Thinking</span></label>
+                  <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_enable_search} onChange={(event) => onUpdateWorkerSetup("openai_enable_search", event.target.checked)} /><span>启用联网搜索</span></label>
+                  <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_search_forced} onChange={(event) => onUpdateWorkerSetup("openai_search_forced", event.target.checked)} /><span>强制搜索</span></label>
+                  <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_enable_search_extension} onChange={(event) => onUpdateWorkerSetup("openai_enable_search_extension", event.target.checked)} /><span>垂域搜索扩展</span></label>
+                  <label className="checkbox-row"><input type="checkbox" checked={workerSetup.openai_multimodal_enabled} onChange={(event) => onUpdateWorkerSetup("openai_multimodal_enabled", event.target.checked)} /><span>启用多模态输入</span></label>
+                </div>
+              </details>
             </div>
           )}
         </div>

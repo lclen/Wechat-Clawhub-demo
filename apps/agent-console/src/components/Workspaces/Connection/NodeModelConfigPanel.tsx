@@ -4,6 +4,7 @@ import type {
   LocalNodeModelConfigRequest,
   LocalNodeStatusResponse,
 } from "../../../types";
+import { hasText } from "../../../stringUtils";
 import { InfoRow, SnippetBlock, ToggleSecretInput } from "./ConnectionUi";
 
 type NodeModelConfigPanelProps = {
@@ -93,8 +94,8 @@ export function NodeModelConfigPanel({
         : "自动选择已完整配置的 Provider";
   const openaiKeyConfigured = Boolean(status?.model_settings?.openai_api_key_configured);
   const difyKeyConfigured = Boolean(status?.model_settings?.dify_api_key_configured);
-  const openaiKeyMode = draft.clear_openai_api_key ? "clear" : draft.openai_api_key.trim() ? "replace" : draft.preserve_openai_api_key ? "keep" : "missing";
-  const difyKeyMode = draft.clear_dify_api_key ? "clear" : draft.dify_api_key.trim() ? "replace" : draft.preserve_dify_api_key ? "keep" : "missing";
+  const openaiKeyMode = draft.clear_openai_api_key ? "clear" : hasText(draft.openai_api_key) ? "replace" : draft.preserve_openai_api_key ? "keep" : "missing";
+  const difyKeyMode = draft.clear_dify_api_key ? "clear" : hasText(draft.dify_api_key) ? "replace" : draft.preserve_dify_api_key ? "keep" : "missing";
 
   return (
     <section className="surface">

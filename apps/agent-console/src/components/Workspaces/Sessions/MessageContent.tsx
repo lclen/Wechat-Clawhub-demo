@@ -9,15 +9,22 @@ type MessageContentPart =
 export function MessageContent({ content }: MessageContentProps) {
   const parts = parseMarkdownImageParts(content);
   if (!parts.length) {
-    return content;
+    return <span className="message-text-fragment">{content}</span>;
   }
 
   return parts.map((part, index) => {
     if (part.kind === "image") {
       return (
-        <figure key={`img-${index}-${part.url}`} className="message-image-block">
-          <img className="message-inline-image" src={part.url} alt={part.alt || "message image"} loading="lazy" />
-          {part.alt ? <figcaption>{part.alt}</figcaption> : null}
+        <figure key={`img-${index}-${part.url}`} className="message-media-card">
+          <div className="message-media-frame">
+            <img className="message-inline-image" src={part.url} alt={part.alt || "message image"} loading="lazy" />
+          </div>
+          <figcaption className="message-media-meta">
+            <strong>{part.alt || "图片附件"}</strong>
+            <a href={part.url} target="_blank" rel="noreferrer">
+              查看来源
+            </a>
+          </figcaption>
         </figure>
       );
     }

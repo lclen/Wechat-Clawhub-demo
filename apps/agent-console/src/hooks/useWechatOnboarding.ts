@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { isLauncherGatewayOwned } from "../selectors/launcherSelectors";
+import { hasText, safeTrim } from "../stringUtils";
 import type { LauncherStatusResponse, PollResponse, QrStart, WeChatStatus } from "../types";
 
 type RequestJson = <T>(input: string, init?: RequestInit) => Promise<T>;
@@ -96,12 +97,12 @@ export function useWechatOnboarding(options: UseWechatOnboardingOptions) {
   }, [connectWeChat, launcherStatus, qr, requestJson, setNotice, setPollState, wechatBaseUrl, withBusy]);
 
   const connectManualToken = useCallback(async () => {
-    if (!manualToken.trim()) {
+    if (!hasText(manualToken)) {
       setNotice("请先填写 token，或通过扫码自动获取。");
       return;
     }
     try {
-      await connectWeChat(manualToken.trim(), wechatBaseUrl.trim());
+      await connectWeChat(safeTrim(manualToken), safeTrim(wechatBaseUrl));
       setNotice(
         isLauncherGatewayOwned(launcherStatus)
           ? "微信 token 已写入当前主网关，轮询已启动。"

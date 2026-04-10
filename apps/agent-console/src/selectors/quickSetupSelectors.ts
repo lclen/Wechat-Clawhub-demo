@@ -1,4 +1,5 @@
 import { DEFAULT_BUILTIN_MODEL_LABEL } from "../quickSetupDefaults";
+import { hasText, safeTrim } from "../stringUtils";
 import type {
   ConsoleSetupConfig,
   GatewaySetupConfig,
@@ -64,7 +65,7 @@ export function roleAction(role: SetupRole) {
 }
 
 export function workerEnvLocations(installDir: string) {
-  if (!installDir.trim()) return "节点安装目录下的 bundle\\claw-node\\.env（或 bundle\\claw-node\\services\\claw-node\\.env）";
+  if (!hasText(installDir)) return "节点安装目录下的 bundle\\claw-node\\.env（或 bundle\\claw-node\\services\\claw-node\\.env）";
   return [
     `${installDir}\\bundle\\claw-node\\.env`,
     `${installDir}\\bundle\\claw-node\\services\\claw-node\\.env`,
@@ -124,7 +125,7 @@ export function launcherRoleUsesLocalNode(machineRole: LauncherMachineRole) {
 }
 
 export function resolveWorkerNodeId(currentValue: string, launcherProfile?: LauncherProfile | null) {
-  const candidate = currentValue.trim() || launcherProfile?.local_node_id || "";
+  const candidate = safeTrim(currentValue) || launcherProfile?.local_node_id || "";
   if (candidate && candidate !== "local-node") {
     return candidate;
   }
@@ -136,9 +137,9 @@ export function resolveWorkerGatewayBaseUrl(
   profile?: Pick<SetupProfileResponse, "console" | "preferred_gateway_base_url" | "last_task"> | null,
   system?: { preferred_gateway_base_url?: string | null } | null,
 ) {
-  const trimmedCurrent = currentGatewayBaseUrl.trim();
+  const trimmedCurrent = safeTrim(currentGatewayBaseUrl);
   if (trimmedCurrent) return trimmedCurrent;
-  const taskGatewayBaseUrl = profile?.last_task?.kind === "node_install" ? profile.last_task.metadata.gateway_base_url?.trim() : "";
+  const taskGatewayBaseUrl = profile?.last_task?.kind === "node_install" ? safeTrim(profile.last_task.metadata.gateway_base_url) : "";
   if (taskGatewayBaseUrl) return taskGatewayBaseUrl;
   return profile?.preferred_gateway_base_url || profile?.console.gateway_base_url || system?.preferred_gateway_base_url || "";
 }

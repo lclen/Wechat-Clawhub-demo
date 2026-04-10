@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "react";
 import type {
+  AppUiStateCache,
   GatewaySummaryResponse,
   LauncherStatusResponse,
   MessageRecord,
@@ -42,6 +43,7 @@ type UseSessionConsoleControllerOptions = {
   setMessageHistoryLoading: Dispatch<SetStateAction<boolean>>;
   setNotice: (next: string) => void;
   refreshGatewaySummarySnapshot: () => Promise<GatewaySummaryResponse | null>;
+  saveUiStateCache: (patch: Partial<AppUiStateCache>) => void;
 };
 
 export function useSessionConsoleController(options: UseSessionConsoleControllerOptions) {
@@ -72,13 +74,31 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     setMessageHistoryLoading,
     setNotice,
     refreshGatewaySummarySnapshot,
+    saveUiStateCache,
   } = options;
+
+  const persistSessionScrollState = useCallback(() => {
+    const container = messagesRef.current;
+    if (!container) return;
+    saveUiStateCache({
+      session_scroll: selectedSessionId
+        ? {
+            session_id: selectedSessionId,
+            scroll_top: container.scrollTop,
+            offset_from_bottom: Math.max(0, container.scrollHeight - container.clientHeight - container.scrollTop),
+            follow_bottom: shouldAutoFollowMessagesRef.current,
+          }
+        : null,
+    });
+  }, [messagesRef, saveUiStateCache, selectedSessionId, shouldAutoFollowMessagesRef]);
 
   const scrollMessagesToBottom = useCallback(() => {
     const container = messagesRef.current;
     if (!container) return;
     container.scrollTop = container.scrollHeight;
-  }, [messagesRef]);
+    shouldAutoFollowMessagesRef.current = true;
+    persistSessionScrollState();
+  }, [messagesRef, persistSessionScrollState, shouldAutoFollowMessagesRef]);
 
   const isMessageStreamNearBottom = useCallback(() => {
     const container = messagesRef.current;
@@ -252,11 +272,12 @@ export function useSessionConsoleController(options: UseSessionConsoleController
 
   const handleMessageStreamScroll = useCallback(() => {
     shouldAutoFollowMessagesRef.current = isMessageStreamNearBottom();
+    persistSessionScrollState();
     const container = messagesRef.current;
     if (container && container.scrollTop <= 24 && selectedSessionId && messageHasMoreBefore && !messageHistoryLoading) {
       void loadOlderSessionMessages();
     }
-  }, [isMessageStreamNearBottom, loadOlderSessionMessages, messageHasMoreBefore, messageHistoryLoading, messagesRef, selectedSessionId, shouldAutoFollowMessagesRef]);
+  }, [isMessageStreamNearBottom, loadOlderSessionMessages, messageHasMoreBefore, messageHistoryLoading, messagesRef, persistSessionScrollState, selectedSessionId, shouldAutoFollowMessagesRef]);
 
   const upsertSessionInView = useCallback((nextSession: SessionRecord) => {
     setSessions((current) => {
@@ -318,6 +339,7 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     upsertSessionInView,
     refreshSessionDetail,
     switchSessionNode,
+    persistSessionScrollState,
   };
 }
 
