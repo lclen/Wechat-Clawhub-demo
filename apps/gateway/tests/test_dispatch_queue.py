@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
 from app.core.config import Settings
@@ -63,6 +63,16 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_acquire_free_slot_skips_existing_named_slots(self) -> None:
         self.store.hgetall.return_value = {"slot-01": "session-a"}
+        self.store.batch_hgetall.return_value = [
+            {
+                "session_id": "session-a",
+                "assigned_node_id": "node-a",
+                "assigned_slot_id": "slot-01",
+                "active_task_id": "",
+                "queue_status": "none",
+                "slot_expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+            }
+        ]
 
         slot_id = await self.queue._acquire_free_slot("node-a", 3, "session-b")
 
@@ -76,6 +86,26 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(slot_id, "slot-03")
         self.store.hset.assert_not_awaited()
+
+    async def test_acquire_free_slot_reclaims_expired_stale_slot_before_allocating(self) -> None:
+        now = datetime.now(UTC)
+        self.store.hgetall.return_value = {"slot-01": "session-stale"}
+        self.store.batch_hgetall.return_value = [
+            {
+                "session_id": "session-stale",
+                "assigned_node_id": "node-a",
+                "assigned_slot_id": "slot-01",
+                "active_task_id": "",
+                "queue_status": "none",
+                "slot_expires_at": (now - timedelta(minutes=1)).isoformat(),
+            }
+        ]
+
+        slot_id = await self.queue._acquire_free_slot("node-a", 1, "session-new")
+
+        self.assertEqual(slot_id, "slot-01")
+        self.store.hdel.assert_awaited_once_with("wch:node:node-a:slots", "slot-01")
+        self.store.hset.assert_awaited_once_with("wch:node:node-a:slots", "slot-01", "session-new")
 
     async def test_enqueue_task_pushes_immediately_when_node_stream_connected(self) -> None:
         session = self._build_session(session_id="session-1", assigned_node_id="node-1", assigned_slot_id="slot-01")

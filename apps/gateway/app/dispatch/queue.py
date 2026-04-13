@@ -14,6 +14,7 @@ from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.node_stream import NodeStreamBroker
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager, SessionNotFoundError
+from app.services.slot_reconciler import SlotReconciler
 from app.services.transcript_writer import TranscriptWriter
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,7 @@ class DispatchQueue:
         self._outgoing_dispatcher = outgoing_dispatcher
         self._settings = settings
         self._node_stream = node_stream
+        self._slot_reconciler = SlotReconciler(store)
 
     def _task_key(self, task_id: str) -> str:
         return f"wch:dispatch:task:{task_id}"
@@ -916,6 +918,7 @@ class DispatchQueue:
                 for slot_id, current_session_id in current.items():
                     if current_session_id == session_id:
                         return slot_id
+            current = await self._slot_reconciler.prune_node_slots(node_id, current_slots=current)
             used_slot_ids = {
                 slot_number
                 for slot_number in (self._parse_slot_number(slot_id) for slot_id in current.keys())

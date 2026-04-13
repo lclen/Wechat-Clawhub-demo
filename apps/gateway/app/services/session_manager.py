@@ -457,8 +457,23 @@ class SessionManager:
         assigned_slot_id = raw.get("assigned_slot_id") or ""
         slot_bound_at = raw.get("slot_bound_at") or ""
         slot_expires_at = raw.get("slot_expires_at") or ""
-        if assigned_node_id or not (assigned_slot_id or slot_bound_at or slot_expires_at):
+        if not (assigned_slot_id or slot_bound_at or slot_expires_at):
             return raw
+
+        active_task_id = raw.get("active_task_id") or ""
+        queue_status = raw.get("queue_status") or QueueStatus.NONE.value
+        if assigned_node_id and active_task_id:
+            return raw
+        if assigned_node_id and queue_status != QueueStatus.NONE.value:
+            return raw
+        if assigned_node_id:
+            if not slot_expires_at:
+                return raw
+            try:
+                if self._utcnow() < self._parse_dt(slot_expires_at):
+                    return raw
+            except ValueError:
+                pass
 
         repaired = dict(raw)
         repaired["assigned_slot_id"] = ""
@@ -470,8 +485,9 @@ class SessionManager:
         except RedisError as exc:
             raise SessionManagerError("Failed to repair inconsistent session binding") from exc
         self.logger.warning(
-            "session_manager.repaired_inconsistent_binding session_id=%s assigned_slot_id=%s",
+            "session_manager.repaired_inconsistent_binding session_id=%s assigned_node_id=%s assigned_slot_id=%s",
             raw["session_id"],
+            assigned_node_id,
             assigned_slot_id,
         )
         return repaired

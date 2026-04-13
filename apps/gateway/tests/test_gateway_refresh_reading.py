@@ -253,50 +253,114 @@ class SessionManagerBatchReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(session.slot_bound_at)
         self.assertIsNone(session.slot_expires_at)
 
+    async def test_get_session_repairs_expired_idle_slot_binding_but_keeps_node_target(self) -> None:
+        now = datetime.now(UTC)
+        store = AsyncMock()
+        store.hgetall.return_value = {
+            "session_id": "wechat:user-d",
+            "channel": "wechat",
+            "user_id": "user-d",
+            "agent_id": "default-agent",
+            "status": "bot_active",
+            "assigned_node_id": "node-manual",
+            "assigned_slot_id": "slot-02",
+            "active_task_id": "",
+            "queue_status": "none",
+            "context_version": "1",
+            "routing_mode": "manual",
+            "slot_bound_at": (now - timedelta(minutes=15)).isoformat(),
+            "slot_expires_at": (now - timedelta(minutes=1)).isoformat(),
+            "reply_context_token": "",
+            "handoff_ticket_id": "",
+            "claimed_by": "",
+            "message_count": "1",
+            "last_message_at": now.isoformat(),
+            "last_dispatch_at": "",
+            "created_at": (now - timedelta(minutes=40)).isoformat(),
+            "updated_at": now.isoformat(),
+            "version": "2",
+        }
+        store.get.return_value = "summary"
+        manager = SessionManager(
+            store,
+            Mock(),
+            Mock(),
+            Settings(_env_file=None),
+        )
+
+        session = await manager.get_session("wechat:user-d")
+
+        repaired_meta = store.hset_many.await_args.args[1]
+        self.assertEqual(repaired_meta["assigned_node_id"], "node-manual")
+        self.assertEqual(repaired_meta["assigned_slot_id"], "")
+        self.assertEqual(repaired_meta["slot_bound_at"], "")
+        self.assertEqual(repaired_meta["slot_expires_at"], "")
+        self.assertEqual(session.assigned_node_id, "node-manual")
+        self.assertIsNone(session.assigned_slot_id)
+        self.assertIsNone(session.slot_bound_at)
+        self.assertIsNone(session.slot_expires_at)
+
 
 class NodeRegistryBatchReadTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_nodes_batches_reads_and_keeps_status_derivation(self) -> None:
         now = datetime.now(UTC)
         store = AsyncMock()
         store.smembers.return_value = {"node-a", "node-b", "node-stale"}
-        store.batch_hgetall.return_value = [
-            {
-                "node_id": "node-a",
-                "base_url": "http://node-a",
-                "advertised_address": "http://node-a",
-                "lan_ip": "192.168.0.10",
-                "max_concurrency": "2",
-                "current_load": "2",
-                "status": "healthy",
-                "node_version": "1.0.0",
-                "platform": "windows",
-                "hostname": "NODE-A",
-                "capabilities": "reply",
-                "channel_capacity": "12",
-                "last_heartbeat_at": now.isoformat(),
-                "updated_at": now.isoformat(),
-                "last_error": "",
-            },
-            {
-                "node_id": "node-b",
-                "base_url": "http://node-b",
-                "advertised_address": "http://node-b",
-                "lan_ip": "192.168.0.11",
-                "max_concurrency": "4",
-                "current_load": "1",
-                "status": "healthy",
-                "node_version": "1.0.0",
-                "platform": "windows",
-                "hostname": "NODE-B",
-                "capabilities": "reply",
-                "channel_capacity": "1",
-                "last_heartbeat_at": now.isoformat(),
-                "updated_at": now.isoformat(),
-                "last_error": "",
-            },
-            {},
+        store.batch_hgetall.side_effect = [
+            [
+                {
+                    "node_id": "node-a",
+                    "base_url": "http://node-a",
+                    "advertised_address": "http://node-a",
+                    "lan_ip": "192.168.0.10",
+                    "max_concurrency": "2",
+                    "current_load": "2",
+                    "status": "healthy",
+                    "node_version": "1.0.0",
+                    "platform": "windows",
+                    "hostname": "NODE-A",
+                    "capabilities": "reply",
+                    "channel_capacity": "12",
+                    "last_heartbeat_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "last_error": "",
+                },
+                {
+                    "node_id": "node-b",
+                    "base_url": "http://node-b",
+                    "advertised_address": "http://node-b",
+                    "lan_ip": "192.168.0.11",
+                    "max_concurrency": "4",
+                    "current_load": "1",
+                    "status": "healthy",
+                    "node_version": "1.0.0",
+                    "platform": "windows",
+                    "hostname": "NODE-B",
+                    "capabilities": "reply",
+                    "channel_capacity": "1",
+                    "last_heartbeat_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "last_error": "",
+                },
+                {},
+            ],
+            [
+                {},
+                {"slot-01": "wechat:user-b"},
+                {"slot-99": "wechat:ghost"},
+            ],
+            [
+                {
+                    "session_id": "wechat:user-b",
+                    "assigned_node_id": "node-b",
+                    "assigned_slot_id": "slot-01",
+                    "active_task_id": "",
+                    "queue_status": "none",
+                    "slot_expires_at": (now + timedelta(minutes=5)).isoformat(),
+                },
+                {},
+            ],
         ]
-        store.batch_hlen.return_value = [0, 1, 0]
         registry = NodeRegistry(store, Settings(_env_file=None))
 
         nodes = await registry.list_nodes()
@@ -304,7 +368,55 @@ class NodeRegistryBatchReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([node.node_id for node in nodes], ["node-a", "node-b"])
         self.assertEqual(nodes[0].status, NodeStatus.BUSY)
         self.assertEqual(nodes[1].status, NodeStatus.BUSY)
+        store.hdel.assert_awaited_once_with("wch:node:node-stale:slots", "slot-99")
         store.srem.assert_awaited_once_with(NodeRegistry.ACTIVE_NODES_KEY, "node-stale")
+
+    async def test_list_nodes_prunes_expired_slot_claims_before_counting_channels(self) -> None:
+        now = datetime.now(UTC)
+        store = AsyncMock()
+        store.smembers.return_value = {"node-a"}
+        store.batch_hgetall.side_effect = [
+            [
+                {
+                    "node_id": "node-a",
+                    "base_url": "http://node-a",
+                    "advertised_address": "http://node-a",
+                    "lan_ip": "192.168.0.10",
+                    "max_concurrency": "2",
+                    "current_load": "0",
+                    "status": "healthy",
+                    "node_version": "1.0.0",
+                    "platform": "windows",
+                    "hostname": "NODE-A",
+                    "capabilities": "reply",
+                    "channel_capacity": "1",
+                    "last_heartbeat_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "last_error": "",
+                }
+            ],
+            [
+                {"slot-01": "wechat:user-a"}
+            ],
+            [
+                {
+                    "session_id": "wechat:user-a",
+                    "assigned_node_id": "node-a",
+                    "assigned_slot_id": "slot-01",
+                    "active_task_id": "",
+                    "queue_status": "none",
+                    "slot_expires_at": (now - timedelta(minutes=1)).isoformat(),
+                }
+            ],
+        ]
+        registry = NodeRegistry(store, Settings(_env_file=None))
+
+        nodes = await registry.list_nodes()
+
+        self.assertEqual(len(nodes), 1)
+        self.assertEqual(nodes[0].status, NodeStatus.HEALTHY)
+        self.assertEqual(nodes[0].channel_in_use, 0)
+        store.hdel.assert_awaited_once_with("wch:node:node-a:slots", "slot-01")
 
 
 class GatewaySummaryTruthAndFallbackTests(unittest.IsolatedAsyncioTestCase):

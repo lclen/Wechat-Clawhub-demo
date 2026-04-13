@@ -15,6 +15,7 @@ from app.models.node import (
     NodeUpdateRequest,
 )
 from app.services.redis_store import RedisStore
+from app.services.slot_reconciler import SlotReconciler
 
 
 class NodeRegistryError(RuntimeError):
@@ -32,6 +33,7 @@ class NodeRegistry:
     def __init__(self, store: RedisStore, settings: Settings) -> None:
         self._store = store
         self._settings = settings
+        self._slot_reconciler = SlotReconciler(store)
 
     def _meta_key(self, node_id: str) -> str:
         return f"wch:node:{node_id}:meta"
@@ -136,11 +138,12 @@ class NodeRegistry:
     async def get(self, node_id: str) -> NodeRecord:
         try:
             raw = await self._store.hgetall(self._meta_key(node_id))
+            active_slots = await self._slot_reconciler.prune_node_slots(node_id)
         except RedisError as exc:
             raise NodeRegistryError("Failed to fetch node") from exc
         if not raw:
             raise NodeNotFoundError(f"Node '{node_id}' not found")
-        channel_in_use = await self._store.hlen(self._slots_key(node_id))
+        channel_in_use = len(active_slots)
         return self._parse_record(raw, channel_in_use)
 
     async def list_nodes(self) -> list[NodeRecord]:
@@ -157,14 +160,21 @@ class NodeRegistry:
         stale_ids: list[str] = []
         try:
             raw_records = await self._store.batch_hgetall(meta_keys)
-            slot_counts = await self._store.batch_hlen(slot_keys)
+            slot_maps = await self._store.batch_hgetall(slot_keys)
+            active_slot_maps = await self._slot_reconciler.prune_nodes_slots(
+                {
+                    node_id: slot_map
+                    for node_id, slot_map in zip(node_ids, slot_maps, strict=False)
+                }
+            )
         except RedisError as exc:
             raise NodeRegistryError("Failed to list nodes") from exc
 
-        for node_id, raw, channel_in_use in zip(node_ids, raw_records, slot_counts, strict=False):
+        for node_id, raw in zip(node_ids, raw_records, strict=False):
             if not raw:
                 stale_ids.append(node_id)
                 continue
+            channel_in_use = len(active_slot_maps.get(node_id, {}))
             nodes.append(self._parse_record(raw, channel_in_use))
 
         if stale_ids:
