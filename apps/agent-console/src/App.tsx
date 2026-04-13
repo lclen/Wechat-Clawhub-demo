@@ -247,6 +247,8 @@ export function App() {
   const [runtimeLogsRefreshing, setRuntimeLogsRefreshing] = useState(false);
   const [localNodeModelDraft, setLocalNodeModelDraft] = useState<LocalNodeModelConfigRequest>(DEFAULT_LOCAL_NODE_MODEL_CONFIG);
   const [localNodeModelDirty, setLocalNodeModelDirty] = useState(false);
+  const [assessmentMaxRounds, setAssessmentMaxRounds] = useState(20);
+  const [assessmentApplyStrategy, setAssessmentApplyStrategy] = useState<"balanced" | "peak">("balanced");
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [modelCheck, setModelCheck] = useState<ModelCheck | null>(null);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(initialSummaryState.system_status);
@@ -474,14 +476,21 @@ export function App() {
     refreshRuntimeLogs,
     updateLocalNodeModelDraft,
     saveLocalNodeModelConfig,
+    startLocalNodeService,
     restartLocalNodeService,
+    stopLocalNodeService,
     exportLocalNodeDiagnostics,
     runLocalNodeConversationTest,
+    startLocalNodeChannelAssessment,
+    applyLocalNodeChannelAssessment,
   } = useLocalNodeController({
     requestJson,
     withBusy,
     launcherAvailable,
     launcherStatus,
+    localNodeStatus,
+    assessmentMaxRounds,
+    assessmentApplyStrategy,
     localNodeModelDirty,
     localNodeModelDraft,
     setLocalNodeStatus,
@@ -1928,6 +1937,8 @@ export function App() {
             launcherGatewayState={launcherStatus?.components.find((item) => item.name === "gateway")?.state || "未读取"}
             launcherGatewayManaged={launcherShouldRunGateway(launcherStatus)}
             localNodeStatus={localNodeStatus}
+            assessmentMaxRounds={assessmentMaxRounds}
+            assessmentApplyStrategy={assessmentApplyStrategy}
             localNodeModelDraft={localNodeModelDraft}
             localNodeModelDirty={localNodeModelDirty}
             workerGatewayConnection={workerGatewayConnection}
@@ -1967,11 +1978,18 @@ export function App() {
             onUpdatePairingSecret={updatePairingSecret}
             onPairLanNode={(item) => void pairLanNode(item)}
             onUpdateLocalNodeModelDraft={updateLocalNodeModelDraft}
+            onAssessmentMaxRoundsChange={setAssessmentMaxRounds}
+            onAssessmentApplyStrategyChange={setAssessmentApplyStrategy}
+            onRefreshLocalNodeStatus={() => void refreshLocalNodeStatus()}
             onRefreshLocalNodeDiagnostics={() => void refreshLocalNodeDiagnostics()}
+            onStartLocalNodeService={() => void startLocalNodeService()}
+            onStopLocalNodeService={() => void stopLocalNodeService()}
             onRestartLocalNodeService={() => void restartLocalNodeService()}
             onSaveLocalNodeModelConfig={() => void saveLocalNodeModelConfig()}
             onExportLocalNodeDiagnostics={() => void exportLocalNodeDiagnostics()}
             onRunLocalNodeConversationTest={(payload: LocalNodeConversationTestRequest): Promise<LocalNodeConversationTestResponse> => runLocalNodeConversationTest(payload)}
+            onStartLocalNodeChannelAssessment={() => void startLocalNodeChannelAssessment()}
+            onApplyLocalNodeChannelAssessment={() => void applyLocalNodeChannelAssessment()}
             onRestartGatewayService={() => void restartGatewayService()}
           />
         ) : workspace === "conversation_test" ? (

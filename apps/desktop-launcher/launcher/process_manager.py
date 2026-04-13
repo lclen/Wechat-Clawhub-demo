@@ -29,6 +29,7 @@ class ProcessManager:
     _SERVICE_QUERY_TTL_SECONDS = 2.0
     _PROCESS_COMMAND_LINE_TTL_SECONDS = 5.0
     _LISTENING_PORT_SNAPSHOT_TTL_SECONDS = 1.0
+    _WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
     def __init__(self, repo_root: Path) -> None:
         self._repo_root = repo_root
@@ -187,10 +188,13 @@ class ProcessManager:
         # 本机节点由网关内置托管，使用 local direct auth 直接回连当前网关。
         current = self.local_node_service_status(profile, layout)
         node_spec = self._resolved_local_node_spec(profile)
-        if current.state == ComponentState.RUNNING and not self._local_node_service_requires_repair(profile, layout, node_spec):
+        service_name = self._local_node_service_name(profile)
+        service_installed = self._query_windows_service(service_name) is not None
+        requires_repair = self._local_node_service_requires_repair(profile, layout, node_spec) if service_installed else True
+        if current.state == ComponentState.RUNNING and not requires_repair:
             self._statuses["local-node"] = current
             return
-        if node_spec["node_kind"] == "remote" and self._query_windows_service(self._local_node_service_name(profile)) is None:
+        if node_spec["node_kind"] == "remote" and not service_installed:
             self._statuses["local-node"] = LauncherComponentStatus(
                 name="local-node",
                 state=ComponentState.FAILED,
@@ -199,6 +203,10 @@ class ProcessManager:
                 log_path=str(self._local_node_wrapper_log_path(profile, layout)),
             )
             raise RuntimeError("当前机器还没有完成工作节点安装，请先在快速配置中执行一次节点安装。")
+        if service_installed and not requires_repair:
+            self._start_existing_local_node_service(profile, layout)
+            self._statuses["local-node"] = self.local_node_service_status(profile, layout)
+            return
         self._install_or_restart_local_node(profile, layout)
 
     def restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
@@ -450,10 +458,22 @@ class ProcessManager:
             if install_dir is None:
                 install_dir = self._local_node_install_dir(layout)
             exe_path = install_dir / f"{service_name}.exe"
-            if exe_path.exists():
-                subprocess.run([str(exe_path), "stop"], capture_output=True, text=True, check=False)  # noqa: S603
+            result = subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+            if result.returncode == 0 or not exe_path.exists():
                 continue
-            subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+            subprocess.run([str(exe_path), "stop"], capture_output=True, text=True, check=False)  # noqa: S603
+
+    def _start_existing_local_node_service(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
+        service_name = self._local_node_service_name(profile)
+        install_dir = self.local_node_runtime_install_dir(profile, layout)
+        exe_path = install_dir / f"{service_name}.exe"
+        result = subprocess.run(["sc.exe", "start", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+        if result.returncode != 0 and exe_path.exists():
+            result = subprocess.run([str(exe_path), "start"], capture_output=True, text=True, check=False)  # noqa: S603
+        self._service_query_cache.pop(service_name, None)
+        if result.returncode != 0:
+            output = (result.stdout or result.stderr or "").strip()
+            raise RuntimeError(f"启动现有本机节点服务失败：{output or service_name}")
 
     def _query_windows_service(self, service_name: str) -> dict[str, Any] | None:
         cached = self._service_query_cache.get(service_name)
@@ -503,6 +523,7 @@ class ProcessManager:
                 stderr=subprocess.STDOUT,
                 text=True,
                 check=False,
+                creationflags=self._WINDOWS_NO_WINDOW,
             )
         if process.returncode != 0:
             raise RuntimeError(f"Command failed with exit code {process.returncode}: {' '.join(command)}")

@@ -6,6 +6,9 @@ import type {
   LauncherLogResponse,
   LauncherStatusResponse,
   LocalNodeActionResponse,
+  LocalNodeChannelAssessmentApplyRequest,
+  LocalNodeChannelAssessmentResult,
+  LocalNodeChannelAssessmentStartRequest,
   LocalNodeConversationTestRequest,
   LocalNodeConversationTestResponse,
   LocalNodeExportResponse,
@@ -13,6 +16,8 @@ import type {
   LocalNodeModelConfigRequest,
   LocalNodeStatusResponse,
 } from "../types";
+
+const MAX_CHANNEL_ASSESSMENT_ROUNDS = 999;
 
 type RequestJson = <T>(input: string, init?: RequestInit) => Promise<T>;
 type WithBusy = <T>(key: string, task: () => Promise<T>) => Promise<T>;
@@ -22,6 +27,9 @@ type UseLocalNodeControllerOptions = {
   withBusy: WithBusy;
   launcherAvailable: boolean;
   launcherStatus: LauncherStatusResponse | null;
+  localNodeStatus: LocalNodeStatusResponse | null;
+  assessmentMaxRounds: number;
+  assessmentApplyStrategy: "balanced" | "peak";
   localNodeModelDirty: boolean;
   localNodeModelDraft: LocalNodeModelConfigRequest;
   setLocalNodeStatus: (next: LocalNodeStatusResponse | null) => void;
@@ -40,6 +48,9 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     withBusy,
     launcherAvailable,
     launcherStatus,
+    localNodeStatus,
+    assessmentMaxRounds,
+    assessmentApplyStrategy,
     localNodeModelDirty,
     localNodeModelDraft,
     setLocalNodeStatus,
@@ -74,6 +85,17 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
       // local diagnostics are best-effort
     }
   }, [launcherAvailable, requestJson, setLocalNodeModelDraft, setLocalNodeStatus]);
+
+  useEffect(() => {
+    if (!launcherAvailable) return undefined;
+    if (localNodeStatus?.channel_assessment?.status !== "running") return undefined;
+    const timer = window.setTimeout(() => {
+      void requestJson<LocalNodeChannelAssessmentResult>("/local/node/channel-assessment")
+        .then(() => refreshLocalNodeStatus())
+        .catch(() => undefined);
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [launcherAvailable, localNodeStatus?.channel_assessment?.status, refreshLocalNodeStatus, requestJson]);
 
   const refreshLocalNodeLogs = useCallback(async () => {
     if (!launcherAvailable) return;
@@ -207,6 +229,38 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     }
   }, [refreshLocalNodeDiagnostics, requestJson, setLocalNodeStatus, setNotice, withBusy]);
 
+  const startLocalNodeService = useCallback(async () => {
+    try {
+      const result = await withBusy(
+        "local-node-start",
+        () => requestJson<LocalNodeActionResponse>("/local/node/service/start", { method: "POST" }),
+      );
+      setLocalNodeStatus(result.status);
+      await refreshLauncherStatusRef.current();
+      await refreshLocalNodeDiagnostics();
+      setNotice(result.detail || "本机节点已启动。");
+    } catch (error) {
+      setNotice(`启动本机节点失败：${(error as Error).message}`);
+    }
+  }, [refreshLocalNodeDiagnostics, requestJson, setLocalNodeStatus, setNotice, withBusy]);
+
+  const stopLocalNodeService = useCallback(async () => {
+    try {
+      await withBusy(
+        "local-node-stop",
+        () => requestJson<LauncherStatusResponse>("/local/bootstrap/stop", {
+          method: "POST",
+          body: JSON.stringify({ component: "local-node" }),
+        }),
+      );
+      await refreshLauncherStatusRef.current();
+      await refreshLocalNodeDiagnostics();
+      setNotice("本机节点已停止，可以开始执行通道评估。");
+    } catch (error) {
+      setNotice(`停止本机节点失败：${(error as Error).message}`);
+    }
+  }, [refreshLocalNodeDiagnostics, requestJson, setNotice, withBusy]);
+
   const exportLocalNodeDiagnostics = useCallback(async () => {
     try {
       const result = await withBusy(
@@ -237,6 +291,53 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     }
   }, [requestJson, setNotice, withBusy]);
 
+  const startLocalNodeChannelAssessment = useCallback(async () => {
+    const payload: LocalNodeChannelAssessmentStartRequest = {
+      max_rounds: Math.max(1, Math.min(MAX_CHANNEL_ASSESSMENT_ROUNDS, Number(assessmentMaxRounds) || 1)),
+    };
+    try {
+      const result = await withBusy(
+        "local-node-channel-assessment-start",
+        () => requestJson<LocalNodeChannelAssessmentResult>("/local/node/channel-assessment/start", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      );
+      await refreshLocalNodeStatus();
+      if (result.status === "blocked") {
+        setNotice(result.blocking_reason || result.summary || "当前节点不满足通道评估前置条件。");
+        return result;
+      }
+      setNotice(result.summary || "通道评估已启动。");
+      return result;
+    } catch (error) {
+      const message = `启动通道评估失败：${(error as Error).message}`;
+      setNotice(message);
+      throw error;
+    }
+  }, [assessmentMaxRounds, refreshLocalNodeStatus, requestJson, setNotice, withBusy]);
+
+  const applyLocalNodeChannelAssessment = useCallback(async () => {
+    try {
+      const result = await withBusy(
+        "local-node-channel-assessment-apply",
+        () => requestJson<LocalNodeActionResponse>("/local/node/channel-assessment/apply", {
+          method: "POST",
+          body: JSON.stringify({ strategy: assessmentApplyStrategy } satisfies LocalNodeChannelAssessmentApplyRequest),
+        }),
+      );
+      setLocalNodeStatus(result.status);
+      await refreshLauncherStatusRef.current();
+      await refreshLocalNodeDiagnostics();
+      setNotice(result.detail || "已应用通道评估建议。");
+      return result;
+    } catch (error) {
+      const message = `应用通道评估建议失败：${(error as Error).message}`;
+      setNotice(message);
+      throw error;
+    }
+  }, [assessmentApplyStrategy, refreshLocalNodeDiagnostics, requestJson, setLocalNodeStatus, setNotice, withBusy]);
+
   return {
     refreshLocalNodeStatus,
     refreshLocalNodeLogs,
@@ -244,8 +345,12 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     refreshRuntimeLogs,
     updateLocalNodeModelDraft,
     saveLocalNodeModelConfig,
+    startLocalNodeService,
     restartLocalNodeService,
+    stopLocalNodeService,
     exportLocalNodeDiagnostics,
     runLocalNodeConversationTest,
+    startLocalNodeChannelAssessment,
+    applyLocalNodeChannelAssessment,
   };
 }

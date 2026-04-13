@@ -73,6 +73,7 @@ class NodeDiagnostics:
             "last_register_at": None,
             "last_heartbeat_result": "",
             "last_heartbeat_at": None,
+            "channel_assessment": self._default_channel_assessment(),
             "updated_at": self._utcnow().isoformat(),
             "events": [],
         }
@@ -91,6 +92,12 @@ class NodeDiagnostics:
             previous_value = previous_snapshot.get(key)
             if previous_value not in (None, ""):
                 self._snapshot[key] = previous_value
+        previous_channel_assessment = previous_snapshot.get("channel_assessment")
+        if isinstance(previous_channel_assessment, dict):
+            self._snapshot["channel_assessment"] = {
+                **self._default_channel_assessment(),
+                **previous_channel_assessment,
+            }
         self.flush()
 
     @property
@@ -293,8 +300,42 @@ class NodeDiagnostics:
             "last_register_at": self._snapshot.get("last_register_at"),
             "last_heartbeat_result": self._snapshot.get("last_heartbeat_result", ""),
             "last_heartbeat_at": self._snapshot.get("last_heartbeat_at"),
+            "channel_assessment": self._snapshot.get("channel_assessment", self._default_channel_assessment()),
             "updated_at": self._snapshot.get("updated_at"),
         }
+
+    def update_channel_assessment(
+        self,
+        payload: dict[str, Any],
+        *,
+        emit_event: bool = False,
+    ) -> None:
+        normalized = {
+            **self._default_channel_assessment(),
+            **payload,
+        }
+        self._snapshot["channel_assessment"] = normalized
+        if emit_event:
+            status = str(normalized.get("status", "unknown") or "unknown")
+            message = (
+                str(normalized.get("summary", "") or "").strip()
+                or str(normalized.get("blocking_reason", "") or "").strip()
+                or str(normalized.get("stage", "") or "").strip()
+                or status
+            )
+            level = "error" if status in {"failed", "blocked"} else "info"
+            self.record_event(
+                category="channel_assessment",
+                result=status,
+                message=message,
+                metadata={
+                    "recommended_channel_capacity": str(normalized.get("recommended_channel_capacity") or ""),
+                    "recommended_max_concurrency": str(normalized.get("recommended_max_concurrency") or ""),
+                },
+                level=level,
+            )
+            return
+        self.flush()
 
     def _load_existing_snapshot(self) -> dict[str, Any]:
         if not self._status_path.exists():
@@ -407,3 +448,24 @@ class NodeDiagnostics:
 
     def _has_dify_config(self, settings: NodeSettings) -> bool:
         return bool(settings.dify_base_url.strip() and settings.dify_api_key.strip())
+
+    def _default_channel_assessment(self) -> dict[str, Any]:
+        return {
+            "status": "idle",
+            "started_at": None,
+            "finished_at": None,
+            "current_channel_capacity": int(self._settings.channel_capacity),
+            "current_max_concurrency": int(self._settings.max_concurrency),
+            "recommended_channel_capacity": None,
+            "recommended_max_concurrency": None,
+            "summary": "",
+            "rounds": [],
+            "risk_level": "unknown",
+            "can_start": True,
+            "start_blocking_reason": "",
+            "blocking_reason": "",
+            "stage": "",
+            "active_session_count": 0,
+            "active_task_count": 0,
+            "last_error": "",
+        }

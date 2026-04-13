@@ -4,6 +4,7 @@ import contextlib
 import asyncio
 import inspect
 import json
+import subprocess
 import time
 import zipfile
 from dataclasses import dataclass
@@ -27,10 +28,13 @@ from launcher.models import (
     derive_runtime_model,
     LogResponse,
     LocalNodeActionResponse,
+    LocalNodeChannelAssessmentApplyRequest,
+    LocalNodeChannelAssessmentResult,
     LocalNodeConversationTestRequest,
     LocalNodeConversationTestResponse,
     LocalNodeExportResponse,
     LocalNodeLogsResponse,
+    LocalNodeChannelAssessmentStartRequest,
     LocalNodeModelConfig,
     LocalNodeModelConfigRequest,
     LocalNodeStatusResponse,
@@ -45,6 +49,7 @@ from launcher.redis_runtime import ensure_redis_binary
 from launcher.runtime import ensure_repo_pythonpath, resource_root
 
 ensure_repo_pythonpath()
+_WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def create_app() -> FastAPI:
@@ -58,6 +63,7 @@ def create_app() -> FastAPI:
     app.state.dist_dir = repo_root / "apps" / "agent-console" / "dist"
     app.state.state_path = default_state_path()
     app.state.local_node_apply_task = None
+    app.state.local_node_channel_assessment_task = None
     app.state.bootstrap_status_cache = {"expires_at": 0.0, "value": None}
     app.state.bootstrap_status_lock = asyncio.Lock()
     app.state.local_node_status_cache = {"expires_at": 0.0, "value": None}
@@ -92,6 +98,11 @@ def create_app() -> FastAPI:
         if isinstance(cache, dict):
             cache["value"] = None
             cache["expires_at"] = 0.0
+
+    def finalize_local_node_channel_assessment(task: asyncio.Task[object]) -> None:
+        with contextlib.suppress(Exception):
+            task.result()
+        invalidate_cached_response("local_node_status_cache")
 
     async def restore_runtime_services() -> None:
         """Auto-restore services based on profile configuration."""
@@ -358,6 +369,8 @@ def create_app() -> FastAPI:
 
         profile.bootstrap_completed = True
         save_profile(profile, app.state.state_path)
+        invalidate_cached_response("bootstrap_status_cache")
+        invalidate_cached_response("local_node_status_cache")
         return await bootstrap_status()
 
     @app.post("/local/bootstrap/stop", response_model=LauncherStatusResponse)
@@ -369,6 +382,8 @@ def create_app() -> FastAPI:
         else:
             for component in ("local-node", "node-cache-redis", "gateway", "host-redis"):
                 app.state.manager.stop(component, profile, layout)
+        invalidate_cached_response("bootstrap_status_cache")
+        invalidate_cached_response("local_node_status_cache")
         return await bootstrap_status()
 
     @app.get("/local/bootstrap/logs/{component}", response_model=LogResponse)
@@ -468,7 +483,13 @@ def create_app() -> FastAPI:
                 with contextlib.suppress(Exception):
                     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
             apply_state = _read_local_node_apply_state(apply_state_path)
+            env_values = _read_env_file(config_path)
             model_settings = _read_local_node_model_config(config_path)
+            channel_assessment = _build_local_node_channel_assessment_result(
+                diagnostics.get("channel_assessment"),
+                current_channel_capacity=_safe_int(env_values.get("CLAW_CHANNEL_CAPACITY", ""), 12),
+                current_max_concurrency=_safe_int(env_values.get("CLAW_MAX_CONCURRENCY", ""), 1),
+            )
             node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
             status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
             runtime_state = str(diagnostics.get("current_state", "") or "").strip()
@@ -514,6 +535,28 @@ def create_app() -> FastAPI:
                 inferred_register_result = str(diagnostics.get("last_register_result", "") or "blocked_by_inference").strip() or "blocked_by_inference"
                 inferred_register_error = inference_detail or str(diagnostics.get("last_error", "") or "").strip()
                 inferred_register_at_raw = diagnostics.get("last_register_at")
+            assessment_task = getattr(app.state, "local_node_channel_assessment_task", None)
+            assessment_running = bool(assessment_task is not None and not assessment_task.done()) or channel_assessment.status == "running"
+            if assessment_running:
+                channel_assessment = channel_assessment.model_copy(
+                    update={
+                        "can_start": False,
+                        "start_blocking_reason": "通道评估执行中，请等待当前任务完成。",
+                    },
+                )
+            else:
+                blocking_result = await _build_local_node_assessment_blocking_result(
+                    profile=profile,
+                    manager=app.state.manager,
+                    layout=layout,
+                    config_path=config_path,
+                    diagnostics_path=diagnostics_path,
+                    service_state=status.state,
+                )
+                channel_assessment = _merge_local_node_channel_assessment_start_state(
+                    channel_assessment,
+                    blocking_result=blocking_result,
+                )
             runtime_state = inferred_runtime_state or runtime_state
             detail = inferred_detail or detail
             last_register_result = inferred_register_result or last_register_result
@@ -541,6 +584,7 @@ def create_app() -> FastAPI:
                 inference_ready=inference_ready,
                 inference_detail=inference_detail,
                 diagnostics=diagnostics,
+                channel_assessment=channel_assessment,
                 model_settings=model_settings,
             )
 
@@ -570,6 +614,42 @@ def create_app() -> FastAPI:
             wrapper_log=wrapper_log_path.read_text(encoding="utf-8", errors="ignore")[-12000:] if wrapper_log_path.exists() else "",
         )
 
+    @app.get("/local/node/channel-assessment", response_model=LocalNodeChannelAssessmentResult)
+    async def local_node_channel_assessment() -> LocalNodeChannelAssessmentResult:
+        status = await local_node_status()
+        return status.channel_assessment
+
+    @app.post("/local/node/service/start", response_model=LocalNodeActionResponse)
+    async def start_local_node_service() -> LocalNodeActionResponse:
+        profile = app.state.profile
+        layout = build_layout(profile)
+        ensure_layout(layout)
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
+        config_path = install_dir / "config" / "node.env"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
+
+        current_assessment_task = getattr(app.state, "local_node_channel_assessment_task", None)
+        if current_assessment_task is not None and not current_assessment_task.done():
+            raise HTTPException(status_code=409, detail="当前通道评估仍在执行中，请等待完成后再启动本机节点。")
+
+        current_status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
+        if str(current_status.state) == "running":
+            invalidate_cached_response("bootstrap_status_cache")
+            invalidate_cached_response("local_node_status_cache")
+            status = await local_node_status()
+            return LocalNodeActionResponse(detail="本机节点已经处于运行状态。", status=status)
+
+        try:
+            app.state.manager.start_local_node(profile, layout)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"启动本机节点失败：{exc}") from exc
+
+        invalidate_cached_response("bootstrap_status_cache")
+        invalidate_cached_response("local_node_status_cache")
+        status = await local_node_status()
+        return LocalNodeActionResponse(detail="本机节点已启动。", status=status)
+
     @app.post("/local/node/service/restart", response_model=LocalNodeActionResponse)
     async def restart_local_node_service() -> LocalNodeActionResponse:
         profile = app.state.profile
@@ -588,9 +668,136 @@ def create_app() -> FastAPI:
             )
             raise
         _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
+        invalidate_cached_response("bootstrap_status_cache")
         invalidate_cached_response("local_node_status_cache")
         status = await local_node_status()
         return LocalNodeActionResponse(detail="本机节点服务已执行重装/重启。", status=status)
+
+    @app.post("/local/node/channel-assessment/start", response_model=LocalNodeChannelAssessmentResult)
+    async def start_local_node_channel_assessment(
+        payload: LocalNodeChannelAssessmentStartRequest,
+    ) -> LocalNodeChannelAssessmentResult:
+        profile = app.state.profile
+        layout = build_layout(profile)
+        ensure_layout(layout)
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
+        config_path = install_dir / "config" / "node.env"
+        diagnostics_dir = install_dir / "diagnostics"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
+
+        current_task = getattr(app.state, "local_node_channel_assessment_task", None)
+        if current_task is not None and not current_task.done():
+            raise HTTPException(status_code=409, detail="当前已有一条通道评估任务正在执行，请等待完成后再试。")
+
+        blocking_result = await _build_local_node_assessment_blocking_result(
+            profile=profile,
+            manager=app.state.manager,
+            layout=layout,
+            config_path=config_path,
+            diagnostics_path=diagnostics_dir / "node-status.json",
+        )
+        if blocking_result is not None:
+            from claw_node.diagnostics import NodeDiagnostics
+
+            diagnostics = NodeDiagnostics(_load_local_node_settings(config_path, diagnostics_dir))
+            diagnostics.update_channel_assessment(blocking_result.model_dump(mode="json"), emit_event=True)
+            invalidate_cached_response("local_node_status_cache")
+            return blocking_result
+
+        settings = _load_local_node_settings(config_path, diagnostics_dir)
+        from claw_node.diagnostics import NodeDiagnostics
+
+        diagnostics = NodeDiagnostics(settings)
+        diagnostics.update_channel_assessment(
+            {
+                "status": "running",
+                "started_at": datetime.now(UTC).isoformat(),
+                "finished_at": None,
+                "current_channel_capacity": int(settings.channel_capacity),
+                "current_max_concurrency": int(settings.max_concurrency),
+                "recommended_channel_capacity": None,
+                "recommended_max_concurrency": None,
+                "summary": "通道评估任务已创建。",
+                "rounds": [],
+                "risk_level": "unknown",
+                "can_start": False,
+                "start_blocking_reason": "通道评估执行中",
+                "blocking_reason": "",
+                "stage": "等待压测开始",
+                "active_session_count": 0,
+                "active_task_count": 0,
+                "last_error": "",
+            },
+            emit_event=True,
+        )
+        app.state.local_node_channel_assessment_task = asyncio.create_task(
+            _run_local_node_channel_assessment_task(
+                config_path=config_path,
+                diagnostics_dir=diagnostics_dir,
+                max_rounds=int(payload.max_rounds),
+            )
+        )
+        app.state.local_node_channel_assessment_task.add_done_callback(finalize_local_node_channel_assessment)
+        invalidate_cached_response("local_node_status_cache")
+        return await local_node_channel_assessment()
+
+    @app.post("/local/node/channel-assessment/apply", response_model=LocalNodeActionResponse)
+    async def apply_local_node_channel_assessment(
+        payload: LocalNodeChannelAssessmentApplyRequest,
+    ) -> LocalNodeActionResponse:
+        profile = app.state.profile
+        layout = build_layout(profile)
+        ensure_layout(layout)
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
+        config_path = install_dir / "config" / "node.env"
+        diagnostics_dir = install_dir / "diagnostics"
+        if not config_path.exists():
+            raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
+        assessment = await local_node_channel_assessment()
+        if assessment.status != "completed":
+            raise HTTPException(status_code=409, detail="当前还没有可应用的通道评估结果，请先完成一次评估。")
+        target_channel_capacity, target_max_concurrency = _resolve_channel_assessment_apply_target(
+            assessment,
+            strategy=payload.strategy,
+        )
+        if target_channel_capacity is None or target_max_concurrency is None:
+            raise HTTPException(status_code=409, detail="当前评估结果缺少推荐值，无法应用。")
+
+        current_task = getattr(app.state, "local_node_apply_task", None)
+        if current_task is not None and not current_task.done():
+            raise HTTPException(status_code=409, detail="当前已有一条本机节点配置应用任务正在执行，请等待当前重启完成后再试。")
+
+        _update_local_node_capacity_config(
+            config_path,
+            channel_capacity=target_channel_capacity,
+            max_concurrency=target_max_concurrency,
+        )
+        from claw_node.diagnostics import NodeDiagnostics
+
+        diagnostics = NodeDiagnostics(_load_local_node_settings(config_path, diagnostics_dir))
+        diagnostics.update_channel_assessment(
+            {
+                **assessment.model_dump(mode="json"),
+                "current_channel_capacity": target_channel_capacity,
+                "current_max_concurrency": target_max_concurrency,
+                "summary": (
+                    f"已应用{_channel_assessment_strategy_label(payload.strategy)}：通道数 {target_channel_capacity}，"
+                    f"最大并发 {target_max_concurrency}。"
+                ),
+                "stage": "建议已应用，等待服务重启",
+            },
+            emit_event=True,
+        )
+        invalidate_cached_response("local_node_status_cache")
+        status = await restart_local_node_service()
+        return LocalNodeActionResponse(
+            detail=(
+                f"已应用{_channel_assessment_strategy_label(payload.strategy)}：通道数 {target_channel_capacity}，"
+                f"最大并发 {target_max_concurrency}。"
+            ),
+            status=status.status,
+        )
 
     @app.post("/local/node/install")
     async def install_node_local(request: Request) -> JSONResponse:
@@ -632,7 +839,11 @@ def create_app() -> FastAPI:
         logs: list[str] = [f"开始调用安装脚本：{script_path}"]
         try:
             process = await asyncio.create_subprocess_exec(
-                *command, stdout=PIPE, stderr=PIPE, cwd=str(app.state.repo_root),
+                *command,
+                stdout=PIPE,
+                stderr=PIPE,
+                cwd=str(app.state.repo_root),
+                creationflags=_WINDOWS_NO_WINDOW,
             )
             stdout, stderr = await process.communicate()
             for line in (stdout or b"").decode("utf-8", errors="ignore").splitlines():
@@ -1220,6 +1431,278 @@ def _update_local_node_model_config(path: Path, payload: LocalNodeModelConfigReq
     elif not payload.preserve_dify_api_key:
         values["CLAW_DIFY_API_KEY"] = ""
     _write_env_file(path, values)
+
+
+def _update_local_node_capacity_config(
+    path: Path,
+    *,
+    channel_capacity: int,
+    max_concurrency: int,
+) -> None:
+    values = _read_env_file(path)
+    values["CLAW_CHANNEL_CAPACITY"] = str(max(1, channel_capacity))
+    values["CLAW_MAX_CONCURRENCY"] = str(max(1, max_concurrency))
+    _write_env_file(path, values)
+
+
+def _build_local_node_channel_assessment_result(
+    payload: object,
+    *,
+    current_channel_capacity: int,
+    current_max_concurrency: int,
+) -> LocalNodeChannelAssessmentResult:
+    base_payload = {
+        "status": "idle",
+        "started_at": None,
+        "finished_at": None,
+        "current_channel_capacity": current_channel_capacity,
+        "current_max_concurrency": current_max_concurrency,
+        "recommended_channel_capacity": None,
+        "recommended_max_concurrency": None,
+        "balanced_channel_capacity": None,
+        "balanced_max_concurrency": None,
+        "summary": "",
+        "rounds": [],
+        "risk_level": "unknown",
+        "can_start": True,
+        "start_blocking_reason": "",
+        "blocking_reason": "",
+        "stage": "",
+        "active_session_count": 0,
+        "active_task_count": 0,
+        "last_error": "",
+    }
+    if isinstance(payload, dict):
+        base_payload.update(payload)
+    return LocalNodeChannelAssessmentResult.model_validate(base_payload)
+
+
+def _load_local_node_settings(config_path: Path, diagnostics_dir: Path):
+    from claw_node.config import NodeSettings
+
+    values = _read_env_file(config_path)
+    values["CLAW_ENV_FILE"] = str(config_path)
+    values["CLAW_DIAGNOSTICS_DIR"] = str(diagnostics_dir)
+    return NodeSettings(**values)
+
+
+async def _query_local_node_gateway_activity(
+    *,
+    gateway_base_url: str,
+    node_id: str,
+) -> dict[str, int]:
+    normalized_gateway = gateway_base_url.strip().rstrip("/")
+    if not normalized_gateway or not node_id.strip():
+        return {"active_session_count": 0, "active_task_count": 0}
+    async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
+        nodes_response = await client.get(f"{normalized_gateway}/api/nodes")
+        nodes_response.raise_for_status()
+        nodes_payload = nodes_response.json()
+        inventory = nodes_payload.get("inventory") if isinstance(nodes_payload, dict) else []
+        sessions_response = await client.get(f"{normalized_gateway}/api/sessions")
+        sessions_response.raise_for_status()
+        sessions_payload = sessions_response.json()
+        sessions = sessions_payload.get("sessions") if isinstance(sessions_payload, dict) else []
+
+    inventory_records = inventory if isinstance(inventory, list) else []
+    session_records = sessions if isinstance(sessions, list) else []
+    active_session_count = 0
+    active_task_count = 0
+    for record in session_records:
+        if not isinstance(record, dict):
+            continue
+        if str(record.get("assigned_node_id") or "").strip() != node_id:
+            continue
+        if str(record.get("assigned_slot_id") or "").strip():
+            active_session_count += 1
+        if str(record.get("active_task_id") or "").strip():
+            active_task_count += 1
+
+    if not active_session_count and not active_task_count:
+        for record in inventory_records:
+            if not isinstance(record, dict):
+                continue
+            if str(record.get("node_id") or "").strip() != node_id:
+                continue
+            channel_in_use = _safe_int(str(record.get("channel_in_use") or ""), 0)
+            current_load = _safe_int(str(record.get("current_load") or ""), 0)
+            active_session_count = max(active_session_count, channel_in_use)
+            active_task_count = max(active_task_count, current_load)
+            break
+
+    return {
+        "active_session_count": active_session_count,
+        "active_task_count": active_task_count,
+    }
+
+
+async def _build_local_node_assessment_blocking_result(
+    *,
+    profile,
+    manager: ProcessManager,
+    layout,
+    config_path: Path,
+    diagnostics_path: Path,
+    service_state: str | None = None,
+) -> LocalNodeChannelAssessmentResult | None:
+    resolved_service_state = service_state
+    if resolved_service_state is None:
+        service_status = await asyncio.to_thread(manager.local_node_service_status, profile, layout)
+        resolved_service_state = str(service_status.state)
+    diagnostics_dir = diagnostics_path.parent
+    settings = _load_local_node_settings(config_path, diagnostics_dir)
+    current_channel_capacity = int(settings.channel_capacity)
+    current_max_concurrency = int(settings.max_concurrency)
+    if resolved_service_state == "running":
+        return _build_local_node_channel_assessment_result(
+            {
+                "status": "blocked",
+                "current_channel_capacity": current_channel_capacity,
+                "current_max_concurrency": current_max_concurrency,
+                "summary": "当前本机节点仍在运行，请先停止或完成重启后再执行通道评估。",
+                "risk_level": "high",
+                "can_start": False,
+                "start_blocking_reason": "请先停用或等待节点空闲。",
+                "blocking_reason": "本机节点服务运行中",
+                "stage": "等待节点空闲",
+            },
+            current_channel_capacity=current_channel_capacity,
+            current_max_concurrency=current_max_concurrency,
+        )
+    node_id = await asyncio.to_thread(manager._resolved_local_node_id, profile)  # type: ignore[attr-defined]
+    gateway_base_url = settings.gateway_base_url.strip() or profile.gateway_base_url.strip()
+    if not gateway_base_url and profile.enable_gateway:
+        gateway_base_url = f"http://127.0.0.1:{profile.gateway_port}"
+    try:
+        gateway_activity = await _query_local_node_gateway_activity(
+            gateway_base_url=gateway_base_url,
+            node_id=node_id,
+        )
+    except Exception as exc:
+        return _build_local_node_channel_assessment_result(
+            {
+                "status": "blocked",
+                "current_channel_capacity": current_channel_capacity,
+                "current_max_concurrency": current_max_concurrency,
+                "summary": "无法确认网关侧会话占用，暂不允许执行通道评估。",
+                "risk_level": "high",
+                "can_start": False,
+                "start_blocking_reason": "读取节点占用状态失败，请刷新后重试。",
+                "blocking_reason": f"读取网关会话状态失败：{exc}",
+                "stage": "等待节点空闲",
+                "last_error": str(exc),
+            },
+            current_channel_capacity=current_channel_capacity,
+            current_max_concurrency=current_max_concurrency,
+        )
+    if gateway_activity["active_session_count"] > 0 or gateway_activity["active_task_count"] > 0:
+        return _build_local_node_channel_assessment_result(
+            {
+                "status": "blocked",
+                "current_channel_capacity": current_channel_capacity,
+                "current_max_concurrency": current_max_concurrency,
+                "summary": "当前节点仍有活跃会话或任务，请先释放通道后再评估。",
+                "risk_level": "high",
+                "can_start": False,
+                "start_blocking_reason": "请先停用或等待节点空闲。",
+                "blocking_reason": "存在活跃会话或任务",
+                "stage": "等待节点空闲",
+                "active_session_count": gateway_activity["active_session_count"],
+                "active_task_count": gateway_activity["active_task_count"],
+            },
+            current_channel_capacity=current_channel_capacity,
+            current_max_concurrency=current_max_concurrency,
+        )
+    return None
+
+
+def _merge_local_node_channel_assessment_start_state(
+    assessment: LocalNodeChannelAssessmentResult,
+    *,
+    blocking_result: LocalNodeChannelAssessmentResult | None,
+) -> LocalNodeChannelAssessmentResult:
+    if blocking_result is None:
+        return assessment.model_copy(
+            update={
+                "can_start": assessment.status != "running",
+                "start_blocking_reason": "通道评估执行中，请等待当前任务完成。" if assessment.status == "running" else "",
+                "active_session_count": 0,
+                "active_task_count": 0,
+            },
+        )
+    return assessment.model_copy(
+        update={
+            "can_start": False,
+            "start_blocking_reason": blocking_result.start_blocking_reason or blocking_result.blocking_reason or blocking_result.summary,
+            "active_session_count": blocking_result.active_session_count,
+            "active_task_count": blocking_result.active_task_count,
+        },
+    )
+
+
+def _resolve_channel_assessment_apply_target(
+    assessment: LocalNodeChannelAssessmentResult,
+    *,
+    strategy: str,
+) -> tuple[int | None, int | None]:
+    if strategy == "peak":
+        return assessment.recommended_channel_capacity, assessment.recommended_max_concurrency
+    return (
+        assessment.balanced_channel_capacity if assessment.balanced_channel_capacity is not None else assessment.recommended_channel_capacity,
+        assessment.balanced_max_concurrency if assessment.balanced_max_concurrency is not None else assessment.recommended_max_concurrency,
+    )
+
+
+def _channel_assessment_strategy_label(strategy: str) -> str:
+    return "平衡方案" if strategy == "balanced" else "最高建议"
+
+
+async def _run_local_node_channel_assessment_task(
+    *,
+    config_path: Path,
+    diagnostics_dir: Path,
+    max_rounds: int,
+) -> None:
+    from claw_node.channel_assessment import run_channel_assessment
+    from claw_node.diagnostics import NodeDiagnostics
+
+    settings = _load_local_node_settings(config_path, diagnostics_dir)
+    diagnostics = NodeDiagnostics(settings)
+
+    async def handle_progress(payload: dict[str, object]) -> None:
+        diagnostics.update_channel_assessment(dict(payload))
+
+    try:
+        result = await run_channel_assessment(
+            settings,
+            max_rounds=max_rounds,
+            progress_callback=handle_progress,
+        )
+        diagnostics.update_channel_assessment(result, emit_event=True)
+    except Exception as exc:
+        diagnostics.update_channel_assessment(
+            {
+                "status": "failed",
+                "started_at": datetime.now(UTC).isoformat(),
+                "finished_at": datetime.now(UTC).isoformat(),
+                "current_channel_capacity": int(settings.channel_capacity),
+                "current_max_concurrency": int(settings.max_concurrency),
+                "recommended_channel_capacity": None,
+                "recommended_max_concurrency": None,
+                "summary": "通道评估执行失败。",
+                "rounds": [],
+                "risk_level": "high",
+                "can_start": True,
+                "start_blocking_reason": "",
+                "blocking_reason": "",
+                "stage": "评估失败",
+                "active_session_count": 0,
+                "active_task_count": 0,
+                "last_error": str(exc),
+            },
+            emit_event=True,
+        )
+        raise
 
 
 def _safe_float(value: str, default: float) -> float:

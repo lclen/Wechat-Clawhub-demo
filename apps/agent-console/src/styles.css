@@ -577,6 +577,10 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   gap: 18px;
   align-items: start;
 }
+.connection-overview-command-stack {
+  display: grid;
+  gap: 18px;
+}
 .connection-inline-info {
   margin-top: 10px;
 }
@@ -596,6 +600,180 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 }
 .connection-ops-info {
   margin-top: 2px;
+}
+.connection-assessment-surface {
+  display: grid;
+  gap: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(21, 80, 196, 0.08), transparent 32%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(247, 250, 255, 0.96) 100%);
+}
+.connection-assessment-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+.connection-assessment-control-strip {
+  display: grid;
+  gap: 12px;
+}
+.connection-assessment-config-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(94, 115, 146, 0.14);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.9) 0%, rgba(244, 248, 255, 0.82) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+.connection-assessment-config-field {
+  width: min(220px, 100%);
+}
+.connection-assessment-config-field span {
+  display: block;
+  margin-bottom: 8px;
+}
+.connection-assessment-control-bar {
+  background:
+    radial-gradient(circle at top right, rgba(24, 71, 184, 0.12), transparent 36%),
+    linear-gradient(180deg, rgba(247, 251, 255, 0.96) 0%, rgba(255, 255, 255, 0.92) 100%);
+  border: 1px solid rgba(66, 99, 156, 0.16);
+}
+.connection-assessment-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.connection-assessment-start-node,
+.connection-assessment-run,
+.connection-assessment-apply {
+  min-width: 132px;
+}
+.connection-assessment-start-node {
+  background: linear-gradient(135deg, #1d63d8 0%, #1847b8 100%);
+}
+.connection-assessment-run {
+  background: linear-gradient(135deg, #128a65 0%, #0d6b4f 100%);
+}
+.connection-assessment-apply {
+  background: linear-gradient(135deg, #0f2e73 0%, #1847b8 100%);
+  box-shadow: 0 6px 18px rgba(24, 71, 184, 0.18);
+}
+.connection-assessment-grid,
+.connection-assessment-rounds {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.connection-assessment-rounds {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.connection-assessment-command {
+  background: linear-gradient(180deg, rgba(242, 248, 255, 0.9) 0%, rgba(255, 255, 255, 0.88) 100%);
+}
+.connection-assessment-round-card {
+  isolation: isolate;
+  border-width: 1px;
+  box-shadow: 0 10px 26px rgba(35, 53, 87, 0.08);
+  transition: transform 160ms ease, box-shadow 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+.connection-assessment-round-card::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  border-radius: 999px;
+  background: rgba(94, 115, 146, 0.28);
+}
+.connection-assessment-round-card:hover {
+  transform: translateY(-1px);
+}
+.connection-assessment-round-card.is-stable::after {
+  background: linear-gradient(180deg, rgba(18, 147, 106, 0.96) 0%, rgba(71, 203, 153, 0.9) 100%);
+}
+.connection-assessment-round-card.is-latency {
+  border-color: rgba(30, 112, 214, 0.3);
+  background:
+    radial-gradient(circle at top right, rgba(76, 148, 255, 0.16), transparent 38%),
+    linear-gradient(180deg, rgba(239, 247, 255, 0.98) 0%, rgba(255, 255, 255, 0.96) 100%);
+  box-shadow: 0 14px 30px rgba(37, 94, 176, 0.12);
+}
+.connection-assessment-round-card.is-latency::after {
+  background: linear-gradient(180deg, rgba(29, 99, 216, 0.98) 0%, rgba(91, 146, 255, 0.88) 100%);
+}
+.connection-assessment-round-card.is-failure,
+.connection-assessment-round-card.is-anomaly {
+  border-color: rgba(201, 102, 52, 0.3);
+  background:
+    radial-gradient(circle at top right, rgba(255, 173, 114, 0.18), transparent 38%),
+    linear-gradient(180deg, rgba(255, 245, 238, 0.98) 0%, rgba(255, 255, 255, 0.96) 100%);
+  box-shadow: 0 14px 30px rgba(176, 87, 44, 0.12);
+}
+.connection-assessment-round-card.is-failure::after,
+.connection-assessment-round-card.is-anomaly::after {
+  background: linear-gradient(180deg, rgba(201, 102, 52, 0.96) 0%, rgba(233, 145, 76, 0.88) 100%);
+}
+.connection-assessment-round-card.is-timeout {
+  border-color: rgba(184, 57, 57, 0.32);
+  background:
+    radial-gradient(circle at top right, rgba(255, 115, 115, 0.18), transparent 38%),
+    linear-gradient(180deg, rgba(255, 239, 239, 0.98) 0%, rgba(255, 255, 255, 0.96) 100%);
+  box-shadow: 0 14px 32px rgba(164, 44, 44, 0.14);
+}
+.connection-assessment-round-card.is-timeout::after {
+  background: linear-gradient(180deg, rgba(184, 57, 57, 0.98) 0%, rgba(233, 104, 104, 0.88) 100%);
+}
+.connection-assessment-round-card .metric-card-label,
+.connection-assessment-round-card .metric-card-value,
+.connection-assessment-round-card .metric-card-detail {
+  position: relative;
+  z-index: 1;
+}
+.connection-assessment-round-card.is-latency .metric-card-value {
+  color: #1b5fbf;
+}
+.connection-assessment-round-card.is-failure .metric-card-value,
+.connection-assessment-round-card.is-anomaly .metric-card-value {
+  color: #b75a22;
+}
+.connection-assessment-round-card.is-timeout .metric-card-value {
+  color: #b33838;
+}
+.connection-assessment-round-detail {
+  display: grid;
+  gap: 8px;
+}
+.connection-assessment-round-flag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.2;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.connection-assessment-round-flag.is-stable {
+  background: rgba(18, 147, 106, 0.12);
+  color: #0c7d58;
+}
+.connection-assessment-round-flag.is-latency {
+  background: rgba(29, 99, 216, 0.12);
+  color: #1b5fbf;
+}
+.connection-assessment-round-flag.is-failure,
+.connection-assessment-round-flag.is-anomaly {
+  background: rgba(201, 102, 52, 0.12);
+  color: #b75a22;
+}
+.connection-assessment-round-flag.is-timeout {
+  background: rgba(184, 57, 57, 0.12);
+  color: #b33838;
 }
 .connection-wechat-layout {
   display: grid;
@@ -1871,9 +2049,26 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   .connection-hero-grid,
   .connection-signal-grid,
   .connection-ops-grid,
+  .connection-assessment-grid,
+  .connection-assessment-rounds,
   .connection-node-channel-meta,
   .connection-node-stats {
     grid-template-columns: 1fr;
+  }
+
+  .connection-assessment-toolbar,
+  .connection-assessment-action-group,
+  .connection-assessment-config-row {
+    justify-content: stretch;
+  }
+
+  .connection-assessment-start-node,
+  .connection-assessment-run,
+  .connection-assessment-apply,
+  .connection-assessment-action-group .ghost-button,
+  .connection-assessment-config-row .ghost-button,
+  .connection-assessment-config-field {
+    width: 100%;
   }
 
   .connection-status-column {

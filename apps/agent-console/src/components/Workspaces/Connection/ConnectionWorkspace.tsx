@@ -109,6 +109,8 @@ type ConnectionWorkspaceProps = {
   launcherGatewayState: string;
   launcherGatewayManaged: boolean;
   localNodeStatus: LocalNodeStatusResponse | null;
+  assessmentMaxRounds: number;
+  assessmentApplyStrategy: "balanced" | "peak";
   localNodeModelDraft: LocalNodeModelConfigRequest;
   localNodeModelDirty: boolean;
   workerGatewayConnection: WorkerGatewayConnectionView;
@@ -148,11 +150,18 @@ type ConnectionWorkspaceProps = {
   onUpdatePairingSecret: (discoveryId: string, value: string) => void;
   onPairLanNode: (item: DiscoveredNodeRecord) => void;
   onUpdateLocalNodeModelDraft: <K extends keyof LocalNodeModelConfigRequest>(key: K, value: LocalNodeModelConfigRequest[K]) => void;
+  onAssessmentMaxRoundsChange: (value: number) => void;
+  onAssessmentApplyStrategyChange: (value: "balanced" | "peak") => void;
+  onRefreshLocalNodeStatus: () => void;
   onRefreshLocalNodeDiagnostics: () => void;
+  onStartLocalNodeService: () => void;
+  onStopLocalNodeService: () => void;
   onRestartLocalNodeService: () => void;
   onSaveLocalNodeModelConfig: () => void;
   onExportLocalNodeDiagnostics: () => void;
   onRunLocalNodeConversationTest: (payload: LocalNodeConversationTestRequest) => Promise<LocalNodeConversationTestResponse>;
+  onStartLocalNodeChannelAssessment: () => void;
+  onApplyLocalNodeChannelAssessment: () => void;
   onRestartGatewayService: () => void;
 };
 
@@ -187,13 +196,27 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
               modelCheckText={props.modelCheckText}
               lastError={props.wechatLastError}
               dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。" : null}
+              localNodeStatus={props.localNodeStatus}
+              assessmentMaxRounds={props.assessmentMaxRounds}
+              assessmentApplyStrategy={props.assessmentApplyStrategy}
               onRunModelCheck={props.onRunModelCheck}
               onToggleDispatch={props.onToggleDispatch}
               onRefreshAllStatus={props.onRefreshAllStatus}
+              onRefreshChannelAssessment={props.onRefreshLocalNodeStatus}
+              onAssessmentMaxRoundsChange={props.onAssessmentMaxRoundsChange}
+              onAssessmentApplyStrategyChange={props.onAssessmentApplyStrategyChange}
+              onStartLocalNodeService={props.onStartLocalNodeService}
+              onStopLocalNodeService={props.onStopLocalNodeService}
+              onStartChannelAssessment={props.onStartLocalNodeChannelAssessment}
+              onApplyChannelAssessment={props.onApplyLocalNodeChannelAssessment}
+              startLocalNodeLabel={props.busyKey === "local-node-start" ? "启动中..." : "启动本机节点"}
+              stopLocalNodeLabel={props.busyKey === "local-node-stop" ? "停止中..." : "停止本机节点"}
+              applyChannelAssessmentLabel={props.busyKey === "local-node-channel-assessment-apply" ? "应用中..." : "一键应用建议"}
               runModelCheckLabel={props.busyKey === "model-check" ? "检测中..." : "检测模型"}
               toggleDispatchLabel={props.busyKey === "dispatch-mode-toggle" ? "切换中..." : props.gatewaySetupDispatchModeEnabled ? "关闭分发模式" : "开启分发模式"}
               refreshAllLabel={props.busyKey === "connection-refresh-all" ? "刷新中..." : "刷新全部状态"}
               busy={props.busyKey !== null}
+              assessmentBusy={props.busyKey === "local-node-channel-assessment-start" || props.busyKey === "local-node-channel-assessment-apply"}
             />
           ) : null}
 

@@ -696,7 +696,11 @@ try {
         & $ServiceExeTarget install
     }
     Write-Step "Starting node service"
-    & $ServiceExeTarget start
+    $null = & sc.exe start $ServiceName 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Step "sc.exe start failed; falling back to WinSW wrapper start"
+        & $ServiceExeTarget start
+    }
 }
 finally {
     Pop-Location

@@ -168,6 +168,7 @@ class LocalNodeStatusResponse(BaseModel):
     inference_ready: bool = False
     inference_detail: str = ""
     diagnostics: dict[str, object] = Field(default_factory=dict)
+    channel_assessment: "LocalNodeChannelAssessmentResult" = Field(default_factory=lambda: LocalNodeChannelAssessmentResult())
     model_settings: "LocalNodeModelConfig" = Field(default_factory=lambda: LocalNodeModelConfig())
 
 
@@ -242,9 +243,55 @@ class LocalNodeModelConfigRequest(BaseModel):
     restart_service: bool = True
 
 
+class LocalNodeChannelAssessmentStartRequest(BaseModel):
+    max_rounds: int = Field(default=20, ge=1, le=999)
+
+
+class LocalNodeChannelAssessmentRound(BaseModel):
+    round_index: int = 0
+    max_concurrency: int = 0
+    channel_capacity: int = 0
+    request_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    timeout_count: int = 0
+    success_rate: float = 0.0
+    average_latency_ms: int = 0
+    max_latency_ms: int = 0
+    stable: bool = False
+    stop_reason: str = ""
+    summary: str = ""
+
+
+class LocalNodeChannelAssessmentResult(BaseModel):
+    status: str = "idle"
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    current_channel_capacity: int = 0
+    current_max_concurrency: int = 0
+    recommended_channel_capacity: int | None = None
+    recommended_max_concurrency: int | None = None
+    balanced_channel_capacity: int | None = None
+    balanced_max_concurrency: int | None = None
+    summary: str = ""
+    rounds: list[LocalNodeChannelAssessmentRound] = Field(default_factory=list)
+    risk_level: str = "unknown"
+    can_start: bool = True
+    start_blocking_reason: str = ""
+    blocking_reason: str = ""
+    stage: str = ""
+    active_session_count: int = 0
+    active_task_count: int = 0
+    last_error: str = ""
+
+
 class LocalNodeConversationTestRequest(BaseModel):
     provider: str = "current"
     message: str = ""
+
+
+class LocalNodeChannelAssessmentApplyRequest(BaseModel):
+    strategy: str = Field(default="balanced", pattern="^(balanced|peak)$")
 
 
 class LocalNodeConversationTestResponse(BaseModel):
@@ -256,6 +303,9 @@ class LocalNodeConversationTestResponse(BaseModel):
     detail: str = ""
     reply: str = ""
     usage: dict[str, object] = Field(default_factory=dict)
+
+
+LocalNodeStatusResponse.model_rebuild()
 
 
 def apply_machine_role(profile: LauncherProfile, machine_role: LauncherMachineRole) -> LauncherProfile:
