@@ -159,6 +159,7 @@ type ConnectionWorkspaceProps = {
   onRestartLocalNodeService: () => void;
   onSaveLocalNodeModelConfig: () => void;
   onExportLocalNodeDiagnostics: () => void;
+  onResetLocalNodeCredentials: () => void;
   onRunLocalNodeConversationTest: (payload: LocalNodeConversationTestRequest) => Promise<LocalNodeConversationTestResponse>;
   onStartLocalNodeChannelAssessment: () => void;
   onApplyLocalNodeChannelAssessment: () => void;
@@ -172,8 +173,6 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
   const showLocalNodePanel = props.roleSections.showLocalNodePanel;
   const showNodeOnboarding = props.roleActions.canManageNodes;
   const showGatewayControls = props.roleActions.canManageGateway;
-  const nonWorkerSecondaryPanelCount = [showInventory, showWeChat].filter(Boolean).length;
-  const nonWorkerTertiaryPanelCount = [showNodeOnboarding, showLocalNodePanel].filter(Boolean).length;
 
   return (
     <section className="workspace-frame connection-workspace">
@@ -186,45 +185,25 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
       </div>
 
       {!props.currentRoleIsWorker ? (
-        <div className="connection-layout-stack">
-          {showOverview ? (
-            <OverviewPanel
-              heroCards={props.connectionHeroCards}
-              prepItems={props.connectionPrepItems}
-              signalCards={props.connectionSignalCards}
-              canManageGateway={showGatewayControls}
-              modelCheckText={props.modelCheckText}
-              lastError={props.wechatLastError}
-              dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。" : null}
-              localNodeStatus={props.localNodeStatus}
-              assessmentMaxRounds={props.assessmentMaxRounds}
-              assessmentApplyStrategy={props.assessmentApplyStrategy}
-              onRunModelCheck={props.onRunModelCheck}
-              onToggleDispatch={props.onToggleDispatch}
-              onRefreshAllStatus={props.onRefreshAllStatus}
-              onRefreshChannelAssessment={props.onRefreshLocalNodeStatus}
-              onAssessmentMaxRoundsChange={props.onAssessmentMaxRoundsChange}
-              onAssessmentApplyStrategyChange={props.onAssessmentApplyStrategyChange}
-              onStartLocalNodeService={props.onStartLocalNodeService}
-              onStopLocalNodeService={props.onStopLocalNodeService}
-              onStartChannelAssessment={props.onStartLocalNodeChannelAssessment}
-              onApplyChannelAssessment={props.onApplyLocalNodeChannelAssessment}
-              startLocalNodeLabel={props.busyKey === "local-node-start" ? "启动中..." : "启动本机节点"}
-              stopLocalNodeLabel={props.busyKey === "local-node-stop" ? "停止中..." : "停止本机节点"}
-              applyChannelAssessmentLabel={props.busyKey === "local-node-channel-assessment-apply" ? "应用中..." : "一键应用建议"}
-              runModelCheckLabel={props.busyKey === "model-check" ? "检测中..." : "检测模型"}
-              toggleDispatchLabel={props.busyKey === "dispatch-mode-toggle" ? "切换中..." : props.gatewaySetupDispatchModeEnabled ? "关闭分发模式" : "开启分发模式"}
-              refreshAllLabel={props.busyKey === "connection-refresh-all" ? "刷新中..." : "刷新全部状态"}
-              busy={props.busyKey !== null}
-              assessmentBusy={props.busyKey === "local-node-channel-assessment-start" || props.busyKey === "local-node-channel-assessment-apply"}
-            />
-          ) : null}
+        <div className="connection-dashboard-stack">
+          {/* Top Level Hero Metrics */}
+          <div className="workspace-hero-strip">
+            {props.connectionHeroCards.map((card) => (
+              <ConnectionHeroCard key={`${card.eyebrow}-${card.title}`} {...card} />
+            ))}
+          </div>
 
-          {(showInventory || showWeChat) ? (
-            <div className={`connection-section-grid ${nonWorkerSecondaryPanelCount < 2 ? "connection-section-grid-single" : ""}`}>
+          <div className="connection-dashboard-grid">
+            {/* Main Operational Pillar (Left) */}
+            <div className="connection-main-column">
               {showInventory ? (
-                <NodeInventoryPanel headline={props.nodeInventoryHeadline} cards={props.nodeInventoryCards} selectedDiagnostics={props.selectedNodeDiagnosticsView} />
+                <NodeInventoryPanel
+                  headline={props.nodeInventoryHeadline}
+                  cards={props.nodeInventoryCards}
+                  selectedDiagnostics={props.selectedNodeDiagnosticsView}
+                />
               ) : null}
+
               {showWeChat ? (
                 <WeChatConfigCard
                   statusRows={props.wechatStatusRows}
@@ -240,150 +219,6 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   onConnectManualToken={props.onConnectManualToken}
                   onDisconnectWeChat={props.onDisconnectWeChat}
                 />
-              ) : null}
-            </div>
-          ) : null}
-
-          {(showNodeOnboarding || showLocalNodePanel) ? (
-            <div className={`connection-section-grid ${nonWorkerTertiaryPanelCount < 2 ? "connection-section-grid-single" : ""}`}>
-              {showNodeOnboarding ? (
-                <div className="connection-panel-stack">
-              <section className="surface">
-                <div className="section-head">
-                  <div><div className="section-kicker">节点与模型参数</div><h3>添加或修复远端工作节点</h3></div>
-                  <button type="button" className="ghost-button" onClick={props.onApplyPreferredGatewayBaseUrlToWorker}>
-                    填入当前网关地址
-                  </button>
-                </div>
-                <div className="inline-tip">
-                  当前仅支持 DashScope / 通义千问。
-                </div>
-                <div className="connection-form-grid">
-                  <label><span>节点 ID</span><input value={props.workerSetup.node_id} onChange={(event) => props.onUpdateWorkerSetup("node_id", event.target.value)} /></label>
-                  <label><span>目标网关地址</span><input value={props.workerSetup.gateway_base_url} onChange={(event) => props.onUpdateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
-                  <label>
-                    <span>配对密钥</span>
-                    <div className="field-with-action">
-                      <input type={props.workerPairingKeyVisible ? "text" : "password"} value={props.workerSetup.pairing_key} onChange={(event) => props.onUpdateWorkerSetup("pairing_key", event.target.value)} placeholder="节点与网关保持一致" autoComplete="new-password" />
-                      <button type="button" className="ghost-button" onClick={props.onToggleWorkerPairingKeyVisible}>
-                        {props.workerPairingKeyVisible ? "隐藏" : "显示"}
-                      </button>
-                    </div>
-                  </label>
-                  <label><span>安装目录</span><input value={props.workerSetup.install_dir} onChange={(event) => props.onUpdateWorkerSetup("install_dir", event.target.value)} /></label>
-                </div>
-                <details className="form-advanced-details connection-fold-card">
-                  <summary>
-                    <span className="section-kicker">高级选项</span>
-                    <span className="connection-fold-hint">DashScope 配置、发现响应、并发与 bundle 路径</span>
-                  </summary>
-                  <div className="connection-form-grid">
-                    <label><span>DashScope Base URL</span><input value={props.workerSetup.openai_base_url} onChange={(event) => props.onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="留空时沿用网关内置 DashScope 配置" /></label>
-                    <label><span>DashScope 模型</span><input value={props.workerSetup.openai_model} onChange={(event) => props.onUpdateWorkerSetup("openai_model", event.target.value)} placeholder="qwen3.5-plus / qwen-plus / qwen-max" /></label>
-                    <label className="connection-full-span"><span>DashScope API Key</span><ToggleSecretInput value={props.workerSetup.openai_api_key} onChange={(event) => props.onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="留空时沿用网关已继承的 DashScope API Key" autoComplete="new-password" /></label>
-                    <label><span>Dify Base URL</span><input value={props.workerSetup.dify_base_url} onChange={(event) => props.onUpdateWorkerSetup("dify_base_url", event.target.value)} /></label>
-                    <label><span>Dify API Key</span><textarea value={props.workerSetup.dify_api_key} onChange={(event) => props.onUpdateWorkerSetup("dify_api_key", event.target.value)} /></label>
-                    <label><span>最大并发</span><input type="number" value={props.workerSetup.max_concurrency} onChange={(event) => props.onUpdateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
-                    <label><span>发现响应端口</span><input type="number" value={props.workerSetup.discovery_port} onChange={(event) => props.onUpdateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>
-                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.discovery_enabled} onChange={(event) => props.onUpdateWorkerSetup("discovery_enabled", event.target.checked)} /><span>启用局域网发现</span></label>
-                    <label><span>Bundle 路径（可选）</span><input value={props.workerSetup.bundle_path} onChange={(event) => props.onUpdateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
-                    <label><span>Temperature</span><input type="number" step="0.1" min="0" max="2" value={props.workerSetup.openai_temperature} onChange={(event) => props.onUpdateWorkerSetup("openai_temperature", Number(event.target.value) || 0)} /></label>
-                    <label><span>Top P</span><input type="number" step="0.1" min="0" max="1" value={props.workerSetup.openai_top_p} onChange={(event) => props.onUpdateWorkerSetup("openai_top_p", Number(event.target.value) || 0)} /></label>
-                    <label><span>Max Tokens</span><input type="number" min="0" value={props.workerSetup.openai_max_tokens} onChange={(event) => props.onUpdateWorkerSetup("openai_max_tokens", Number(event.target.value) || 0)} /></label>
-                    <label><span>Seed</span><input type="number" min="0" value={props.workerSetup.openai_seed} onChange={(event) => props.onUpdateWorkerSetup("openai_seed", Number(event.target.value) || 0)} /></label>
-                    <label><span>Thinking Budget</span><input type="number" min="0" value={props.workerSetup.openai_thinking_budget} onChange={(event) => props.onUpdateWorkerSetup("openai_thinking_budget", Number(event.target.value) || 0)} /></label>
-                    <label>
-                      <span>搜索策略</span>
-                      <select value={props.workerSetup.openai_search_strategy} onChange={(event) => props.onUpdateWorkerSetup("openai_search_strategy", event.target.value)}>
-                        <option value="turbo">turbo</option>
-                        <option value="max">max</option>
-                        <option value="agent">agent</option>
-                        <option value="agent_max">agent_max</option>
-                      </select>
-                    </label>
-                    <label className="connection-full-span"><span>Stop Sequences（每行一个，或 JSON 数组）</span><textarea value={props.workerSetup.openai_stop} onChange={(event) => props.onUpdateWorkerSetup("openai_stop", event.target.value)} placeholder={"Observation:\n[\"</answer>\", \"###\"]"} /></label>
-                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_thinking} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_thinking", event.target.checked)} /><span>启用 DashScope Thinking</span></label>
-                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_search} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_search", event.target.checked)} /><span>启用联网搜索</span></label>
-                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_search_forced} onChange={(event) => props.onUpdateWorkerSetup("openai_search_forced", event.target.checked)} /><span>强制搜索</span></label>
-                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_enable_search_extension} onChange={(event) => props.onUpdateWorkerSetup("openai_enable_search_extension", event.target.checked)} /><span>垂域搜索扩展</span></label>
-                    <label className="checkbox-row"><input type="checkbox" checked={props.workerSetup.openai_multimodal_enabled} onChange={(event) => props.onUpdateWorkerSetup("openai_multimodal_enabled", event.target.checked)} /><span>启用多模态输入</span></label>
-                  </div>
-                </details>
-                <div className="inline-actions" style={{ marginTop: 14 }}>
-                  <button type="button" onClick={props.onRunWorkerSetup} disabled={props.busyKey !== null}>
-                    {props.busyKey === "setup-worker" ? "安装中..." : "安装当前机器节点"}
-                  </button>
-                </div>
-              </section>
-
-              <section className="surface" style={{ padding: "12px 20px" }}>
-                <details className="form-advanced-details connection-fold-card">
-                  <summary>
-                    <span className="section-kicker">高级功能</span>
-                    <span className="connection-fold-hint">按地址直接纳管远端节点</span>
-                  </summary>
-                  <div className="connection-form-grid">
-                    <label><span>目标 IP / 主机名</span><input value={props.manualPair.host} onChange={(event) => props.onUpdateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
-                    <label><span>配对端口</span><input type="number" value={props.manualPair.pairing_port} onChange={(event) => props.onUpdateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
-                    <label><span>配对密钥</span><ToggleSecretInput value={props.manualPair.pairing_key} onChange={(event) => props.onUpdateManualPair("pairing_key", event.target.value)} placeholder="与目标节点上的 CLAW_PAIRING_KEY 一致" autoComplete="new-password" /></label>
-                    <label><span>指定节点 ID（可选）</span><input value={props.manualPair.node_id} onChange={(event) => props.onUpdateManualPair("node_id", event.target.value)} placeholder="留空则自动生成或沿用远端值" /></label>
-                  </div>
-                  <div className="inline-actions">
-                    <button type="button" onClick={props.onManualPairNode} disabled={props.busyKey !== null}>
-                      {props.busyKey === "setup-manual-pair" ? "连接中..." : "按地址配对"}
-                    </button>
-                  </div>
-                </details>
-              </section>
-
-              <section className="surface" style={{ padding: "12px 20px" }}>
-                <details className="form-advanced-details connection-fold-card">
-                  <summary>
-                    <span className="section-kicker">局域网发现</span>
-                    <span className="connection-fold-hint">扫描并批量纳管附近节点</span>
-                  </summary>
-                  <div className="section-head compact-head">
-                    <button type="button" onClick={props.onScanLanNodes} disabled={props.busyKey !== null}>
-                      {props.busyKey === "setup-discovery-scan" ? "搜索中..." : "搜索局域网节点"}
-                    </button>
-                  </div>
-                  <div className="inline-tip">
-                    网关地址：{props.currentGatewayBaseUrl}
-                  </div>
-                  {!props.discoveredNodes.length ? (
-                    <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div>
-                  ) : (
-                    <div className="discovery-list">
-                      {props.discoveredNodes.map((item) => (
-                        <div key={item.discovery_id} className="discovery-card">
-                          <div className="discovery-card-top">
-                            <div>
-                              <div className="node-card-title">{item.pairing_label || item.hostname}</div>
-                              <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
-                            </div>
-                            <span className={`session-badge session-badge-${pairingStatusTone(props.pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}`}>
-                              {pairingStatusLabel(props.pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending"))}
-                            </span>
-                          </div>
-                          <div className="node-card-grid">
-                            <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
-                            <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
-                            <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
-                            <div><div className="node-card-label">正式节点 ID</div><div className="node-card-value">{item.node_id || "配对时自动生成"}</div></div>
-                          </div>
-                          <div className="discovery-actions">
-                            <input value={props.pairingSecrets[item.discovery_id] || ""} onChange={(event) => props.onUpdatePairingSecret(item.discovery_id, event.target.value)} placeholder="输入该机器的配对密钥" />
-                            <button type="button" onClick={() => props.onPairLanNode(item)} disabled={props.busyKey !== null}>
-                              {props.busyKey === "setup-discovery-pair" ? "连接中..." : "输入密钥并连接"}
-                            </button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </details>
-              </section>
-                </div>
               ) : null}
 
               {showLocalNodePanel ? (
@@ -404,6 +239,8 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   draft={props.localNodeModelDraft}
                   onChange={props.onUpdateLocalNodeModelDraft}
                   onRefresh={props.onRefreshLocalNodeDiagnostics}
+                  onStart={props.onStartLocalNodeService}
+                  onStop={props.onStopLocalNodeService}
                   onRestart={props.onRestartLocalNodeService}
                   onSave={props.onSaveLocalNodeModelConfig}
                   onExport={props.onExportLocalNodeDiagnostics}
@@ -411,37 +248,132 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 />
               ) : null}
             </div>
-          ) : null}
-        </div>
-      ) : (
-        <div className="connection-layout-stack">
-          <section className="surface connection-overview" style={{ padding: "16px", background: "transparent", boxShadow: "none" }}>
-            <div className="connection-hero-grid">
-              {props.connectionHeroCards.map((card) => (
-                <ConnectionHeroCard key={`${card.eyebrow}-${card.title}`} eyebrow={card.eyebrow} title={card.title} detail={card.detail} tone={card.tone} />
-              ))}
+
+            {/* Sidebar Column (Right) */}
+            <div className="connection-sidebar-column">
+              {showNodeOnboarding ? (
+                <div className="connection-onboarding-sidebar">
+                  <section className="surface surface-narrow" style={{ padding: "16px 20px" }}>
+                    <div className="section-head compact-head">
+                      <div><div className="section-kicker">新节点</div><h3>纳管远程工作节点</h3></div>
+                    </div>
+                    <div className="connection-form-stack" style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 14 }}>
+                      <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, opacity: 0.6 }}>IP / 主机名</span>
+                        <input value={props.manualPair.host} onChange={(event) => props.onUpdateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" />
+                      </label>
+                      <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, opacity: 0.6 }}>配对密钥</span>
+                        <ToggleSecretInput value={props.manualPair.pairing_key} onChange={(event) => props.onUpdateManualPair("pairing_key", event.target.value)} placeholder="与目标节点密钥一致" autoComplete="new-password" />
+                      </label>
+                      <button type="button" onClick={props.onManualPairNode} disabled={props.busyKey !== null} style={{ width: "100%", marginTop: 6 }}>
+                        {props.busyKey === "setup-manual-pair" ? "连接中..." : "建立连接"}
+                      </button>
+                    </div>
+
+                    <details className="sidebar-advanced-details" style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+                      <summary style={{ fontSize: 11, fontWeight: 700, opacity: 0.6, cursor: "pointer" }}>局域网扫描/安装工具</summary>
+                      <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 10 }}>
+                        <button type="button" className="ghost-button" style={{ width: "100%", fontSize: 12 }} onClick={props.onScanLanNodes} disabled={props.busyKey !== null}>
+                          局域网扫描
+                        </button>
+                        <button type="button" className="ghost-button" style={{ width: "100%", fontSize: 12, borderStyle: "dashed" }} onClick={props.onRunWorkerSetup} disabled={props.busyKey !== null}>
+                          在本机安装新节点
+                        </button>
+                      </div>
+                    </details>
+                  </section>
+                </div>
+              ) : null}
+
+              {showOverview ? (
+                <OverviewPanel
+                  heroCards={props.connectionHeroCards}
+                  prepItems={props.connectionPrepItems}
+                  signalCards={props.connectionSignalCards}
+                  canManageGateway={showGatewayControls}
+                  modelCheckText={props.modelCheckText}
+                  lastError={props.wechatLastError}
+                  dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无远程节点。" : null}
+                  localNodeStatus={props.localNodeStatus}
+                  assessmentMaxRounds={props.assessmentMaxRounds}
+                  assessmentApplyStrategy={props.assessmentApplyStrategy}
+                  onRunModelCheck={props.onRunModelCheck}
+                  onToggleDispatch={props.onToggleDispatch}
+                  onRefreshAllStatus={props.onRefreshAllStatus}
+                  onRefreshChannelAssessment={props.onRefreshLocalNodeStatus}
+                  onAssessmentMaxRoundsChange={props.onAssessmentMaxRoundsChange}
+                  onAssessmentApplyStrategyChange={props.onAssessmentApplyStrategyChange}
+                  onStartLocalNodeService={props.onStartLocalNodeService}
+                  onStopLocalNodeService={props.onStopLocalNodeService}
+                  onStartChannelAssessment={props.onStartLocalNodeChannelAssessment}
+                  onApplyChannelAssessment={props.onApplyLocalNodeChannelAssessment}
+                  startLocalNodeLabel={props.busyKey === "local-node-start" ? "启动中..." : "启动本机节点"}
+                  stopLocalNodeLabel={props.busyKey === "local-node-stop" ? "停止中..." : "停止本机节点"}
+                  applyChannelAssessmentLabel={props.busyKey === "local-node-channel-assessment-apply" ? "应用中..." : "应用评估建议"}
+                  runModelCheckLabel={props.busyKey === "model-check" ? "检测中..." : "检测模型"}
+                  toggleDispatchLabel={props.busyKey === "dispatch-mode-toggle" ? "切换中..." : props.gatewaySetupDispatchModeEnabled ? "关闭分发模式" : "开启分发模式"}
+                  refreshAllLabel={props.busyKey === "connection-refresh-all" ? "刷新中..." : "刷新状态"}
+                  busy={props.busyKey !== null}
+                  assessmentBusy={
+                    props.busyKey === "local-node-channel-assessment-start" ||
+                    props.busyKey === "local-node-channel-assessment-apply"
+                  }
+                />
+              ) : null}
             </div>
-          </section>
+          </div>
+        </div>
 
-          <div className="connection-grid">
-            <div className="connection-status-column">
-              <div className="worker-wizard-identity" style={{ marginBottom: 12 }}>
-                <div className="worker-wizard-identity-ip">
-                  {props.workerGatewayConnection.remoteNode?.lan_ip || String(props.localNodeStatus?.diagnostics?.lan_ip || props.currentNodeLanIp || "检测中…")}
-                </div>
-                <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>
-                  端口：{props.workerSetup.discovery_port} &nbsp;&middot;&nbsp; 当前机器节点地址，网关管理员可使用该地址配对
-                </div>
-              </div>
+      ) : (
+        <div className="connection-dashboard-stack worker-connection-stack">
+          <div className="workspace-hero-strip">
+            {props.connectionHeroCards.map((card) => (
+              <ConnectionHeroCard key={`${card.eyebrow}-${card.title}`} {...card} />
+            ))}
+          </div>
 
-              <section className="surface surface-tight">
-                <div className="section-head">
+          <div className="connection-dashboard-grid worker-connection-grid">
+            <div className="connection-main-column">
+              <NodeModelConfigPanel
+                launcherAvailable={props.launcherAvailable}
+                busyKey={props.busyKey}
+                dirty={props.localNodeModelDirty}
+                status={props.localNodeStatus}
+                runtimeSummary={props.localNodeRuntimeSummary}
+                gatewayControl={null}
+                eventPreview=""
+                draft={props.localNodeModelDraft}
+                onChange={props.onUpdateLocalNodeModelDraft}
+                onRefresh={props.onRefreshLocalNodeDiagnostics}
+                onStart={props.onStartLocalNodeService}
+                onStop={props.onStopLocalNodeService}
+                onRestart={props.onRestartLocalNodeService}
+                onSave={props.onSaveLocalNodeModelConfig}
+                onExport={props.onExportLocalNodeDiagnostics}
+                onReset={props.onResetLocalNodeCredentials}
+                onRepair={props.onRunWorkerSetup}
+                onRunConversationTest={props.onRunLocalNodeConversationTest}
+              />
+            </div>
+
+            <div className="connection-sidebar-column worker-sidebar-column">
+              <section className="surface worker-node-summary-card">
+                <div className="section-head compact-head">
                   <div>
-                    <div className="section-kicker">节点工作台</div>
+                    <div className="section-kicker">本机链路</div>
                     <h3>{props.heroTitle}</h3>
                   </div>
                 </div>
-                <div className="prep-strip-list">
+                <div className="worker-wizard-identity worker-node-address-card">
+                  <div className="worker-wizard-identity-ip">
+                    {props.workerGatewayConnection.remoteNode?.lan_ip || String(props.localNodeStatus?.diagnostics?.lan_ip || props.currentNodeLanIp || "检测中…")}
+                  </div>
+                  <div className="worker-node-address-meta">
+                    发现端口 {props.workerSetup.discovery_port} · 当前机器节点地址
+                  </div>
+                </div>
+                <div className="prep-strip-list worker-node-prep-list">
                   <PrepStrip label="节点配置" detail={props.setupCompletedRoles.has("worker_node") ? "当前机器节点已完成配置" : "尚未完成节点配置"} tone={props.setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
                   <PrepStrip label="目标网关地址" detail={props.workerSetup.gateway_base_url || "未填写局域网网关地址"} tone={props.workerSetup.gateway_base_url ? "good" : "warn"} />
                   <PrepStrip label="发现响应" detail={props.workerSetup.discovery_enabled ? `已启用 UDP ${props.workerSetup.discovery_port}` : "当前已关闭"} tone={props.workerSetup.discovery_enabled ? "good" : "warn"} />
@@ -453,14 +385,14 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 </div>
               </section>
 
-              <section className="surface">
-                <div className="section-head">
+              <section className="surface worker-node-install-card">
+                <div className="section-head compact-head">
                   <div>
                     <div className="section-kicker">节点安装</div>
                     <h3>安装或重装当前机器节点</h3>
                   </div>
                 </div>
-                <div className="form-grid">
+                <div className="connection-form-grid worker-node-install-grid">
                   <label><span>节点 ID</span><input value={props.workerSetup.node_id} onChange={(event) => props.onUpdateWorkerSetup("node_id", event.target.value)} /></label>
                   <label><span>目标网关地址</span><input value={props.workerSetup.gateway_base_url} onChange={(event) => props.onUpdateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
                   <label>
@@ -488,7 +420,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                     <label><span>Bundle 路径（可选）</span><input value={props.workerSetup.bundle_path} onChange={(event) => props.onUpdateWorkerSetup("bundle_path", event.target.value)} placeholder="留空则自动查找" /></label>
                   </div>
                 </details>
-                <div className="inline-actions" style={{ marginTop: 14 }}>
+                <div className="inline-actions worker-node-install-actions">
                   <button type="button" onClick={props.onRunWorkerSetup} disabled={props.busyKey !== null}>
                     {props.busyKey === "setup-worker" ? "安装中..." : "安装当前机器节点"}
                   </button>
@@ -498,8 +430,8 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 </div>
               </section>
 
-              <section className="surface node-role-surface">
-                <div className="section-head">
+              <section className="surface node-role-surface worker-node-role-card">
+                <div className="section-head compact-head">
                   <div>
                     <div className="section-kicker">节点说明</div>
                     <h3>{props.heroDescription}</h3>
@@ -518,25 +450,6 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   {props.workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点记录" value={summarizeRemoteNode(props.workerGatewayConnection.remoteNode)} multiline /> : null}
                 </div>
               </section>
-            </div>
-
-            <div className="connection-action-column">
-              <NodeModelConfigPanel
-                launcherAvailable={props.launcherAvailable}
-                busyKey={props.busyKey}
-                dirty={props.localNodeModelDirty}
-                status={props.localNodeStatus}
-                runtimeSummary={props.localNodeRuntimeSummary}
-                gatewayControl={null}
-                eventPreview=""
-                draft={props.localNodeModelDraft}
-                onChange={props.onUpdateLocalNodeModelDraft}
-                onRefresh={props.onRefreshLocalNodeDiagnostics}
-                onRestart={props.onRestartLocalNodeService}
-                onSave={props.onSaveLocalNodeModelConfig}
-                onExport={props.onExportLocalNodeDiagnostics}
-                onRunConversationTest={props.onRunLocalNodeConversationTest}
-              />
             </div>
           </div>
         </div>

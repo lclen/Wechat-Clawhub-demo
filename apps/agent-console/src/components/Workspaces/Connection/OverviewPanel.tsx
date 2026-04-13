@@ -1,6 +1,19 @@
-import type { ConnectionHeroCardData, ConnectionPrepItem, ConnectionSignalCardData, LocalNodeStatusResponse } from "../../../types";
-import { ConnectionHeroCard, PrepStrip } from "./ConnectionUi";
-import { CommandBar, InfoList, MetricCard, SectionHeader, SignalBadge, SurfaceCard } from "../../shared/ConsolePrimitives";
+import { useState } from "react";
+import type {
+  ConnectionHeroCardData,
+  ConnectionPrepItem,
+  ConnectionSignalCardData,
+  LocalNodeStatusResponse,
+} from "../../../types";
+import { PrepStrip } from "./ConnectionUi";
+import {
+  CommandBar,
+  InfoList,
+  MetricCard,
+  SectionHeader,
+  SignalBadge,
+  SurfaceCard,
+} from "../../shared/ConsolePrimitives";
 
 const MAX_CHANNEL_ASSESSMENT_ROUNDS = 999;
 
@@ -36,7 +49,7 @@ type OverviewPanelProps = {
 };
 
 export function OverviewPanel({
-  heroCards,
+  heroCards: _heroCards, // Taken out to top level in workspace
   prepItems,
   signalCards,
   canManageGateway,
@@ -65,308 +78,308 @@ export function OverviewPanel({
   busy,
   assessmentBusy,
 }: OverviewPanelProps) {
+  const [roundsExpanded, setRoundsExpanded] = useState(false);
+
   const supplementalItems = [
     modelCheckText ? { label: "模型检测", value: modelCheckText, multiline: true } : null,
     lastError ? { label: "最近错误", value: lastError, multiline: true } : null,
   ].filter((item): item is { label: string; value: string; multiline: boolean } => Boolean(item));
+
   const assessment = localNodeStatus?.channel_assessment;
   const assessmentStatus = assessment?.status || "idle";
   const localNodeRunning = localNodeStatus?.state === "running";
   const localNodeControlLabel = localNodeRunning ? "运行中" : "已停止";
   const localNodeControlDetail = localNodeRunning
-    ? "评估前建议先停止本机节点，避免服务占用干扰压测。"
-    : "节点已空闲，可直接开始评估，或先启动恢复日常处理。";
-  const configuredMaxRounds = Math.max(1, Math.min(MAX_CHANNEL_ASSESSMENT_ROUNDS, Number(assessmentMaxRounds) || 1));
+    ? "评估前建议先停止节点。"
+    : "节点已空闲，可开始评估。";
+
+  const configuredMaxRounds = Math.max(
+    1,
+    Math.min(MAX_CHANNEL_ASSESSMENT_ROUNDS, Number(assessmentMaxRounds) || 1)
+  );
   const canStartAssessment = Boolean(assessment?.can_start ?? true) && assessmentStatus !== "running";
-  const canApplyRecommendation = assessmentStatus === "completed"
-    && assessment?.recommended_channel_capacity !== null
-    && assessment?.recommended_max_concurrency !== null;
-  const balancedRecommendationAvailable = assessmentStatus === "completed"
-    && assessment?.balanced_channel_capacity !== null
-    && assessment?.balanced_max_concurrency !== null;
+  const canApplyRecommendation =
+    assessmentStatus === "completed" &&
+    assessment?.recommended_channel_capacity !== null &&
+    assessment?.recommended_max_concurrency !== null;
+  const balancedRecommendationAvailable =
+    assessmentStatus === "completed" &&
+    assessment?.balanced_channel_capacity !== null &&
+    assessment?.balanced_max_concurrency !== null;
+
   const latestAssessmentTime = assessment?.finished_at || assessment?.started_at || null;
   const assessmentStartHint = assessment?.start_blocking_reason || "";
-  const latestFailureRound = assessment?.rounds ? [...assessment.rounds].reverse().find((round) => !round.stable) ?? null : null;
+  const latestFailureRound = assessment?.rounds
+    ? [...assessment.rounds].reverse().find((round) => !round.stable) ?? null
+    : null;
+
+  const appliedPlanLabel = assessmentApplyStrategy === "balanced" ? "平衡方案" : "最高建议";
+  const appliedPlanValue =
+    assessmentApplyStrategy === "balanced" && balancedRecommendationAvailable
+      ? `${assessment?.balanced_channel_capacity} / ${assessment?.balanced_max_concurrency}`
+      : canApplyRecommendation
+      ? `${assessment?.recommended_channel_capacity} / ${assessment?.recommended_max_concurrency}`
+      : "待评估";
+
+  const roundsCount = assessment?.rounds?.length ?? 0;
   const assessmentInfoItems = [
-    assessmentStartHint ? { label: "开始条件", value: assessmentStartHint, multiline: true } : null,
-    assessment?.summary ? { label: "结果摘要", value: assessment.summary, multiline: true } : null,
-    assessment?.blocking_reason ? { label: "阻止原因", value: assessment.blocking_reason, multiline: true } : null,
-    assessment && (assessment.active_session_count > 0 || assessment.active_task_count > 0)
-      ? { label: "当前占用", value: `活跃会话 ${assessment.active_session_count}，活跃任务 ${assessment.active_task_count}`, multiline: true }
-      : null,
-    latestFailureRound ? { label: "失败拐点", value: latestFailureRound.summary, multiline: true } : null,
-    assessment?.last_error ? { label: "最近错误", value: assessment.last_error, multiline: true } : null,
+    assessmentStartHint ? { label: "提示", value: assessmentStartHint, multiline: true } : null,
+    assessment?.summary ? { label: "摘要", value: assessment.summary, multiline: true } : null,
+    assessment?.blocking_reason ? { label: "限制", value: assessment.blocking_reason, multiline: true } : null,
+    appliedPlanValue !== "待评估" ? { label: "建议", value: appliedPlanValue, multiline: true } : null,
   ].filter((item): item is { label: string; value: string; multiline: true } => Boolean(item));
-  const recentRounds = assessment?.rounds?.slice(-3) ?? [];
+
+  const recentRounds = roundsExpanded
+    ? assessment?.rounds ?? []
+    : assessment?.rounds?.slice(-2) ?? [];
 
   return (
-    <div className="connection-panel-stack">
-      <SurfaceCard className="connection-overview-panel connection-command-hero" tone="accent">
-        <div className="connection-overview-banner command-hero-banner">
-          <div className="connection-overview-banner-copy">
-            <SectionHeader
-              kicker="服务概览与状态"
-              title="先判断健康度，再进入配置与联调"
-            />
-          </div>
-          <div className="connection-overview-chip-row command-hero-signals">
-            <SignalBadge tone="info">运行态优先</SignalBadge>
-            <SignalBadge tone="neutral">关键动作集中</SignalBadge>
-            <SignalBadge tone="good">状态持续刷新</SignalBadge>
-          </div>
-        </div>
-        <div className="connection-hero-grid connection-hero-grid-command">
-          {heroCards.map((card) => (
-            <ConnectionHeroCard key={`${card.eyebrow}-${card.title}`} {...card} />
+    <div className="connection-panel-stack connection-sidebar-stack" style={{ gap: 16 }}>
+      {/* 1. 接入准备度 (紧凑版) */}
+      <SurfaceCard className="surface-tight command-surface">
+        <SectionHeader
+          kicker="流程核对"
+          title="接入准备度"
+          actions={
+            canManageGateway ? (
+              <div className="inline-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onRefreshAllStatus}
+                  disabled={busy}
+                  style={{ height: 28, fontSize: 12 }}
+                >
+                  {refreshAllLabel}
+                </button>
+              </div>
+            ) : null
+          }
+        />
+        <div className="prep-strip-list" style={{ marginTop: 12 }}>
+          {prepItems.map((item) => (
+            <PrepStrip key={item.label} {...item} />
           ))}
         </div>
+        {canManageGateway && (
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={onRunModelCheck}
+            disabled={busy}
+            style={{ width: "100%", marginTop: 12, borderStyle: "dashed" }}
+          >
+            {runModelCheckLabel}
+          </button>
+        )}
       </SurfaceCard>
 
-      <div className="connection-overview-secondary">
-        <SurfaceCard className="surface-tight command-surface">
-          <SectionHeader
-            kicker="准备流程"
-            title="接入状态"
-            actions={
-              canManageGateway ? (
-                <div className="inline-actions">
-                  <button type="button" className="ghost-button" onClick={onRefreshAllStatus} disabled={busy}>
-                    {refreshAllLabel}
-                  </button>
-                  <button type="button" onClick={onRunModelCheck} disabled={busy}>
-                    {runModelCheckLabel}
-                  </button>
-                </div>
-              ) : null
-            }
-          />
-          <div className="prep-strip-list prep-strip-list-command">
-            {prepItems.map((item) => (
-              <PrepStrip key={item.label} {...item} />
-            ))}
-          </div>
-        </SurfaceCard>
-
-        <div className="connection-overview-command-stack">
-          <SurfaceCard className="command-surface connection-ops-surface" tone="strong">
-            <SectionHeader
-              kicker="主命令与控制面"
-              title="动作前判断"
+      {/* 2. 主控制面 */}
+      <SurfaceCard className="command-surface connection-ops-surface" tone="strong">
+        <SectionHeader kicker="控制面" title="网关调度动作" />
+        <div className="connection-ops-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+          {signalCards.map((card) => (
+            <MetricCard
+              key={card.label}
+              label={card.label}
+              value={card.value}
+              tone={card.tone === "good" ? "healthy" : "warning"}
+              style={{ padding: "12px 16px" }}
             />
-            <CommandBar
-              label="主命令"
-              detail={canManageGateway ? "切换分发模式前，先确认至少存在可用远端节点。" : "当前角色只读查看运行态，不执行接入或调度变更。"}
-              className="command-bar-floating"
+          ))}
+        </div>
+        <CommandBar
+          detail={canManageGateway ? "切换分发模式前请确认节点就绪。" : "只读观察模式。"}
+          style={{ marginTop: 16 }}
+        >
+          {canManageGateway ? (
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={onToggleDispatch}
+              disabled={busy}
+              style={{ width: "100%" }}
             >
-              {canManageGateway ? (
-                <button type="button" className="ghost-button" onClick={onToggleDispatch} disabled={busy}>
-                  {toggleDispatchLabel}
-                </button>
-              ) : (
-                <SignalBadge tone="neutral">只读观察</SignalBadge>
-              )}
-            </CommandBar>
-            <div className="connection-ops-grid">
-              {signalCards.map((card) => (
-                <MetricCard
-                  key={card.label}
-                  label={card.label}
-                  value={card.value}
-                  detail={card.meta}
-                  tone={card.tone === "good" ? "healthy" : "warning"}
-                  className="connection-ops-metric"
-                />
-              ))}
-            </div>
-            {supplementalItems.length ? <InfoList items={supplementalItems} className="connection-ops-info" /> : null}
-            {dispatchWarning ? <div className="topbar-notice dispatch-warning">{dispatchWarning}</div> : null}
-          </SurfaceCard>
+              {toggleDispatchLabel}
+            </button>
+          ) : (
+            <SignalBadge tone="neutral">只读</SignalBadge>
+          )}
+        </CommandBar>
+        {supplementalItems.length ? (
+          <InfoList items={supplementalItems} style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }} />
+        ) : null}
+      </SurfaceCard>
 
-          <SurfaceCard className="command-surface connection-assessment-surface">
-            <SectionHeader
-              kicker="通道评估"
-              title="本机节点容量建议"
-              description="停止本机节点后执行压测，完成后可一键应用建议的通道数和并发。"
-              actions={
-                <div className="connection-assessment-toolbar">
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={onRefreshChannelAssessment}
-                    disabled={busy || !canManageGateway}
-                  >
-                    刷新结果
-                  </button>
-                </div>
-              }
-            />
-            <div className="connection-assessment-control-strip">
-              <div className="connection-assessment-config-row">
-                <label className="connection-assessment-config-field">
-                  <span>最大评估轮数</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={MAX_CHANNEL_ASSESSMENT_ROUNDS}
-                    step={1}
-                    value={configuredMaxRounds}
-                    onChange={(event) => onAssessmentMaxRoundsChange(Math.max(1, Math.min(MAX_CHANNEL_ASSESSMENT_ROUNDS, Number(event.target.value) || 1)))}
-                    disabled={busy || assessmentBusy}
-                  />
-                </label>
-                <div className="connection-assessment-config-note"></div>
-              </div>
-              <CommandBar
-                label={`本机节点：${localNodeControlLabel}`}
-                detail={localNodeControlDetail}
-                className="connection-assessment-control-bar"
+      {/* 3. 通道评估 (核心紧凑版) */}
+      <SurfaceCard className="command-surface connection-assessment-surface">
+        <SectionHeader
+          kicker="压测工具"
+          title="通道容量建议"
+          actions={
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={onRefreshChannelAssessment}
+              disabled={busy || !canManageGateway}
+              style={{ height: 26, fontSize: 11 }}
+            >
+              刷新
+            </button>
+          }
+        />
+
+        <div className="connection-assessment-sidebar-shell" style={{ marginTop: 12 }}>
+          <div
+            style={{
+              backgroundColor: "rgba(0,0,0,0.03)",
+              padding: 12,
+              borderRadius: 8,
+              border: "1px solid var(--line)"
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12, opacity: 0.6 }}>评估状态</span>
+              <SignalBadge
+                tone={
+                  assessmentStatus === "completed"
+                    ? "good"
+                    : assessmentStatus === "running"
+                    ? "info"
+                    : "neutral"
+                }
               >
-                <div className="connection-assessment-action-group">
-                  <button
-                    type="button"
-                    className="connection-assessment-start-node"
-                    onClick={onStartLocalNodeService}
-                    disabled={busy || assessmentBusy || !canManageGateway || localNodeRunning}
-                  >
-                    {startLocalNodeLabel}
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={onStopLocalNodeService}
-                    disabled={busy || assessmentBusy || !canManageGateway || !localNodeRunning}
-                  >
-                    {stopLocalNodeLabel}
-                  </button>
-                  <button
-                    type="button"
-                    className="connection-assessment-run"
-                    onClick={onStartChannelAssessment}
-                    disabled={busy || assessmentBusy || !canManageGateway || !canStartAssessment}
-                  >
-                    {assessmentStatus === "running" ? "评估中..." : "开始评估"}
-                  </button>
-                </div>
-              </CommandBar>
+                {formatAssessmentStatus(assessmentStatus)}
+              </SignalBadge>
             </div>
-            <div className="connection-assessment-grid">
-              <MetricCard
-                label="当前通道数"
-                value={String(assessment?.current_channel_capacity ?? 0)}
-                detail={`当前并发 ${assessment?.current_max_concurrency ?? 0} · 最多 ${configuredMaxRounds} 轮`}
-                tone="default"
-              />
-              <MetricCard
-                label="最近评估"
-                value={latestAssessmentTime ? formatAssessmentTimestamp(latestAssessmentTime) : "未执行"}
-                detail={`状态 ${formatAssessmentStatus(assessmentStatus)}`}
-                tone={assessmentStatus === "completed" ? "healthy" : assessmentStatus === "blocked" || assessmentStatus === "failed" ? "warning" : "accent"}
-              />
-              <MetricCard
-                label="最高建议"
-                value={
-                  canApplyRecommendation
-                    ? `${assessment?.recommended_channel_capacity} / ${assessment?.recommended_max_concurrency}`
-                    : "待评估"
-                }
-                detail="通道数 / 最大并发"
-                tone={assessmentStatus === "completed" ? "healthy" : assessmentStatus === "blocked" || assessmentStatus === "failed" ? "warning" : "accent"}
-              />
-              <MetricCard
-                label="平衡方案"
-                value={
-                  balancedRecommendationAvailable
-                    ? `${assessment?.balanced_channel_capacity} / ${assessment?.balanced_max_concurrency}`
-                    : "待评估"
-                }
-                detail="更偏体验的通道数 / 最大并发"
-                tone={assessmentStatus === "completed" ? "default" : assessmentStatus === "blocked" || assessmentStatus === "failed" ? "warning" : "accent"}
-              />
+            <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>
+              {assessmentStatus === "running" ? assessment?.stage : assessmentStartHint || "待执行压测"}
             </div>
-            <CommandBar
-              label={`评估状态：${formatAssessmentStatus(assessmentStatus)}`}
-              detail={assessmentStatus === "running" ? (assessment?.stage || "评估进行中。") : assessmentStartHint || assessment?.stage || "尚未执行通道评估。"}
-              className="connection-assessment-command"
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+            <MetricCard
+              label="峰值建议"
+              value={canApplyRecommendation ? `${assessment?.recommended_channel_capacity}/${assessment?.recommended_max_concurrency}` : "-"}
+              tone="healthy"
+            />
+            <MetricCard
+              label="平衡方案"
+              value={balancedRecommendationAvailable ? `${assessment?.balanced_channel_capacity}/${assessment?.balanced_max_concurrency}` : "-"}
+              tone="accent"
+            />
+          </div>
+
+          <div className="assessment-controls" style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={onStartLocalNodeService}
+                disabled={busy || assessmentBusy || !canManageGateway || localNodeRunning}
+                style={{ flex: 1 }}
+              >
+                启动
+              </button>
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={onStopLocalNodeService}
+                disabled={busy || assessmentBusy || !canManageGateway || !localNodeRunning}
+                style={{ flex: 1 }}
+              >
+                停止
+              </button>
+            </div>
+            <button
+              type="button"
+              onClick={onStartChannelAssessment}
+              disabled={busy || assessmentBusy || !canManageGateway || !canStartAssessment}
+              style={{ width: "100%" }}
             >
+              {assessmentStatus === "running" ? "正在评估..." : "开始压力测试"}
+            </button>
+          </div>
+
+          {canApplyRecommendation && (
+            <div style={{ marginTop: 16, borderTop: "1px solid var(--line)", paddingTop: 16 }}>
               <select
                 value={assessmentApplyStrategy}
                 onChange={(event) => onAssessmentApplyStrategyChange(event.target.value as "balanced" | "peak")}
-                disabled={busy || assessmentBusy || !canManageGateway || !canApplyRecommendation}
+                disabled={busy || assessmentBusy || !canManageGateway}
+                style={{ width: "100%", marginBottom: 8 }}
               >
-                <option value="balanced">应用平衡方案</option>
-                <option value="peak">应用最高建议</option>
+                <option value="balanced">方案：均衡稳定</option>
+                <option value="peak">方案：极限容量</option>
               </select>
-              <SignalBadge tone={assessmentStatus === "completed" ? "good" : assessmentStatus === "running" ? "info" : assessmentStatus === "blocked" || assessmentStatus === "failed" ? "warn" : "neutral"}>
-                {formatAssessmentRisk(assessment?.risk_level || "unknown")}
-              </SignalBadge>
               <button
                 type="button"
                 className="connection-assessment-apply"
                 onClick={onApplyChannelAssessment}
-                disabled={busy || assessmentBusy || !canManageGateway || !canApplyRecommendation}
+                disabled={busy || assessmentBusy || !canManageGateway}
+                style={{ width: "100%" }}
               >
                 {applyChannelAssessmentLabel}
               </button>
-            </CommandBar>
-            {recentRounds.length ? (
-              <div className="connection-assessment-rounds">
+            </div>
+          )}
+
+          {recentRounds.length ? (
+            <div style={{ marginTop: 20 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <span className="section-kicker">压测详情</span>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  style={{ height: 20, fontSize: 10, padding: "0 6px" }}
+                  onClick={() => setRoundsExpanded(!roundsExpanded)}
+                >
+                  {roundsExpanded ? "收起" : `展开全部 (${roundsCount})`}
+                </button>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {recentRounds.map((round) => {
                   const appearance = getAssessmentRoundAppearance(round);
                   return (
-                    <MetricCard
-                      key={`assessment-round-${round.round_index}`}
-                      label={`第 ${round.round_index} 轮`}
-                      value={`${round.max_concurrency} / ${round.channel_capacity}`}
-                      detail={(
-                        <div className="connection-assessment-round-detail">
-                          <span className={`connection-assessment-round-flag ${appearance.flagClassName}`}>
-                            {appearance.flagLabel}
-                          </span>
-                          <span>{round.summary}</span>
-                        </div>
-                      )}
-                      tone={appearance.tone}
-                      className={`connection-ops-metric connection-assessment-round-card ${appearance.cardClassName}`}
-                    />
+                    <div
+                      key={`round-${round.round_index}`}
+                      style={{
+                        padding: "8px 12px",
+                        backgroundColor: "rgba(0,0,0,0.02)",
+                        borderRadius: 6,
+                        border: "1px solid var(--line)",
+                        fontSize: 12
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <strong>第 {round.round_index} 轮</strong>
+                        <span style={{ opacity: 0.6 }}>{round.max_concurrency} 并发 / {round.channel_capacity} 通道</span>
+                      </div>
+                      <div style={{ marginTop: 4, display: "flex", gap: 6, alignItems: "center" }}>
+                        <SignalBadge tone={appearance.tone} style={{ fontSize: 10, padding: "1px 4px" }}>
+                          {appearance.flagLabel}
+                        </SignalBadge>
+                        <span style={{ opacity: 0.5 }}>{round.summary}</span>
+                      </div>
+                    </div>
                   );
                 })}
               </div>
-            ) : null}
-            {assessmentInfoItems.length ? <InfoList items={assessmentInfoItems} className="connection-ops-info" /> : null}
-          </SurfaceCard>
+            </div>
+          ) : null}
         </div>
-      </div>
+      </SurfaceCard>
     </div>
   );
 }
 
 function formatAssessmentStatus(status: string) {
-  return status === "running"
-    ? "进行中"
-    : status === "completed"
-      ? "已完成"
-      : status === "blocked"
-        ? "已阻止"
-        : status === "failed"
-          ? "失败"
-          : "未开始";
-}
-
-function formatAssessmentRisk(riskLevel: string) {
-  return riskLevel === "low"
-    ? "低风险"
-    : riskLevel === "medium"
-      ? "中风险"
-      : riskLevel === "high"
-        ? "高风险"
-        : "待评估";
+  return status === "running" ? "进行中" : status === "completed" ? "已完成" : "未开始";
 }
 
 function formatAssessmentTimestamp(value: string) {
   const timestamp = new Date(value);
-  if (Number.isNaN(timestamp.getTime())) {
-    return value;
-  }
+  if (Number.isNaN(timestamp.getTime())) return value;
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
     day: "2-digit",
@@ -376,53 +389,14 @@ function formatAssessmentTimestamp(value: string) {
 }
 
 function getAssessmentRoundAppearance(
-  round: NonNullable<LocalNodeStatusResponse["channel_assessment"]>["rounds"][number],
+  round: NonNullable<LocalNodeStatusResponse["channel_assessment"]>["rounds"][number]
 ): {
-  tone: "default" | "accent" | "healthy" | "warning";
+  tone: "good" | "warn" | "info" | "neutral";
   flagLabel: string;
-  flagClassName: string;
-  cardClassName: string;
 } {
-  if (round.stable) {
-    return {
-      tone: "healthy",
-      flagLabel: "稳定通过",
-      flagClassName: "is-stable",
-      cardClassName: "is-stable",
-    };
-  }
-
-  if (round.timeout_count > 0) {
-    return {
-      tone: "warning",
-      flagLabel: "超时终止",
-      flagClassName: "is-timeout",
-      cardClassName: "is-timeout",
-    };
-  }
-
-  if (round.failure_count > 0) {
-    return {
-      tone: "warning",
-      flagLabel: "失败终止",
-      flagClassName: "is-failure",
-      cardClassName: "is-failure",
-    };
-  }
-
-  if (round.stop_reason.includes("延迟")) {
-    return {
-      tone: "accent",
-      flagLabel: "延迟过高",
-      flagClassName: "is-latency",
-      cardClassName: "is-latency",
-    };
-  }
-
-  return {
-    tone: "warning",
-    flagLabel: "异常终止",
-    flagClassName: "is-anomaly",
-    cardClassName: "is-anomaly",
-  };
+  if (round.stable) return { tone: "good", flagLabel: "稳定" };
+  if (round.timeout_count > 0) return { tone: "warn", flagLabel: "超时" };
+  if (round.failure_count > 0) return { tone: "warn", flagLabel: "失败" };
+  if (round.stop_reason.includes("延迟")) return { tone: "info", flagLabel: "延迟" };
+  return { tone: "warn", flagLabel: "终止" };
 }

@@ -149,11 +149,16 @@ class LogResponse(BaseModel):
 class LocalNodeStatusResponse(BaseModel):
     service_name: str
     state: str
+    service_status: str = ""
     pid: int | None = None
     node_kind: str = "local"
     config_path: str = ""
     diagnostics_path: str = ""
     install_dir: str = ""
+    repair_required: bool = False
+    repair_reason: str = ""
+    venv_status: str = "unknown"
+    last_install_error: str = ""
     detail: str = ""
     service_state: str = ""
     runtime_state: str = ""

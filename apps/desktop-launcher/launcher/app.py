@@ -307,7 +307,8 @@ def create_app() -> FastAPI:
         elif profile.enable_local_node:
             layout = build_layout(profile)
             ensure_layout(layout)
-            app.state.manager.start_local_node(profile, layout)
+            with contextlib.suppress(Exception):
+                app.state.manager.start_local_node(profile, layout)
         return await bootstrap_status()
 
     @app.post("/local/bootstrap/start", response_model=LauncherStatusResponse)
@@ -363,7 +364,8 @@ def create_app() -> FastAPI:
             app.state.manager.stop("node-cache-redis")
 
         if runtime_model.local_node_should_run:
-            app.state.manager.start_local_node(profile, layout)
+            with contextlib.suppress(Exception):
+                app.state.manager.start_local_node(profile, layout)
         else:
             app.state.manager.stop("local-node", profile, layout)
 
@@ -492,6 +494,10 @@ def create_app() -> FastAPI:
             )
             node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
             status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
+            node_spec = await asyncio.to_thread(app.state.manager._resolved_local_node_spec, profile)  # type: ignore[attr-defined]
+            repair_reason = await asyncio.to_thread(app.state.manager.local_node_service_repair_reason, profile, layout, node_spec)
+            venv_status = await asyncio.to_thread(app.state.manager.local_node_virtualenv_status, profile, layout)
+            last_install_error = await asyncio.to_thread(app.state.manager.local_node_last_install_error, profile, layout)
             runtime_state = str(diagnostics.get("current_state", "") or "").strip()
             last_register_result = str(diagnostics.get("last_register_result", "") or "").strip()
             last_register_error = str(diagnostics.get("last_error", "") or "").strip()
@@ -517,6 +523,9 @@ def create_app() -> FastAPI:
             active_model_provider = str(diagnostics.get("effective_model_provider", "") or "").strip() or configured_model_provider
             inference_ready = bool(diagnostics.get("inference_ready", False))
             inference_detail = str(diagnostics.get("inference_detail", "") or "").strip()
+            config_apply_state = str(apply_state.get("config_apply_state", "idle") or "idle")
+            last_apply_error = str(apply_state.get("last_apply_error", "") or "")
+            last_apply_at = _parse_optional_datetime(apply_state.get("last_apply_at"))
             diagnostics_last_heartbeat_at = _parse_optional_datetime(diagnostics.get("last_heartbeat_at"))
             if (
                 inferred_runtime_state == "gateway_unreachable"
@@ -562,23 +571,37 @@ def create_app() -> FastAPI:
             last_register_result = inferred_register_result or last_register_result
             last_register_error = inferred_register_error or last_register_error
             last_register_at_raw = inferred_register_at_raw or last_register_at_raw
+            if (
+                config_apply_state == "failed"
+                and not repair_reason
+                and venv_status == "ready"
+                and inference_ready
+                and status.state == "running"
+            ):
+                config_apply_state = "idle"
+                last_apply_error = ""
             return LocalNodeStatusResponse(
                 service_name=service_name,
                 state=status.state,
+                service_status=status.state,
                 pid=status.pid,
                 node_kind=node_kind or "local",
                 config_path=str(config_path),
                 diagnostics_path=str(diagnostics_path),
                 install_dir=str(install_dir),
+                repair_required=bool(repair_reason),
+                repair_reason=repair_reason,
+                venv_status=venv_status,
+                last_install_error=last_install_error,
                 detail=detail,
                 service_state=status.state,
                 runtime_state=runtime_state or ("service_running" if status.state == "running" else "stopped"),
                 last_register_result=last_register_result,
                 last_register_error=last_register_error,
                 last_register_at=_parse_optional_datetime(last_register_at_raw),
-                config_apply_state=str(apply_state.get("config_apply_state", "idle") or "idle"),
-                last_apply_error=str(apply_state.get("last_apply_error", "") or ""),
-                last_apply_at=_parse_optional_datetime(apply_state.get("last_apply_at")),
+                config_apply_state=config_apply_state,
+                last_apply_error=last_apply_error,
+                last_apply_at=last_apply_at,
                 configured_model_provider=configured_model_provider,
                 active_model_provider=active_model_provider,
                 inference_ready=inference_ready,
@@ -634,21 +657,30 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail="当前通道评估仍在执行中，请等待完成后再启动本机节点。")
 
         current_status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
+        node_spec = await asyncio.to_thread(app.state.manager._resolved_local_node_spec, profile)  # type: ignore[attr-defined]
+        repair_reason = await asyncio.to_thread(app.state.manager.local_node_service_repair_reason, profile, layout, node_spec)
+        model_settings = _read_local_node_model_config(config_path)
         if str(current_status.state) == "running":
             invalidate_cached_response("bootstrap_status_cache")
             invalidate_cached_response("local_node_status_cache")
             status = await local_node_status()
             return LocalNodeActionResponse(detail="本机节点已经处于运行状态。", status=status)
+        if repair_reason:
+            raise HTTPException(status_code=409, detail=f"当前本机节点需要修复：{repair_reason} 请使用“重装当前机器节点”。")
+        if not _local_node_has_model_config(model_settings):
+            raise HTTPException(status_code=409, detail="当前节点配置尚未完整，请先保存并应用模型配置后再启动。")
 
         try:
             app.state.manager.start_local_node(profile, layout)
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"启动本机节点失败：{exc}") from exc
 
         invalidate_cached_response("bootstrap_status_cache")
         invalidate_cached_response("local_node_status_cache")
         status = await local_node_status()
-        return LocalNodeActionResponse(detail="本机节点已启动。", status=status)
+        return LocalNodeActionResponse(detail="已启动本机节点服务。", status=status)
 
     @app.post("/local/node/service/restart", response_model=LocalNodeActionResponse)
     async def restart_local_node_service() -> LocalNodeActionResponse:
@@ -873,6 +905,10 @@ def create_app() -> FastAPI:
         install_dir = str(body.get("install_dir", "")).strip()
         if not install_dir:
             raise HTTPException(status_code=422, detail="install_dir is required")
+        profile = app.state.profile
+        layout = build_layout(profile)
+        with contextlib.suppress(Exception):
+            app.state.manager.stop("local-node", profile, layout)
         keys_to_clear = {"CLAW_NODE_TOKEN", "CLAW_NODE_ID", "CLAW_GATEWAY_BASE_URL", "CLAW_PAIRING_KEY", "CLAW_PAIRING_TRACE_ID"}
         candidates = [
             Path(install_dir) / "config" / "node.env",
@@ -891,6 +927,8 @@ def create_app() -> FastAPI:
                     kept.append(line)
             env_path.write_text("\n".join(kept) + "\n", encoding="utf-8")
             cleared.append(str(env_path))
+        invalidate_cached_response("bootstrap_status_cache")
+        invalidate_cached_response("local_node_status_cache")
         return JSONResponse({"task": {"status": "succeeded" if cleared else "failed", "summary": f"已清空节点配置：{', '.join(cleared)}" if cleared else f"未找到节点 .env 文件：{install_dir}", "logs": cleared, "kind": "node_install", "title": "重置工作节点凭据"}})
 
     @app.post("/local/node/model-config", response_model=LocalNodeActionResponse)

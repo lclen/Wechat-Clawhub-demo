@@ -16,6 +16,7 @@ AssessmentCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 _ROUND_TIMEOUT_SECONDS = 45.0
 _STABLE_LATENCY_THRESHOLD_MS = 20_000
 _RECOMMENDED_LATENCY_THRESHOLD_MS = 6_000
+_BALANCED_LATENCY_THRESHOLD_MS = 5_000
 _LATENCY_GROWTH_GUARD_MS = 5_000
 _LATENCY_GROWTH_RATIO = 3.5
 _ROUND_STEPS = (1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48, 56)
@@ -310,9 +311,16 @@ def _latency_growth_limit_ms(baseline_latency_ms: int | None) -> int:
 
 def _select_balanced_round(rounds: list[dict[str, Any]], stable_round: dict[str, Any]) -> dict[str, Any]:
     stable_rounds = [round_result for round_result in rounds if bool(round_result.get("stable"))]
-    if len(stable_rounds) <= 1:
+    if not stable_rounds:
         return stable_round
-    return stable_rounds[-2]
+    balanced_candidates = [
+        round_result
+        for round_result in stable_rounds
+        if int(round_result.get("average_latency_ms", 0) or 0) <= _BALANCED_LATENCY_THRESHOLD_MS
+    ]
+    if balanced_candidates:
+        return balanced_candidates[-1]
+    return stable_rounds[0]
 
 
 def _utcnow() -> datetime:

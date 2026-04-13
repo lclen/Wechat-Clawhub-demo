@@ -83,6 +83,7 @@ import {
 import {
   getInventoryNodeAddress,
   getNodeAddress,
+  normalizeInventoryRuntimeMetrics,
   nodeInventoryBadgeLabel,
   nodeInventoryBadgeTone,
   nodeRoleLabel,
@@ -480,6 +481,7 @@ export function App() {
     restartLocalNodeService,
     stopLocalNodeService,
     exportLocalNodeDiagnostics,
+    resetLocalNodeCredentials,
     runLocalNodeConversationTest,
     startLocalNodeChannelAssessment,
     applyLocalNodeChannelAssessment,
@@ -1305,7 +1307,11 @@ export function App() {
       .map((item) => `[${formatTimeLabel(item.timestamp, true)}] ${item.category}/${item.result} ${item.trace_id ? `trace=${item.trace_id} ` : ""}${item.message}`)
       .join("\n");
   }, [selectedNodeDiagnostics]);
-  const nodeChannelOverview = useMemo(() => buildNodeChannelOverview(nodeInventory), [nodeInventory]);
+  const displayNodeInventory = useMemo(
+    () => nodeInventory.map((node) => normalizeInventoryRuntimeMetrics(node, localNodeStatus)),
+    [localNodeStatus, nodeInventory],
+  );
+  const nodeChannelOverview = useMemo(() => buildNodeChannelOverview(displayNodeInventory), [displayNodeInventory]);
   const nodeInventoryHeadline = useMemo(
     () =>
       `已配对 ${nodeInventorySummary.paired_total} / 在线 ${nodeInventorySummary.online_total} / 空闲 ${nodeChannelOverview.onlineIdle} / 占用 ${nodeChannelOverview.onlineInUse}`,
@@ -1539,7 +1545,7 @@ export function App() {
     actions: Array<{ label: string; onClick: () => void; disabled?: boolean }>;
   }>>(
     () =>
-      nodeInventory.map((node) => {
+      displayNodeInventory.map((node) => {
         const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
         const channelCapacity = Math.max(node.channel_capacity ?? 0, 0);
         const channelBusy = Math.max(node.channel_in_use ?? 0, 0);
@@ -1608,7 +1614,7 @@ export function App() {
           ],
         };
       }),
-    [busy, deletePairedNode, disconnectPairedNode, launcherStatus, localNodeStatus, nodeInventory, selectedNodeId],
+    [busy, deletePairedNode, disconnectPairedNode, displayNodeInventory, launcherStatus, localNodeStatus, selectedNodeId],
   );
   const selectedNodeDiagnosticsView = useMemo(() => {
     if (!selectedNodeId || !selectedNodeDiagnostics) return null;
@@ -1987,6 +1993,7 @@ export function App() {
             onRestartLocalNodeService={() => void restartLocalNodeService()}
             onSaveLocalNodeModelConfig={() => void saveLocalNodeModelConfig()}
             onExportLocalNodeDiagnostics={() => void exportLocalNodeDiagnostics()}
+            onResetLocalNodeCredentials={() => void resetLocalNodeCredentials()}
             onRunLocalNodeConversationTest={(payload: LocalNodeConversationTestRequest): Promise<LocalNodeConversationTestResponse> => runLocalNodeConversationTest(payload)}
             onStartLocalNodeChannelAssessment={() => void startLocalNodeChannelAssessment()}
             onApplyLocalNodeChannelAssessment={() => void applyLocalNodeChannelAssessment()}

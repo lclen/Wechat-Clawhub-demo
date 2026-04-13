@@ -153,12 +153,7 @@ function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
         return
     }
     Write-Step "Existing service detected; stopping it before replacing files"
-    if (Test-Path $ExecutablePath) {
-        & $ExecutablePath stop 2>$null
-    }
-    else {
-        $null = & sc.exe stop $Name 2>$null
-    }
+    $null = & sc.exe stop $Name 2>$null
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         try {
             $service = Get-Service -Name $Name -ErrorAction Stop
@@ -217,12 +212,7 @@ function Remove-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
     }
     Stop-ServiceIfInstalled -Name $Name -ExecutablePath $ExecutablePath
     Write-Step "Removing stale node service: $Name"
-    if (Test-Path -LiteralPath $ExecutablePath) {
-        & $ExecutablePath uninstall 2>$null
-    }
-    if (Test-ServiceInstalled $Name) {
-        $null = & sc.exe delete $Name 2>$null
-    }
+    $null = & sc.exe delete $Name 2>$null
     Wait-ForServiceDeletion -Name $Name
 }
 function Get-StaleServiceNames([string]$InstallDir, [string]$CurrentServiceName, [hashtable]$PreviousState) {
@@ -287,6 +277,53 @@ function Test-PythonVersion {
     if ($output -notmatch "Python 3\.1[1-9]") {
         throw "Python 3.11+ is required. Detected: $output"
     }
+}
+
+function Resolve-PythonBootstrapCommand {
+    $candidates = New-Object System.Collections.Generic.List[object[]]
+    if (-not [string]::IsNullOrWhiteSpace($env:LAUNCHER_PYTHON_CANDIDATES)) {
+        foreach ($candidatePath in ($env:LAUNCHER_PYTHON_CANDIDATES -split [IO.Path]::PathSeparator)) {
+            if (-not [string]::IsNullOrWhiteSpace($candidatePath)) {
+                $candidates.Add(@($candidatePath.Trim()))
+            }
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($env:LAUNCHER_PYTHON_EXE)) {
+        $candidates.Add(@($env:LAUNCHER_PYTHON_EXE))
+    }
+    $pyCommand = Get-Command py -ErrorAction SilentlyContinue
+    if ($pyCommand) {
+        $candidates.Add(@("py", "-3.12"))
+        $candidates.Add(@("py", "-3.11"))
+    }
+    $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
+    if ($pythonCommand) {
+        $candidates.Add(@("python"))
+    }
+    return $candidates
+}
+
+function New-NodeVirtualEnvironment([string]$TargetDir, [string]$ExpectedPythonExe) {
+    $attemptErrors = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in (Resolve-PythonBootstrapCommand)) {
+        $candidateText = ($candidate -join " ").Trim()
+        Write-Step "Trying Python bootstrap: $candidateText"
+        try {
+            & $candidate -m venv $TargetDir
+            if ($LASTEXITCODE -eq 0 -and (Test-Path $ExpectedPythonExe)) {
+                return
+            }
+            $attemptErrors.Add("bootstrap '$candidateText' did not produce $ExpectedPythonExe")
+        }
+        catch {
+            $attemptErrors.Add("bootstrap '$candidateText' failed: $($_.Exception.Message)")
+        }
+        if (Test-Path -LiteralPath $TargetDir) {
+            Remove-Item -LiteralPath $TargetDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    $summary = ($attemptErrors | ForEach-Object { " - $_" }) -join [Environment]::NewLine
+    throw "Failed to create local node virtual environment.`n$summary"
 }
 
 function Ensure-Directory([string]$Path) {
@@ -525,7 +562,7 @@ if (-not $ReuseVenv) {
         Write-Step "Removing stale virtual environment before rebuild: $VenvDir"
         Remove-Item -LiteralPath $VenvDir -Recurse -Force
     }
-    & python -m venv $VenvDir
+    New-NodeVirtualEnvironment -TargetDir $VenvDir -ExpectedPythonExe $PythonExe
 }
 else {
     Write-Step "Reusable Python virtual environment found; skipping rebuild"

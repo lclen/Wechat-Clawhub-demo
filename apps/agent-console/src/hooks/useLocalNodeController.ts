@@ -15,6 +15,7 @@ import type {
   LocalNodeLogsResponse,
   LocalNodeModelConfigRequest,
   LocalNodeStatusResponse,
+  NodeCredentialResetRequest,
 } from "../types";
 
 const MAX_CHANNEL_ASSESSMENT_ROUNDS = 999;
@@ -291,6 +292,28 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     }
   }, [requestJson, setNotice, withBusy]);
 
+  const resetLocalNodeCredentials = useCallback(async () => {
+    if (!localNodeStatus?.install_dir) {
+      setNotice("当前还没有可用的节点安装目录，暂时无法重置节点。");
+      return;
+    }
+    try {
+      const result = await withBusy(
+        "local-node-reset",
+        () => requestJson<{ task?: { summary?: string } }>("/local/node/reset-credentials", {
+          method: "POST",
+          body: JSON.stringify({ node_id: "", install_dir: localNodeStatus.install_dir } satisfies NodeCredentialResetRequest),
+        }),
+      );
+      await refreshLauncherStatusRef.current();
+      await refreshLocalNodeDiagnostics();
+      setLocalNodeModelDirty(false);
+      setNotice(result.task?.summary || "已重置本机节点身份与凭据。");
+    } catch (error) {
+      setNotice(`重置本机节点失败：${(error as Error).message}`);
+    }
+  }, [localNodeStatus?.install_dir, refreshLocalNodeDiagnostics, requestJson, setLocalNodeModelDirty, setNotice, withBusy]);
+
   const startLocalNodeChannelAssessment = useCallback(async () => {
     const payload: LocalNodeChannelAssessmentStartRequest = {
       max_rounds: Math.max(1, Math.min(MAX_CHANNEL_ASSESSMENT_ROUNDS, Number(assessmentMaxRounds) || 1)),
@@ -349,6 +372,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     restartLocalNodeService,
     stopLocalNodeService,
     exportLocalNodeDiagnostics,
+    resetLocalNodeCredentials,
     runLocalNodeConversationTest,
     startLocalNodeChannelAssessment,
     applyLocalNodeChannelAssessment,

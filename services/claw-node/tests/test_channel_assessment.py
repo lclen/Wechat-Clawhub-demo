@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from claw_node.channel_assessment import _latency_growth_limit_ms, _resolve_round_steps, run_channel_assessment
+from claw_node.channel_assessment import _latency_growth_limit_ms, _resolve_round_steps, _select_balanced_round, run_channel_assessment
 from claw_node.config import NodeSettings
 
 
@@ -122,6 +122,19 @@ class ChannelAssessmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_latency_growth_limit_ms(1_000), 5_000)
         self.assertEqual(_latency_growth_limit_ms(1_400), 5_000)
         self.assertEqual(_latency_growth_limit_ms(2_000), 6_000)
+
+    def test_balanced_round_prefers_last_stable_round_under_5000ms(self) -> None:
+        rounds = [
+            {"round_index": 13, "max_concurrency": 20, "channel_capacity": 40, "average_latency_ms": 4039, "stable": True},
+            {"round_index": 14, "max_concurrency": 24, "channel_capacity": 48, "average_latency_ms": 4982, "stable": True},
+            {"round_index": 15, "max_concurrency": 28, "channel_capacity": 56, "average_latency_ms": 5179, "stable": True},
+            {"round_index": 16, "max_concurrency": 32, "channel_capacity": 64, "average_latency_ms": 5131, "stable": True},
+        ]
+
+        result = _select_balanced_round(rounds, rounds[-1])
+
+        self.assertEqual(result["max_concurrency"], 24)
+        self.assertEqual(result["channel_capacity"], 48)
 
 
 if __name__ == "__main__":

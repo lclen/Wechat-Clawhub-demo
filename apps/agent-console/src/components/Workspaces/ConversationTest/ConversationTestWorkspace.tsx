@@ -1,5 +1,12 @@
 import { useMemo, useState } from "react";
-import { CommandBar, EmptyState, MetricStrip, SectionHeader, SignalBadge, SurfaceCard } from "../../shared/ConsolePrimitives";
+import {
+  CommandBar,
+  InfoList,
+  MetricStrip,
+  SectionHeader,
+  SignalBadge,
+  SurfaceCard,
+} from "../../shared/ConsolePrimitives";
 import { formatModelProviderLabel } from "../../../stringUtils";
 import type {
   LocalNodeConversationTestRequest,
@@ -49,10 +56,12 @@ export function ConversationTestWorkspace({
 
   const configuredProvider =
     formatModelProviderLabel(localNodeStatus?.configured_model_provider) || "未读取";
-  const activeProvider = formatModelProviderLabel(localNodeStatus?.active_model_provider) || "未读取";
+  const activeProvider =
+    formatModelProviderLabel(localNodeStatus?.active_model_provider) || "未读取";
   const canRun = launcherAvailable && localNodeStatus !== null;
+
   const usageText = useMemo(() => {
-    if (!result?.usage || Object.keys(result.usage).length === 0) return "暂无 usage 数据";
+    if (!result?.usage || Object.keys(result.usage).length === 0) return "暂无数据";
     return JSON.stringify(result.usage, null, 2);
   }, [result]);
 
@@ -72,39 +81,63 @@ export function ConversationTestWorkspace({
       <div className="workspace-heading">
         <div>
           <div className="section-kicker">
-            {currentRoleIsWorker ? "节点对话测试" : "模型对话测试"}
+            {currentRoleIsWorker ? "节点测试" : "端到端模型测试"}
           </div>
           <h2>{title}</h2>
+          {description ? <div className="workspace-caption">{description}</div> : null}
         </div>
-        {description ? <div className="workspace-caption">{description}</div> : null}
       </div>
 
       {!launcherAvailable ? (
-        <SurfaceCard>
-          <EmptyState title="当前前端没有连接到本地 launcher" detail="暂时无法发起本机节点对话测试。" />
+        <SurfaceCard className="empty-state-card">
+          <div className="console-empty-state">
+            <strong>本机 Launcher 未就绪</strong>
+            <span>当前前端没有连接到本地 launcher，暂时无法发起测试。</span>
+          </div>
         </SurfaceCard>
       ) : !localNodeStatus ? (
-        <SurfaceCard>
+        <SurfaceCard className="status-refresh-card">
           <SectionHeader
             kicker="节点状态"
-            title="先读取本机节点运行态"
-            actions={<button type="button" className="ghost-button" onClick={onRefreshLocalNodeDiagnostics}>刷新节点状态</button>}
+            title="初始化会话链路"
+            actions={
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={onRefreshLocalNodeDiagnostics}
+              >
+                获取节点信息
+              </button>
+            }
           />
-          <EmptyState title="还没有读到本机节点状态" detail="请先刷新一次，确认 launcher 已经拿到当前节点配置。" />
+          <div className="console-empty-state" style={{ marginTop: 24 }}>
+            <span>请先获取本机节点状态以加载当前推理配置。</span>
+          </div>
         </SurfaceCard>
       ) : (
-        <div className="conversation-test-layout">
+        <div className="conversation-test-layout" style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 16, alignItems: "start" }}>
+          {/* 左侧：测试指令面板 */}
           <SurfaceCard className="conversation-command-shell" tone="accent">
             <SectionHeader
-              kicker="测试链路"
+              kicker="指令面板"
               title={heroTitle}
+              description="手动选择链路并发送即时测试指令。此配置仅影响本次对话测试。"
               actions={
                 <div className="inline-actions">
-                  <button type="button" className="ghost-button" onClick={onRefreshLocalNodeDiagnostics} disabled={busyKey !== null}>
-                    刷新节点状态
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={onRefreshLocalNodeDiagnostics}
+                    disabled={busyKey !== null}
+                  >
+                    同步配置
                   </button>
-                  <button type="button" onClick={handleRunTest} disabled={busyKey !== null || !canRun}>
-                    {busyKey === "local-node-conversation-test" ? "测试中..." : "发送测试消息"}
+                  <button
+                    type="button"
+                    onClick={handleRunTest}
+                    disabled={busyKey !== null || !canRun}
+                  >
+                    {busyKey === "local-node-conversation-test" ? "正在推理..." : "发起请求"}
                   </button>
                 </div>
               }
@@ -112,33 +145,48 @@ export function ConversationTestWorkspace({
 
             <MetricStrip
               className="conversation-test-metrics"
+              style={{ marginTop: 12, marginBottom: 12 }}
               items={[
-                { label: "已保存 Provider", value: configuredProvider },
-                { label: "当前生效 Provider", value: activeProvider },
-                { label: "推理状态", value: localNodeStatus.inference_ready ? "已就绪" : "未就绪" },
-                { label: "配置文件", value: localNodeStatus.config_path || "未读取" },
+                { label: "生效后端", value: activeProvider },
+                { label: "配置后端", value: configuredProvider },
+                { label: "推理库", value: localNodeStatus.inference_ready ? "就绪" : "载入中" },
               ]}
             />
 
             {localNodeModelDirty ? (
-              <div className="inline-tip conversation-test-warning">
-                当前还有未保存的模型草稿。对话测试走的是节点已保存到 <code>node.env</code> 的配置，不会自动带上未保存改动。
-                <button type="button" className="ghost-button" onClick={onSaveLocalNodeModelConfig} disabled={busyKey !== null}>
-                  {busyKey === "local-node-model-save" ? "保存中..." : "先保存当前模型配置"}
+              <div
+                className="inline-tip conversation-test-warning"
+                style={{ backgroundColor: "rgba(255, 120, 0, 0.05)", border: "1px solid rgba(255, 120, 0, 0.2)", padding: 12, borderRadius: 6, margin: "12px 0", fontSize: "0.9em" }}
+              >
+                <div style={{ color: "var(--warn)" }}>当前节点有未应用的修改。</div>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  style={{ marginTop: 8, height: 28 }}
+                  onClick={onSaveLocalNodeModelConfig}
+                  disabled={busyKey !== null}
+                >
+                  {busyKey === "local-node-model-save" ? "保存中..." : "立即保存并应用"}
                 </button>
               </div>
             ) : null}
 
-            <div className="conversation-provider-row" role="tablist" aria-label="Conversation test providers">
+            <div className="console-section-copy" style={{ marginTop: 20, marginBottom: 12 }}>
+              <span className="section-kicker">链路路由</span>
+              <h4>后端 Provider 覆盖</h4>
+            </div>
+            <div className="node-provider-toggle">
               {([
-                { value: "current", label: "当前配置" },
+                { value: "current", label: "默认配置" },
                 { value: "openai", label: "DashScope" },
                 { value: "dify", label: "Dify" },
               ] as const).map((item) => (
                 <button
                   key={item.value}
                   type="button"
-                  className={`node-provider-chip ${provider === item.value ? "node-provider-chip-active" : ""}`}
+                  className={`node-provider-chip ${
+                    provider === item.value ? "node-provider-chip-active" : ""
+                  }`}
                   onClick={() => setProvider(item.value)}
                 >
                   {item.label}
@@ -146,76 +194,120 @@ export function ConversationTestWorkspace({
               ))}
             </div>
 
-            <CommandBar
-              label="当前测试链路"
-              detail="先测连通，再测业务提示词。"
-              className="conversation-test-command-bar"
-            >
-              <SignalBadge tone="info">{provider === "current" ? "当前配置" : provider === "openai" ? "DashScope" : "Dify"}</SignalBadge>
-            </CommandBar>
-
-            <label className="conversation-test-editor">
-              <span>测试消息</span>
+            <div className="conversation-test-editor-wrap" style={{ marginTop: 24 }}>
+              <div className="console-section-copy" style={{ marginBottom: 12 }}>
+                <span className="section-kicker">消息正文</span>
+                <h4>输入测试 Prompt</h4>
+              </div>
               <textarea
+                style={{
+                  width: "100%",
+                  minHeight: 120,
+                  backgroundColor: "var(--app-bg)",
+                  border: "1px solid var(--line)",
+                  borderRadius: 6,
+                  padding: 12,
+                  color: "inherit",
+                  fontSize: "14px",
+                  lineHeight: "1.5",
+                  resize: "vertical"
+                }}
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
-                placeholder="输入一条你想让 AI 回答的测试消息"
+                placeholder="在此输入你想让 AI 回答测试消息"
               />
-            </label>
-
-            <div className="inline-tip">
-              建议先发短句。
+              <div style={{ fontSize: "11px", opacity: 0.5, marginTop: 8 }}>
+                提示：短文本更有利于快速验证连通性。模型回复可能受网络和配置影响。
+              </div>
             </div>
           </SurfaceCard>
 
+          {/* 右侧：对话回执面板 */}
           <SurfaceCard className="conversation-result-shell" tone="strong">
-            <SectionHeader
-              kicker="回执面板"
-              title="本次对话回执"
-            />
+            <SectionHeader kicker="工作详情" title="本次对话回执" />
 
             {errorText ? (
-              <div className="conversation-test-error">
-                <strong>测试失败</strong>
-                <div>{errorText}</div>
+              <div
+                className="conversation-test-error"
+                style={{
+                  backgroundColor: "rgba(220, 38, 38, 0.05)",
+                  border: "1px solid rgba(220, 38, 38, 0.2)",
+                  padding: 16,
+                  borderRadius: 8,
+                  marginTop: 16,
+                }}
+              >
+                <strong style={{ color: "var(--danger)", display: "block", marginBottom: 4 }}>
+                  请求出现异常
+                </strong>
+                <div style={{ fontSize: "14px", whiteSpace: "pre-wrap" }}>{errorText}</div>
               </div>
             ) : null}
 
             {result ? (
-              <div className="conversation-test-result">
+              <div className="conversation-test-result" style={{ marginTop: 12 }}>
                 <MetricStrip
                   className="conversation-result-metrics"
                   items={[
-                    { label: "实际走的链路", value: formatModelProviderLabel(result.provider) || result.provider },
-                    { label: "保存的 Provider", value: formatModelProviderLabel(result.configured_provider) || "未读取" },
-                    { label: "耗时", value: `${result.latency_ms} ms` },
-                    { label: "结果", value: result.ok ? "已收到回复" : "失败" },
+                    {
+                      label: "路由链路",
+                      value: formatModelProviderLabel(result.provider) || result.provider,
+                    },
+                    { label: "推理耗时", value: `${result.latency_ms} ms` },
+                    { label: "响应状态", value: result.ok ? "SUCCESS" : "FAIL" },
                   ]}
                 />
 
-                <div className="info-stack connection-inline-info">
-                  <div className="info-row">
-                    <span className="info-label">接口说明</span>
-                    <span className="info-value">{result.detail || "暂无说明"}</span>
-                  </div>
-                  <div className="info-row">
-                    <span className="info-label">配置来源</span>
-                    <span className="info-value">{result.config_path || localNodeStatus.config_path || "未读取"}</span>
-                  </div>
+                <div style={{ marginTop: 20 }}>
+                  <InfoList
+                    items={[
+                      { label: "接口说明", value: result.detail || "暂无回执详情" },
+                      {
+                        label: "配置来源",
+                        value: result.config_path || localNodeStatus.config_path || "内置默认",
+                      },
+                    ]}
+                  />
                 </div>
 
-                <div className="snippet-block">
-                  <div className="snippet-label">AI 回复</div>
-                  <pre>{result.reply || "接口返回成功，但回复为空。"}</pre>
+                <div className="snippet-block" style={{ marginTop: 20 }}>
+                  <div className="snippet-label" style={{ marginBottom: 8, fontSize: "12px", opacity: 0.6 }}>AI 模型回复</div>
+                  <pre
+                    style={{
+                      backgroundColor: "rgba(0,0,0,0.2)",
+                      padding: 16,
+                      borderRadius: 8,
+                      fontSize: "13px",
+                      lineHeight: "1.6",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      border: "1px solid var(--line)"
+                    }}
+                  >
+                    {result.reply || "后端接口返回 200，但模型推理内容为空。可能由于 API 设置或参数不匹配导致。"}
+                  </pre>
                 </div>
 
-                <div className="snippet-block">
-                  <div className="snippet-label">Usage</div>
-                  <pre>{usageText}</pre>
+                <div className="snippet-block" style={{ marginTop: 16 }}>
+                  <div className="snippet-label" style={{ marginBottom: 8, fontSize: "11px", opacity: 0.4 }}>Token Usage</div>
+                  <pre
+                    style={{
+                      backgroundColor: "transparent",
+                      padding: 12,
+                      borderRadius: 6,
+                      fontSize: "12px",
+                      opacity: 0.8,
+                      border: "1px dashed var(--line)"
+                    }}
+                  >
+                    {usageText}
+                  </pre>
                 </div>
               </div>
             ) : !errorText ? (
-              <EmptyState title="还没有执行测试" detail="发送一条消息后，这里会显示实际走的 provider、耗时和 AI 回复正文。" />
+              <div className="console-empty-state" style={{ marginTop: 40, padding: "60px 0" }}>
+                <span>暂无待处理回执。成功向后端发起请求后，这里将展示完整的 AI 响应正文与推理开销细节。</span>
+              </div>
             ) : null}
           </SurfaceCard>
         </div>

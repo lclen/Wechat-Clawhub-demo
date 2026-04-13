@@ -25,6 +25,31 @@ export function getInventoryNodeAddress(node: NodeInventoryRecord) {
   return node.base_url || "暂未上报";
 }
 
+export function normalizeInventoryRuntimeMetrics(
+  node: NodeInventoryRecord,
+  localNodeStatus: LocalNodeStatusResponse | null,
+): NodeInventoryRecord {
+  const isLocalInventoryNode = node.node_kind === "local" && node.node_id === "local-node";
+  if (!isLocalInventoryNode || !localNodeStatus) {
+    return node;
+  }
+  const assessment = localNodeStatus.channel_assessment;
+  const nextChannelCapacity = Number.isFinite(assessment?.current_channel_capacity)
+    ? Math.max(assessment.current_channel_capacity, 0)
+    : node.channel_capacity;
+  const nextMaxConcurrency = Number.isFinite(assessment?.current_max_concurrency)
+    ? Math.max(assessment.current_max_concurrency, 0)
+    : node.max_concurrency;
+  if (nextChannelCapacity === node.channel_capacity && nextMaxConcurrency === node.max_concurrency) {
+    return node;
+  }
+  return {
+    ...node,
+    channel_capacity: nextChannelCapacity,
+    max_concurrency: nextMaxConcurrency,
+  };
+}
+
 export function nodeRoleLabel(nodeId: string, nodeKind?: NodeKind) {
   if (nodeKind === "local") return "网关内置节点";
   if (nodeKind === "remote") return "远端工作节点";

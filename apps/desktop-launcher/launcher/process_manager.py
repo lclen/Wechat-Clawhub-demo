@@ -185,12 +185,12 @@ class ProcessManager:
         )
 
     def start_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
-        # 本机节点由网关内置托管，使用 local direct auth 直接回连当前网关。
         current = self.local_node_service_status(profile, layout)
         node_spec = self._resolved_local_node_spec(profile)
         service_name = self._local_node_service_name(profile)
         service_installed = self._query_windows_service(service_name) is not None
-        requires_repair = self._local_node_service_requires_repair(profile, layout, node_spec) if service_installed else True
+        repair_reason = self._local_node_service_repair_reason(profile, layout, node_spec) if service_installed else ""
+        requires_repair = bool(repair_reason)
         if current.state == ComponentState.RUNNING and not requires_repair:
             self._statuses["local-node"] = current
             return
@@ -203,15 +203,58 @@ class ProcessManager:
                 log_path=str(self._local_node_wrapper_log_path(profile, layout)),
             )
             raise RuntimeError("当前机器还没有完成工作节点安装，请先在快速配置中执行一次节点安装。")
+        if not service_installed:
+            raise RuntimeError("本机节点服务未安装，请使用“重装当前机器节点”。")
         if service_installed and not requires_repair:
             self._start_existing_local_node_service(profile, layout)
             self._statuses["local-node"] = self.local_node_service_status(profile, layout)
             return
-        self._install_or_restart_local_node(profile, layout)
+        raise RuntimeError(repair_reason or "当前本机节点需要修复，请使用“重装当前机器节点”。")
 
     def restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         self._stop_local_node_service(profile, layout)
-        self._install_or_restart_local_node(profile, layout)
+        self.start_local_node(profile, layout)
+
+    def local_node_service_repair_reason(
+        self,
+        profile: LauncherProfile,
+        layout: LauncherWorkdirLayout,
+        node_spec: dict[str, Any] | None = None,
+    ) -> str:
+        return self._local_node_service_repair_reason(profile, layout, node_spec or self._resolved_local_node_spec(profile))
+
+    def local_node_virtualenv_status(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> str:
+        install_dir = self.local_node_runtime_install_dir(profile, layout)
+        return self._local_node_virtualenv_status_for_install_dir(install_dir)
+
+    def local_node_last_install_error(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> str:
+        log_path = Path(layout.log_dir) / "local-node-install.log"
+        if not log_path.exists():
+            return ""
+        try:
+            content = log_path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return ""
+        success_index = content.rfind("claw-node installation complete.")
+        known_markers = [
+            "Failed to create local node virtual environment.",
+            "WinSW executable not found",
+            "WinSW XML template not found",
+            "CommandNotFoundException",
+            "install-claw-node.ps1 :",
+        ]
+        last_error = ""
+        last_error_index = -1
+        for marker in known_markers:
+            marker_index = content.rfind(marker)
+            if marker_index > last_error_index:
+                last_error_index = marker_index
+                last_error = marker
+        if success_index > last_error_index:
+            return ""
+        if last_error:
+            return last_error
+        return ""
 
     def _install_or_restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         node_spec = self._resolved_local_node_spec(profile)
@@ -292,7 +335,17 @@ class ProcessManager:
         ):
             if existing_config.get(env_key, "").strip():
                 command.extend([flag, existing_config[env_key].strip()])
-        self._run_sync_command(command, cwd=self._repo_root, log_path=log_path)
+        python_candidates = self._python_bootstrap_candidates()
+        self._run_sync_command(
+            command,
+            cwd=self._repo_root,
+            log_path=log_path,
+            env={
+                **os.environ,
+                "LAUNCHER_PYTHON_EXE": sys.executable,
+                "LAUNCHER_PYTHON_CANDIDATES": os.pathsep.join(python_candidates),
+            },
+        )
         self._statuses["local-node"] = self.local_node_service_status(profile, layout)
 
     def _stop_conflicting_local_node_services(self, active_service_name: str) -> list[str]:
@@ -428,23 +481,50 @@ class ProcessManager:
         layout: LauncherWorkdirLayout,
         node_spec: dict[str, Any],
     ) -> bool:
+        return bool(self._local_node_service_repair_reason(profile, layout, node_spec))
+
+    def _local_node_service_repair_reason(
+        self,
+        profile: LauncherProfile,
+        layout: LauncherWorkdirLayout,
+        node_spec: dict[str, Any],
+    ) -> str:
         runtime_install_dir = self.local_node_runtime_install_dir(profile, layout)
         desired_install_dir = self._local_node_install_dir(layout)
         if node_spec.get("node_kind") == "local" and runtime_install_dir != desired_install_dir:
-            return True
-        diagnostics = self._read_local_node_diagnostics(profile, layout)
-        runtime_state = str(diagnostics.get("current_state", "") or "").strip().lower()
+            return "本机节点安装目录与当前运行目录不一致，需要重装。"
+
+        service_name = self._local_node_service_name(profile)
+        config_path = runtime_install_dir / "config" / "node.env"
+        exe_path = runtime_install_dir / f"{service_name}.exe"
+        xml_path = runtime_install_dir / f"{service_name}.xml"
+        if not exe_path.exists() or not xml_path.exists():
+            return "本机节点服务包装器或服务定义缺失，需要重装。"
+        if not config_path.exists():
+            return "本机节点配置文件缺失，需要重装。"
+
+        venv_status = self._local_node_virtualenv_status_for_install_dir(runtime_install_dir)
+        if venv_status != "ready":
+            return "Python 环境损坏或缺失，需要重装。"
+
         runtime_config = self._read_local_node_runtime_config(profile, layout)
         expected_node_id = str(node_spec.get("node_id", "") or "").strip()
         expected_gateway_base_url = str(node_spec.get("gateway_base_url", "") or "").strip()
         if str(runtime_config.get("CLAW_NODE_ID", "") or "").strip() != expected_node_id:
-            return True
-        if node_spec.get("local_direct_auth"):
-            if str(runtime_config.get("CLAW_GATEWAY_BASE_URL", "") or "").strip() != expected_gateway_base_url:
-                return True
-            if runtime_state in {"waiting_pair", "needs_repair"}:
-                return True
-        return False
+            return "节点身份配置与当前角色不一致，需要重装。"
+        if node_spec.get("local_direct_auth") and str(runtime_config.get("CLAW_GATEWAY_BASE_URL", "") or "").strip() != expected_gateway_base_url:
+            return "目标网关地址与当前角色不一致，需要重装。"
+        return ""
+
+    def _local_node_virtualenv_status_for_install_dir(self, install_dir: Path) -> str:
+        venv_dir = install_dir / ".venv"
+        python_exe = venv_dir / "Scripts" / "python.exe"
+        pip_exe = venv_dir / "Scripts" / "pip.exe"
+        if not venv_dir.exists():
+            return "missing"
+        if python_exe.exists() and pip_exe.exists():
+            return "ready"
+        return "broken"
 
     def _local_node_wrapper_log_path(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> Path:
         install_dir = self.local_node_runtime_install_dir(profile, layout)
@@ -468,12 +548,26 @@ class ProcessManager:
         install_dir = self.local_node_runtime_install_dir(profile, layout)
         exe_path = install_dir / f"{service_name}.exe"
         result = subprocess.run(["sc.exe", "start", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+        primary_output = (result.stdout or result.stderr or "").strip()
         if result.returncode != 0 and exe_path.exists():
             result = subprocess.run([str(exe_path), "start"], capture_output=True, text=True, check=False)  # noqa: S603
+            fallback_output = (result.stdout or result.stderr or "").strip()
+            if result.returncode != 0 and self._looks_like_windows_access_denied(fallback_output):
+                raise PermissionError(
+                    "启动本机节点服务失败：当前会话没有启动 Windows 服务的权限，请以管理员身份启动桌面端或手动启动该服务。"
+                )
+        elif result.returncode != 0 and self._looks_like_windows_access_denied(primary_output):
+            raise PermissionError(
+                "启动本机节点服务失败：当前会话没有启动 Windows 服务的权限，请以管理员身份启动桌面端或手动启动该服务。"
+            )
         self._service_query_cache.pop(service_name, None)
         if result.returncode != 0:
             output = (result.stdout or result.stderr or "").strip()
             raise RuntimeError(f"启动现有本机节点服务失败：{output or service_name}")
+
+    def _looks_like_windows_access_denied(self, output: str) -> bool:
+        normalized = output.lower()
+        return "access is denied" in normalized or "openservice failed 5" in normalized or "拒绝访问" in output
 
     def _query_windows_service(self, service_name: str) -> dict[str, Any] | None:
         cached = self._service_query_cache.get(service_name)
@@ -513,12 +607,13 @@ class ProcessManager:
         self._service_query_cache[service_name] = (now, service)
         return service
 
-    def _run_sync_command(self, command: list[str], *, cwd: Path, log_path: Path) -> None:
+    def _run_sync_command(self, command: list[str], *, cwd: Path, log_path: Path, env: dict[str, str] | None = None) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as handle:
             process = subprocess.run(  # noqa: S603
                 command,
                 cwd=str(cwd),
+                env=env,
                 stdout=handle,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -527,6 +622,39 @@ class ProcessManager:
             )
         if process.returncode != 0:
             raise RuntimeError(f"Command failed with exit code {process.returncode}: {' '.join(command)}")
+
+    def _python_bootstrap_candidates(self) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add_candidate(value: str | None) -> None:
+            if not value:
+                return
+            normalized = str(Path(value)).strip()
+            lowered = normalized.lower()
+            if (
+                not normalized
+                or lowered in seen
+                or lowered.endswith("\\windowsapps\\python.exe")
+            ):
+                return
+            seen.add(lowered)
+            candidates.append(normalized)
+
+        where_result = subprocess.run(  # noqa: S603
+            ["where.exe", "python"],
+            capture_output=True,
+            text=True,
+            check=False,
+            encoding="utf-8",
+            errors="ignore",
+        )
+        if where_result.returncode == 0:
+            for line in where_result.stdout.splitlines():
+                add_candidate(line.strip())
+
+        add_candidate(sys.executable)
+        return candidates
 
     def _refresh_gateway_port_status(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         conflict = self._detect_external_port_conflict(profile.gateway_port, "gateway")

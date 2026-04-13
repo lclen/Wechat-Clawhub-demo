@@ -3,6 +3,7 @@ import type { PropsWithChildren, ReactNode } from "react";
 type SurfaceCardProps = PropsWithChildren<{
   className?: string;
   tone?: "default" | "accent" | "strong";
+  style?: import("react").CSSProperties;
 }>;
 
 type SectionHeaderProps = {
@@ -16,6 +17,8 @@ type SectionHeaderProps = {
 type SignalBadgeProps = {
   tone: "good" | "warn" | "info" | "neutral";
   children: ReactNode;
+  className?: string;
+  style?: import("react").CSSProperties;
 };
 
 type MetricStripItem = {
@@ -30,17 +33,20 @@ type MetricCardProps = {
   detail?: ReactNode;
   tone?: "default" | "accent" | "healthy" | "warning";
   className?: string;
+  style?: import("react").CSSProperties;
 };
 
 type MetricStripProps = {
   items: MetricStripItem[];
   className?: string;
+  style?: import("react").CSSProperties;
 };
 
 type CommandBarProps = PropsWithChildren<{
   className?: string;
   label?: string;
   detail?: string;
+  style?: import("react").CSSProperties;
 }>;
 
 type EmptyStateProps = {
@@ -57,11 +63,12 @@ type InfoListProps = {
     multiline?: boolean;
   }>;
   className?: string;
+  style?: import("react").CSSProperties;
 };
 
-export function SurfaceCard({ className = "", tone = "default", children }: SurfaceCardProps) {
+export function SurfaceCard({ className = "", tone = "default", style, children }: SurfaceCardProps) {
   const mergedClassName = ["surface", "surface-card", `surface-card-${tone}`, className].filter(Boolean).join(" ");
-  return <section className={mergedClassName}>{children}</section>;
+  return <section className={mergedClassName} style={style}>{children}</section>;
 }
 
 export function SectionHeader({ kicker, title, description, actions, className = "" }: SectionHeaderProps) {
@@ -77,8 +84,12 @@ export function SectionHeader({ kicker, title, description, actions, className =
   );
 }
 
-export function SignalBadge({ tone, children }: SignalBadgeProps) {
-  return <span className={`signal-badge signal-badge-${tone}`}>{children}</span>;
+export function SignalBadge({ tone, children, className = "", style }: SignalBadgeProps) {
+  return (
+    <span className={["signal-badge", `signal-badge-${tone}`, className].filter(Boolean).join(" ")} style={style}>
+      {children}
+    </span>
+  );
 }
 
 export function MetricCard({
@@ -87,9 +98,10 @@ export function MetricCard({
   detail,
   tone = "default",
   className = "",
+  style,
 }: MetricCardProps) {
   return (
-    <article className={["metric-card", `metric-card-${tone}`, className].filter(Boolean).join(" ")}>
+    <article className={["metric-card", `metric-card-${tone}`, className].filter(Boolean).join(" ")} style={style}>
       <span className="metric-card-label">{label}</span>
       <strong className="metric-card-value">{value}</strong>
       {detail ? <small className="metric-card-detail">{detail}</small> : null}
@@ -97,9 +109,9 @@ export function MetricCard({
   );
 }
 
-export function MetricStrip({ items, className = "" }: MetricStripProps) {
+export function MetricStrip({ items, className = "", style }: MetricStripProps) {
   return (
-    <div className={["metric-strip", className].filter(Boolean).join(" ")}>
+    <div className={["metric-strip", className].filter(Boolean).join(" ")} style={style}>
       {items.map((item) => (
         <MetricCard
           key={`${item.label}-${item.value}`}
@@ -113,9 +125,9 @@ export function MetricStrip({ items, className = "" }: MetricStripProps) {
   );
 }
 
-export function CommandBar({ className = "", label, detail, children }: CommandBarProps) {
+export function CommandBar({ className = "", label, detail, style, children }: CommandBarProps) {
   return (
-    <div className={["command-bar", className].filter(Boolean).join(" ")}>
+    <div className={["command-bar", className].filter(Boolean).join(" ")} style={style}>
       {label || detail ? (
         <div className="command-bar-copy">
           {label ? <span className="command-bar-label">{label}</span> : null}
@@ -137,9 +149,9 @@ export function EmptyState({ title, detail, action, className = "" }: EmptyState
   );
 }
 
-export function InfoList({ items, className = "" }: InfoListProps) {
+export function InfoList({ items, className = "", style }: InfoListProps) {
   return (
-    <div className={["console-info-list", className].filter(Boolean).join(" ")}>
+    <div className={["console-info-list", className].filter(Boolean).join(" ")} style={style}>
       {items.map((item) => (
         <div key={item.label} className={`console-info-row ${item.multiline ? "is-multiline" : ""}`}>
           <span>{item.label}</span>
