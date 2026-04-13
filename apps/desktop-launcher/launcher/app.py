@@ -249,7 +249,30 @@ def create_app() -> FastAPI:
             "completed_roles": completed_roles,
             "available_roles": ["gateway_host", "gateway_host_console", "worker_node", "console_only"],
             "preferred_gateway_base_url": preferred_gateway_base_url,
-            "gateway": {"redis_url": "", "default_agent_id": "default-agent", "dify_base_url": "", "dify_api_key": "", "builtin_model_base_url": "", "builtin_model_api_key": "", "builtin_model_name": "", "wechat_base_url": "", "wechat_token": "", "dispatch_mode_enabled": False},
+            "gateway": {
+                "redis_url": "",
+                "default_agent_id": "default-agent",
+                "dify_base_url": "",
+                "dify_api_key": "",
+                "builtin_model_base_url": "",
+                "builtin_model_api_key": "",
+                "builtin_model_name": "",
+                "builtin_model_enable_thinking": False,
+                "builtin_model_temperature": 0.3,
+                "builtin_model_top_p": 1.0,
+                "builtin_model_max_tokens": 0,
+                "builtin_model_seed": 0,
+                "builtin_model_thinking_budget": 0,
+                "builtin_model_stop": "",
+                "builtin_model_enable_search": False,
+                "builtin_model_search_forced": False,
+                "builtin_model_search_strategy": "turbo",
+                "builtin_model_enable_search_extension": False,
+                "builtin_model_multimodal_enabled": True,
+                "wechat_base_url": "",
+                "wechat_token": "",
+                "dispatch_mode_enabled": False,
+            },
             "console": {"gateway_base_url": preferred_gateway_base_url},
             "last_task": None,
             "code_reload_test": "Code reloaded successfully",  # Test marker
@@ -480,11 +503,18 @@ def create_app() -> FastAPI:
             config_path = install_dir / "config" / "node.env"
             diagnostics_path = install_dir / "diagnostics" / "node-status.json"
             apply_state_path = _local_node_apply_state_path(install_dir)
+            gateway_env_path = app.state.repo_root / "apps" / "gateway" / ".env"
             diagnostics: dict[str, object] = {}
             if diagnostics_path.exists():
                 with contextlib.suppress(Exception):
                     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
             apply_state = _read_local_node_apply_state(apply_state_path)
+            node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
+            _migrate_worker_model_config_from_gateway_env(
+                config_path=config_path,
+                gateway_env_path=gateway_env_path,
+                node_kind=node_kind,
+            )
             env_values = _read_env_file(config_path)
             model_settings = _read_local_node_model_config(config_path)
             channel_assessment = _build_local_node_channel_assessment_result(
@@ -492,7 +522,6 @@ def create_app() -> FastAPI:
                 current_channel_capacity=_safe_int(env_values.get("CLAW_CHANNEL_CAPACITY", ""), 12),
                 current_max_concurrency=_safe_int(env_values.get("CLAW_MAX_CONCURRENCY", ""), 1),
             )
-            node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
             status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
             node_spec = await asyncio.to_thread(app.state.manager._resolved_local_node_spec, profile)  # type: ignore[attr-defined]
             repair_reason = await asyncio.to_thread(app.state.manager.local_node_service_repair_reason, profile, layout, node_spec)
@@ -649,6 +678,7 @@ def create_app() -> FastAPI:
         ensure_layout(layout)
         install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
         config_path = install_dir / "config" / "node.env"
+        gateway_env_path = app.state.repo_root / "apps" / "gateway" / ".env"
         if not config_path.exists():
             raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
 
@@ -659,6 +689,11 @@ def create_app() -> FastAPI:
         current_status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
         node_spec = await asyncio.to_thread(app.state.manager._resolved_local_node_spec, profile)  # type: ignore[attr-defined]
         repair_reason = await asyncio.to_thread(app.state.manager.local_node_service_repair_reason, profile, layout, node_spec)
+        _migrate_worker_model_config_from_gateway_env(
+            config_path=config_path,
+            gateway_env_path=gateway_env_path,
+            node_kind=_read_local_node_kind(config_path),
+        )
         model_settings = _read_local_node_model_config(config_path)
         if str(current_status.state) == "running":
             invalidate_cached_response("bootstrap_status_cache")
@@ -980,8 +1015,14 @@ def create_app() -> FastAPI:
         ensure_layout(layout)
         install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
         config_path = install_dir / "config" / "node.env"
+        gateway_env_path = app.state.repo_root / "apps" / "gateway" / ".env"
         if not config_path.exists():
             raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
+        _migrate_worker_model_config_from_gateway_env(
+            config_path=config_path,
+            gateway_env_path=gateway_env_path,
+            node_kind=_read_local_node_kind(config_path),
+        )
         model_settings = _read_local_node_model_config(config_path)
         return await _run_local_node_conversation_test(
             config_path=config_path,
@@ -1162,6 +1203,92 @@ def _read_env_file(path: Path) -> dict[str, str]:
         key, value = line.split("=", 1)
         values[key.strip()] = _unescape_env_value(value)
     return values
+
+
+def _has_worker_model_config(values: dict[str, str]) -> bool:
+    openai_fields = (
+        values.get("CLAW_OPENAI_BASE_URL", ""),
+        values.get("CLAW_OPENAI_API_KEY", ""),
+        values.get("CLAW_OPENAI_MODEL", ""),
+    )
+    dify_fields = (
+        values.get("CLAW_DIFY_BASE_URL", ""),
+        values.get("CLAW_DIFY_API_KEY", ""),
+    )
+    return any(item.strip() for item in (*openai_fields, *dify_fields))
+
+
+def _migrate_worker_model_config_from_gateway_env(
+    *,
+    config_path: Path,
+    gateway_env_path: Path,
+    node_kind: str,
+) -> bool:
+    if not config_path.exists():
+        return False
+    normalized_kind = (node_kind or "").strip().lower()
+    if normalized_kind == "local":
+        return False
+    node_values = _read_env_file(config_path)
+    if _has_worker_model_config(node_values):
+        return False
+    gateway_values = _read_env_file(gateway_env_path)
+    openai_ready = all(
+        gateway_values.get(key, "").strip()
+        for key in ("WCH_BUILTIN_MODEL_BASE_URL", "WCH_BUILTIN_MODEL_API_KEY", "WCH_BUILTIN_MODEL_NAME")
+    )
+    dify_ready = all(
+        gateway_values.get(key, "").strip()
+        for key in ("WCH_DIFY_BASE_URL", "WCH_DIFY_API_KEY")
+    )
+    if openai_ready:
+        node_values.update(
+            {
+                "CLAW_MODEL_PROVIDER": "openai",
+                "CLAW_OPENAI_BASE_URL": gateway_values.get("WCH_BUILTIN_MODEL_BASE_URL", "").strip(),
+                "CLAW_OPENAI_API_KEY": gateway_values.get("WCH_BUILTIN_MODEL_API_KEY", "").strip(),
+                "CLAW_OPENAI_MODEL": gateway_values.get("WCH_BUILTIN_MODEL_NAME", "").strip(),
+                "CLAW_OPENAI_ENABLE_THINKING": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_THINKING", "false").strip() or "false",
+                "CLAW_OPENAI_TEMPERATURE": gateway_values.get("WCH_BUILTIN_MODEL_TEMPERATURE", "0.3").strip() or "0.3",
+                "CLAW_OPENAI_TOP_P": gateway_values.get("WCH_BUILTIN_MODEL_TOP_P", "1.0").strip() or "1.0",
+                "CLAW_OPENAI_MAX_TOKENS": gateway_values.get("WCH_BUILTIN_MODEL_MAX_TOKENS", "0").strip() or "0",
+                "CLAW_OPENAI_SEED": gateway_values.get("WCH_BUILTIN_MODEL_SEED", "0").strip() or "0",
+                "CLAW_OPENAI_THINKING_BUDGET": gateway_values.get("WCH_BUILTIN_MODEL_THINKING_BUDGET", "0").strip() or "0",
+                "CLAW_OPENAI_STOP": gateway_values.get("WCH_BUILTIN_MODEL_STOP", ""),
+                "CLAW_OPENAI_ENABLE_SEARCH": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_SEARCH", "false").strip() or "false",
+                "CLAW_OPENAI_SEARCH_FORCED": gateway_values.get("WCH_BUILTIN_MODEL_SEARCH_FORCED", "false").strip() or "false",
+                "CLAW_OPENAI_SEARCH_STRATEGY": gateway_values.get("WCH_BUILTIN_MODEL_SEARCH_STRATEGY", "turbo").strip() or "turbo",
+                "CLAW_OPENAI_ENABLE_SEARCH_EXTENSION": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_SEARCH_EXTENSION", "false").strip() or "false",
+                "CLAW_OPENAI_MULTIMODAL_ENABLED": gateway_values.get("WCH_BUILTIN_MODEL_MULTIMODAL_ENABLED", "true").strip() or "true",
+            }
+        )
+        _write_env_file(config_path, node_values)
+        return True
+    if dify_ready:
+        node_values.update(
+            {
+                "CLAW_MODEL_PROVIDER": "dify",
+                "CLAW_DIFY_BASE_URL": gateway_values.get("WCH_DIFY_BASE_URL", "").strip(),
+                "CLAW_DIFY_API_KEY": gateway_values.get("WCH_DIFY_API_KEY", "").strip(),
+            }
+        )
+        _write_env_file(config_path, node_values)
+        return True
+    return False
+
+
+def _parse_int(raw: str | None, default: int) -> int:
+    try:
+        return int(str(raw or "").strip())
+    except ValueError:
+        return default
+
+
+def _parse_float(raw: str | None, default: float) -> float:
+    try:
+        return float(str(raw or "").strip())
+    except ValueError:
+        return default
 
 
 def _local_node_apply_state_path(install_dir: Path) -> Path:

@@ -226,17 +226,17 @@ export function QuickSetupConfigStage({
           </div>
           {!workerModelExpanded ? (
             <div style={{ padding: "8px 14px", fontSize: 12, color: "var(--muted)" }}>
-              模型配置可选，不填写时使用网关内置模型（{gatewaySetup.builtin_model_name || builtinModelLabel}）
+              当前机器节点使用独立模型配置；未配置则不会自动回复，请先保存并应用节点配置。
             </div>
           ) : (
             <div className="worker-model-collapse-body">
               <div className="inline-tip">
-                当前节点侧仅支持阿里云 DashScope / 通义千问模型；留空时会继承网关内置 DashScope 配置。
+                当前机器节点使用独立模型配置；请直接填写节点自己的 DashScope 或 Dify 参数。
               </div>
               <div className="form-grid">
-                <label><span>DashScope Base URL</span><input value={workerSetup.openai_base_url} onChange={(event) => onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="留空时沿用网关内置 DashScope 配置" /></label>
+                <label><span>DashScope Base URL</span><input value={workerSetup.openai_base_url} onChange={(event) => onUpdateWorkerSetup("openai_base_url", event.target.value)} placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1" /></label>
                 <label><span>DashScope 模型</span><input value={workerSetup.openai_model} onChange={(event) => onUpdateWorkerSetup("openai_model", event.target.value)} placeholder="qwen3.5-plus / qwen-plus / qwen-max" /></label>
-                <label className="connection-full-span"><span>DashScope API Key</span><ToggleSecretInput value={workerSetup.openai_api_key} onChange={(event) => onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="留空时沿用网关已继承的 DashScope API Key" autoComplete="new-password" /></label>
+                <label className="connection-full-span"><span>DashScope API Key</span><ToggleSecretInput value={workerSetup.openai_api_key} onChange={(event) => onUpdateWorkerSetup("openai_api_key", event.target.value)} placeholder="输入当前机器节点专用的 DashScope API Key" autoComplete="new-password" /></label>
                 <label><span>Dify Base URL</span><input value={workerSetup.dify_base_url} onChange={(event) => onUpdateWorkerSetup("dify_base_url", event.target.value)} /></label>
                 <label><span>Dify API Key</span><textarea value={workerSetup.dify_api_key} onChange={(event) => onUpdateWorkerSetup("dify_api_key", event.target.value)} /></label>
                 <label><span>最大并发</span><input type="number" value={workerSetup.max_concurrency} onChange={(event) => onUpdateWorkerSetup("max_concurrency", Number(event.target.value) || 1)} /></label>
@@ -244,7 +244,7 @@ export function QuickSetupConfigStage({
               <details className="form-advanced-details connection-fold-card">
                 <summary>
                   <span className="section-kicker">DashScope 高级参数</span>
-                  <span className="connection-fold-hint">继承网关默认值后，也可在节点侧单独覆盖</span>
+                  <span className="connection-fold-hint">当前机器节点自己的推理参数</span>
                 </summary>
                 <div className="connection-form-grid">
                   <label><span>Temperature</span><input type="number" step="0.1" min="0" max="2" value={workerSetup.openai_temperature} onChange={(event) => onUpdateWorkerSetup("openai_temperature", Number(event.target.value) || 0)} /></label>

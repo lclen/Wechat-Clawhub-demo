@@ -185,8 +185,6 @@ export function useQuickSetupController(options: QuickSetupControllerOptions) {
       ...current,
       node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
       gateway_base_url: setupProfile?.console.gateway_base_url || preferredGatewayBaseUrl,
-      dify_base_url: setupProfile?.gateway.dify_base_url || DEFAULT_WORKER_SETUP.dify_base_url,
-      dify_api_key: setupProfile?.gateway.dify_api_key || DEFAULT_WORKER_SETUP.dify_api_key,
       node_token: "",
     }));
     setDiscoveredNodes([]);
@@ -214,8 +212,6 @@ export function useQuickSetupController(options: QuickSetupControllerOptions) {
       ...current,
       node_id: resolveWorkerNodeId(current.node_id, launcherStatus?.profile),
       gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, syncOptions?.system ?? systemStatus),
-      dify_base_url: profile.gateway.dify_base_url || current.dify_base_url,
-      dify_api_key: profile.gateway.dify_api_key || current.dify_api_key,
       node_token: "",
     }));
   }

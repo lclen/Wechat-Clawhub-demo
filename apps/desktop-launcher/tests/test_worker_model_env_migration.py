@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from launcher.app import _migrate_worker_model_config_from_gateway_env, _read_env_file, create_app
+from launcher.models import LauncherProfile
+
+
+class WorkerModelEnvMigrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_setup_profile_worker_role_omits_gateway_model_template(self) -> None:
+        app = create_app()
+        with tempfile.TemporaryDirectory() as tempdir:
+            app.state.profile = LauncherProfile(
+                workdir=tempdir,
+                gateway_base_url="http://192.168.0.17:8300",
+                enable_gateway=False,
+                enable_local_node=True,
+                bootstrap_completed=True,
+                local_node_id="agent-1",
+            )
+            route = next(item for item in app.routes if getattr(item, "path", "") == "/local/setup/profile")
+            response = await route.endpoint()
+            payload = json.loads(response.body.decode("utf-8"))
+
+        self.assertEqual(payload["completed_roles"], ["worker_node"])
+        self.assertEqual(payload["gateway"]["builtin_model_base_url"], "")
+        self.assertEqual(payload["gateway"]["builtin_model_api_key"], "")
+        self.assertEqual(payload["gateway"]["builtin_model_name"], "")
+        self.assertEqual(payload["console"]["gateway_base_url"], "http://192.168.0.17:8300")
+
+    async def test_migrate_worker_model_config_copies_openai_template_when_node_env_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            node_env = root / "node.env"
+            gateway_env = root / "gateway.env"
+            node_env.write_text(
+                "\n".join(
+                    [
+                        "CLAW_NODE_KIND=remote",
+                        "CLAW_MODEL_PROVIDER=auto",
+                        "CLAW_OPENAI_BASE_URL=",
+                        "CLAW_OPENAI_API_KEY=",
+                        "CLAW_OPENAI_MODEL=",
+                        "CLAW_DIFY_BASE_URL=",
+                        "CLAW_DIFY_API_KEY=",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            gateway_env.write_text(
+                "\n".join(
+                    [
+                        "WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "WCH_BUILTIN_MODEL_API_KEY=sk-test",
+                        "WCH_BUILTIN_MODEL_NAME=qwen-plus",
+                        "WCH_BUILTIN_MODEL_ENABLE_THINKING=true",
+                        "WCH_BUILTIN_MODEL_ENABLE_SEARCH=true",
+                        "WCH_BUILTIN_MODEL_SEARCH_STRATEGY=max",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            migrated = _migrate_worker_model_config_from_gateway_env(
+                config_path=node_env,
+                gateway_env_path=gateway_env,
+                node_kind="remote",
+            )
+            values = _read_env_file(node_env)
+
+        self.assertTrue(migrated)
+        self.assertEqual(values["CLAW_MODEL_PROVIDER"], "openai")
+        self.assertEqual(values["CLAW_OPENAI_BASE_URL"], "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        self.assertEqual(values["CLAW_OPENAI_API_KEY"], "sk-test")
+        self.assertEqual(values["CLAW_OPENAI_MODEL"], "qwen-plus")
+        self.assertEqual(values["CLAW_OPENAI_ENABLE_THINKING"], "true")
+        self.assertEqual(values["CLAW_OPENAI_ENABLE_SEARCH"], "true")
+        self.assertEqual(values["CLAW_OPENAI_SEARCH_STRATEGY"], "max")
+
+    async def test_migrate_worker_model_config_copies_dify_template_when_openai_template_is_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            node_env = root / "node.env"
+            gateway_env = root / "gateway.env"
+            node_env.write_text(
+                "CLAW_NODE_KIND=remote\nCLAW_OPENAI_BASE_URL=\nCLAW_OPENAI_API_KEY=\nCLAW_OPENAI_MODEL=\nCLAW_DIFY_BASE_URL=\nCLAW_DIFY_API_KEY=\n",
+                encoding="utf-8",
+            )
+            gateway_env.write_text(
+                "WCH_DIFY_BASE_URL=https://api.dify.ai/v1\nWCH_DIFY_API_KEY=dify-key\n",
+                encoding="utf-8",
+            )
+
+            migrated = _migrate_worker_model_config_from_gateway_env(
+                config_path=node_env,
+                gateway_env_path=gateway_env,
+                node_kind="remote",
+            )
+            values = _read_env_file(node_env)
+
+        self.assertTrue(migrated)
+        self.assertEqual(values["CLAW_MODEL_PROVIDER"], "dify")
+        self.assertEqual(values["CLAW_DIFY_BASE_URL"], "https://api.dify.ai/v1")
+        self.assertEqual(values["CLAW_DIFY_API_KEY"], "dify-key")
+
+    async def test_migrate_worker_model_config_preserves_existing_node_model_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            node_env = root / "node.env"
+            gateway_env = root / "gateway.env"
+            node_env.write_text(
+                "\n".join(
+                    [
+                        "CLAW_NODE_KIND=remote",
+                        "CLAW_MODEL_PROVIDER=openai",
+                        "CLAW_OPENAI_BASE_URL=https://example.com/v1",
+                        "CLAW_OPENAI_API_KEY=existing-key",
+                        "CLAW_OPENAI_MODEL=qwen-existing",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            gateway_env.write_text(
+                "\n".join(
+                    [
+                        "WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "WCH_BUILTIN_MODEL_API_KEY=sk-test",
+                        "WCH_BUILTIN_MODEL_NAME=qwen-plus",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            migrated = _migrate_worker_model_config_from_gateway_env(
+                config_path=node_env,
+                gateway_env_path=gateway_env,
+                node_kind="remote",
+            )
+            values = _read_env_file(node_env)
+
+        self.assertFalse(migrated)
+        self.assertEqual(values["CLAW_OPENAI_BASE_URL"], "https://example.com/v1")
+        self.assertEqual(values["CLAW_OPENAI_API_KEY"], "existing-key")
+        self.assertEqual(values["CLAW_OPENAI_MODEL"], "qwen-existing")
+
+    async def test_migrate_worker_model_config_skips_local_node(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            node_env = root / "node.env"
+            gateway_env = root / "gateway.env"
+            node_env.write_text("CLAW_NODE_KIND=local\nCLAW_OPENAI_BASE_URL=\nCLAW_OPENAI_API_KEY=\nCLAW_OPENAI_MODEL=\n", encoding="utf-8")
+            gateway_env.write_text(
+                "\n".join(
+                    [
+                        "WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "WCH_BUILTIN_MODEL_API_KEY=sk-test",
+                        "WCH_BUILTIN_MODEL_NAME=qwen-plus",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            migrated = _migrate_worker_model_config_from_gateway_env(
+                config_path=node_env,
+                gateway_env_path=gateway_env,
+                node_kind="local",
+            )
+            values = _read_env_file(node_env)
+
+        self.assertFalse(migrated)
+        self.assertEqual(values.get("CLAW_OPENAI_BASE_URL", ""), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

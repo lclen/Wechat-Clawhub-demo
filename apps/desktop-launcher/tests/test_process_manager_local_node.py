@@ -19,14 +19,12 @@ class ProcessManagerLocalNodeStartTests(unittest.TestCase):
         manager._resolved_local_node_spec = Mock(return_value={"node_kind": "local"})  # type: ignore[method-assign]
         manager._local_node_service_name = Mock(return_value="wechat-claw-node-local-node")  # type: ignore[method-assign]
         manager._query_windows_service = Mock(return_value={"state": "stopped"})  # type: ignore[method-assign]
-        manager._local_node_service_requires_repair = Mock(return_value=False)  # type: ignore[method-assign]
+        manager._local_node_service_repair_reason = Mock(return_value="")  # type: ignore[method-assign]
         manager._start_existing_local_node_service = Mock()  # type: ignore[method-assign]
-        manager._install_or_restart_local_node = Mock()  # type: ignore[method-assign]
 
         manager.start_local_node(profile, layout)
 
         manager._start_existing_local_node_service.assert_called_once_with(profile, layout)
-        manager._install_or_restart_local_node.assert_not_called()
 
     @patch("launcher.process_manager.subprocess.run")
     def test_start_existing_local_node_service_prefers_sc_start(self, run_mock: Mock) -> None:
