@@ -236,15 +236,15 @@ export function roleVariantLabel(capabilities: RoleCapabilities): string {
 
 export function roleVariantDescription(capabilities: RoleCapabilities): string {
   if (capabilities.variant === "gateway") {
-    return "聚焦接入、纳管、扩容与运行态判断。";
+    return "接入、纳管与运行态。";
   }
   if (capabilities.variant === "worker") {
-    return "聚焦本机节点、模型链路、回连状态与自检。";
+    return "本机节点与回连自检。";
   }
   if (capabilities.variant === "console") {
-    return "聚焦会话观察、手动绑定、上下文与排障。";
+    return "会话观察与排障。";
   }
-  return "先完成角色配置，再进入联调与观察。";
+  return "先完成角色配置。";
 }
 
 export function workspacePresentation(capabilities: RoleCapabilities, workspace: WorkspaceTab): WorkspacePresentation {
@@ -252,41 +252,41 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
     quick_setup: {
       label: "快速配置",
       kicker: "Bootstrap",
-      description: "先完成当前机器角色与运行策略，再进入联调。",
+      description: "",
       heroTitle: "先选角色，再把当前机器带入稳定运行态",
-      heroDescription: "快速配置只负责把当前机器拉到可运行状态，再把控制权交给接入中心和会话观察台。",
+      heroDescription: "",
       primaryActionLabel: "继续配置",
     },
     sessions: {
       label: "会话观察台",
       kicker: "Session Control",
-      description: "聚焦当前会话、绑定节点和时间线排障。",
-      heroTitle: "左侧会话轨，右侧详情工作台",
-      heroDescription: "先看会话活跃态和路由，再进入当前会话的绑定、上下文和消息时间线。",
+      description: "",
+      heroTitle: "会话轨与详情工作台",
+      heroDescription: "",
       primaryActionLabel: "绑定节点",
     },
     connection: {
       label: "接入中心",
       kicker: "Operations Hub",
-      description: "先确认运行态，再进入微信接入、节点纳管和模型配置。",
-      heroTitle: "运行态优先，配置与诊断分层展开",
-      heroDescription: "第一屏只回答当前是否健康、下一步该点什么，下面再进入节点、微信和本机模型面板。",
+      description: "",
+      heroTitle: "运行态优先",
+      heroDescription: "",
       primaryActionLabel: "刷新全部状态",
     },
     conversation_test: {
       label: "对话测试",
       kicker: "Inference Probe",
-      description: "直接验证当前保存的推理配置是否能完成真实回复。",
-      heroTitle: "左侧发送测试输入，右侧读取链路回执",
-      heroDescription: "把 provider、配置来源、回复正文和耗时固定到同一排障视角。",
+      description: "",
+      heroTitle: "测试输入与链路回执",
+      heroDescription: "",
       primaryActionLabel: "发送测试消息",
     },
     logs: {
       label: "日志中心",
       kicker: "Diagnostics",
-      description: "集中查看运行日志、配对日志和本机节点输出。",
-      heroTitle: "把运行日志与配对追踪集中到同一条排障视线",
-      heroDescription: "日志中心不再承载配置表单，只负责汇总运行、回连和配对过程。",
+      description: "",
+      heroTitle: "运行日志与配对追踪",
+      heroDescription: "",
       primaryActionLabel: "刷新日志",
     },
   };
@@ -295,9 +295,9 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
     return {
       label: "节点工作台",
       kicker: "Node Operations",
-      description: "聚焦本机节点安装、回连、发现响应与运行时诊断。",
-      heroTitle: "本机节点、自检与回连信息集中显示",
-      heroDescription: "当前角色只负责这台机器的节点、模型和诊断，不负责纳管其它节点或微信接入。",
+      description: "",
+      heroTitle: "本机节点与回连信息",
+      heroDescription: "",
       primaryActionLabel: "刷新节点状态",
     };
   }
@@ -306,9 +306,9 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
     return {
       label: "会话观察台",
       kicker: "Console Focus",
-      description: "默认进入会话轨道，优先观察用户、节点与上下文状态。",
-      heroTitle: "控制台角色默认停留在会话轨道",
-      heroDescription: "会话、绑定、上下文和异常提示都在这一页收口，不暴露不必要的运维动作。",
+      description: "",
+      heroTitle: "会话轨与详情工作台",
+      heroDescription: "",
       primaryActionLabel: "查看会话",
     };
   }
@@ -317,9 +317,9 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
     return {
       label: "接入概览",
       kicker: "Read-only Operations",
-      description: "只保留运行态总览和节点清单，聚焦观察与排障，不展示执行型接入操作。",
-      heroTitle: "先观察当前网关与节点运行态，再回到会话排障",
-      heroDescription: "控制台角色只看总览和节点诊断，微信接入、本机模型和纳管动作都交给网关或节点角色完成。",
+      description: "",
+      heroTitle: "只读接入概览",
+      heroDescription: "",
       primaryActionLabel: "返回会话观察",
     };
   }
@@ -328,9 +328,9 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
     return {
       label: "节点对话测试",
       kicker: "Node Probe",
-      description: "直接验证当前节点配置是否能完成真实对话。",
-      heroTitle: "先看当前链路，再发一条最小测试消息",
-      heroDescription: "结果区集中返回 provider、耗时、配置来源和回复正文，便于快速确认本机节点是否可用。",
+      description: "",
+      heroTitle: "测试输入与回执",
+      heroDescription: "",
       primaryActionLabel: "发送测试消息",
     };
   }

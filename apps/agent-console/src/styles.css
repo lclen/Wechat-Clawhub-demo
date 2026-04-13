@@ -580,6 +580,23 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .connection-inline-info {
   margin-top: 10px;
 }
+.connection-ops-surface {
+  display: grid;
+  gap: 16px;
+}
+.connection-ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.connection-ops-metric {
+  padding: 16px 18px;
+  border-radius: 16px;
+  border: 1px solid rgba(94, 115, 146, 0.14);
+}
+.connection-ops-info {
+  margin-top: 2px;
+}
 .connection-wechat-layout {
   display: grid;
   gap: 16px;
@@ -1194,6 +1211,87 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   min-height: max-content;
 }
 
+.session-console-topbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(300px, 0.85fr);
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 16px;
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.97) 0%, rgba(245,248,252,0.94) 60%, rgba(238,244,250,0.94) 100%);
+}
+
+.session-console-topbar.is-warning {
+  background:
+    linear-gradient(135deg, rgba(255,251,243,0.98) 0%, rgba(252,246,233,0.96) 100%);
+}
+
+.session-console-topbar-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.session-console-topbar-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.session-console-topbar-head h3 {
+  margin: 2px 0 0;
+  font-size: clamp(17px, 1.45vw, 22px);
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+.session-console-topbar-description {
+  margin: 0;
+  max-width: 72ch;
+  color: var(--muted);
+  line-height: 1.45;
+  font-size: 12px;
+}
+
+.session-console-topbar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-console-topbar-meta span {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.78);
+  border: 1px solid rgba(186, 206, 230, 0.45);
+}
+
+.session-console-topbar-metrics {
+  margin-top: 0;
+  align-self: stretch;
+  gap: 10px;
+}
+
+.session-console-topbar-metrics .metric-card {
+  padding: 12px 13px;
+}
+
+.session-console-topbar-metrics .metric-card-value {
+  margin-top: 6px;
+  font-size: 20px;
+}
+
+.session-console-topbar-metrics .metric-card-detail {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
 .session-workspace.workspace-frame {
   display: flex;
   padding: 0;
@@ -1207,12 +1305,12 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   box-shadow: var(--shadow);
 }
 .session-rail {
-  width: 320px;
+  width: 300px;
   display: flex;
   flex-direction: column;
   background: var(--bg-soft);
   border-right: 1px solid var(--line);
-  flex: 0 0 320px;
+  flex: 0 0 300px;
   min-height: 0;
   height: 100%;
   border-radius: 0;
@@ -1238,6 +1336,17 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   font-weight: 700;
 }
 .rail-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px 8px; flex: 0 0 auto; }
+.session-list-heading {
+  padding: 18px 18px 8px;
+}
+
+.session-list-section-header {
+  gap: 12px;
+}
+
+.session-list-count {
+  min-width: 72px;
+}
 .filter-row { padding: 0 20px 12px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; flex: 0 0 auto; }
 .filter-chip {
   padding: 6px 12px;
@@ -1761,6 +1870,7 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   .connection-overview-copy,
   .connection-hero-grid,
   .connection-signal-grid,
+  .connection-ops-grid,
   .connection-node-channel-meta,
   .connection-node-stats {
     grid-template-columns: 1fr;
@@ -2072,27 +2182,6 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   border-top: 1px solid var(--line);
 }
 
-/* ── console_only 角色：sessions 工作区网关状态 banner ── */
-.console-gateway-banner {
-  padding: 12px 16px;
-  border-radius: 16px;
-  background: var(--green-soft);
-  color: var(--green);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.console-gateway-banner-error {
-  padding: 12px 16px;
-  border-radius: 16px;
-  background: rgba(183, 106, 26, 0.1);
-  color: var(--amber);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
 /* Role-based workspace: tab badges */
 .workspace-tab-badge {
   display: inline-flex;
@@ -2159,25 +2248,6 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   display: grid;
   gap: 14px;
 }
-
-/* Console-only: gateway status banner in sessions workspace */
-.console-gateway-banner {
-  padding: 12px 16px;
-  border-radius: 16px;
-  background: var(--green-soft);
-  color: var(--green);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 16px;
-  font-size: 13px;
-  font-weight: 700;
-}
-.console-gateway-banner-error {
-  background: var(--amber-soft);
-  color: var(--amber);
-}
-
 
 /* details and summary custom styles for Connection Center */
 .form-advanced-details summary {
@@ -2340,15 +2410,15 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 }
 
 .console-main-content {
-  padding: 20px 24px 24px;
-  gap: 20px;
+  padding: 18px 22px 22px;
+  gap: 18px;
   background: transparent;
 }
 
 .console-topbar {
-  padding: 18px 22px;
+  padding: 10px 16px;
   border: 1px solid var(--shell-line);
-  border-radius: 22px;
+  border-radius: 16px;
   background: linear-gradient(180deg, rgba(255,255,255,0.76) 0%, rgba(247,250,253,0.66) 100%);
   box-shadow: var(--shadow);
   backdrop-filter: blur(18px);
@@ -2356,6 +2426,7 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 
 .topbar-main {
   min-width: 0;
+  gap: 2px;
 }
 
 .topbar-kicker {
@@ -2364,45 +2435,70 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 }
 
 .topbar-title {
-  font-size: clamp(26px, 2.2vw, 34px);
+  font-size: clamp(20px, 1.6vw, 26px);
   letter-spacing: -0.03em;
+  line-height: 1.1;
 }
 
 .topbar-copy {
-  max-width: 720px;
+  max-width: 420px;
   color: var(--body);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .topbar-side {
-  display: grid;
-  gap: 14px;
-  justify-items: end;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .topbar-role-card {
-  min-width: 240px;
-  padding: 12px 14px;
-  border-radius: 16px;
+  min-width: 160px;
+  padding: 6px 9px;
+  border-radius: 12px;
   border: 1px solid var(--line);
   background: rgba(245, 249, 253, 0.92);
   display: grid;
-  gap: 4px;
+  gap: 0;
 }
 
 .topbar-role-card span,
 .topbar-role-card small {
   color: var(--muted);
+  font-size: 11px;
 }
 
 .topbar-role-card strong {
   color: var(--title);
-  font-size: 16px;
+  font-size: 13px;
 }
 
 .topbar-notice {
   border: 1px solid rgba(29, 99, 216, 0.16);
   background: rgba(232, 241, 253, 0.84);
   color: var(--accent-strong);
+  padding: 8px 10px;
+  line-height: 1.35;
+  font-size: 11px;
+}
+
+.topbar-status-row {
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.topbar-status-row .status-chip {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.topbar-copy:empty,
+.workspace-caption:empty,
+.session-console-topbar-description:empty {
+  display: none;
 }
 
 .workspace-frame {
@@ -2410,6 +2506,25 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   border: 1px solid var(--shell-line);
   border-radius: 24px;
   box-shadow: var(--shadow);
+}
+
+.workspace-heading {
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.workspace-heading h2,
+.surface h3,
+.stage-header h2 {
+  margin: 4px 0 0;
+  font-size: clamp(20px, 1.7vw, 28px);
+}
+
+.workspace-caption {
+  max-width: 320px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .workspace-heading-command {
@@ -2645,7 +2760,6 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   grid-template-columns: minmax(0, 1fr);
 }
 
-.session-rail-metrics,
 .session-stage-metrics,
 .conversation-test-metrics,
 .conversation-result-metrics {
@@ -2762,13 +2876,30 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   .console-section-header,
   .command-bar,
   .topbar-side {
-    grid-template-columns: 1fr;
     justify-items: stretch;
+  }
+
+  .topbar-side {
+    width: 100%;
+    align-items: flex-start;
+    justify-content: flex-start;
+    flex-direction: column;
   }
 
   .session-workspace.workspace-frame {
     flex-direction: column;
     min-height: auto;
+  }
+
+  .session-console-topbar {
+    grid-template-columns: 1fr;
+    padding: 12px;
+    border-radius: 16px;
+  }
+
+  .session-console-topbar-head {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .session-rail {
@@ -2777,6 +2908,12 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
     height: auto;
     border-right: none;
     border-bottom: 1px solid var(--line);
+  }
+
+  .session-list-heading,
+  .filter-row {
+    padding-left: 16px;
+    padding-right: 16px;
   }
 
   .workspace-heading h2,

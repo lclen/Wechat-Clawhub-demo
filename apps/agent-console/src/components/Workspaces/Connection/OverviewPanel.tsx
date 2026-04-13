@@ -1,13 +1,12 @@
 import type { ConnectionHeroCardData, ConnectionPrepItem, ConnectionSignalCardData } from "../../../types";
-import { ConnectionHeroCard, ConnectionSignalCard, InfoRow, PrepStrip } from "./ConnectionUi";
-import { CommandBar, SectionHeader, SignalBadge, SurfaceCard } from "../../shared/ConsolePrimitives";
+import { ConnectionHeroCard, PrepStrip } from "./ConnectionUi";
+import { CommandBar, InfoList, MetricCard, SectionHeader, SignalBadge, SurfaceCard } from "../../shared/ConsolePrimitives";
 
 type OverviewPanelProps = {
   heroCards: ConnectionHeroCardData[];
   prepItems: ConnectionPrepItem[];
   signalCards: ConnectionSignalCardData[];
   canManageGateway: boolean;
-  consoleTarget: string;
   modelCheckText?: string | null;
   lastError?: string | null;
   dispatchWarning?: string | null;
@@ -25,7 +24,6 @@ export function OverviewPanel({
   prepItems,
   signalCards,
   canManageGateway,
-  consoleTarget,
   modelCheckText,
   lastError,
   dispatchWarning,
@@ -37,6 +35,11 @@ export function OverviewPanel({
   refreshAllLabel,
   busy,
 }: OverviewPanelProps) {
+  const supplementalItems = [
+    modelCheckText ? { label: "模型检测", value: modelCheckText, multiline: true } : null,
+    lastError ? { label: "最近错误", value: lastError, multiline: true } : null,
+  ].filter((item): item is { label: string; value: string; multiline: boolean } => Boolean(item));
+
   return (
     <div className="connection-panel-stack">
       <SurfaceCard className="connection-overview-panel connection-command-hero" tone="accent">
@@ -45,7 +48,6 @@ export function OverviewPanel({
             <SectionHeader
               kicker="服务概览与状态"
               title="先判断健康度，再进入配置与联调"
-              description="首屏只保留当前运行事实、接入结果和下一步动作，不让大表单与调试日志打断判断。"
             />
           </div>
           <div className="connection-overview-chip-row command-hero-signals">
@@ -66,7 +68,6 @@ export function OverviewPanel({
           <SectionHeader
             kicker="准备流程"
             title="接入状态"
-            description="把需要频繁判断的联调事实收在同一块，不必反复扫完整页。"
             actions={
               canManageGateway ? (
                 <div className="inline-actions">
@@ -87,11 +88,10 @@ export function OverviewPanel({
           </div>
         </SurfaceCard>
 
-        <SurfaceCard className="command-surface" tone="strong">
+        <SurfaceCard className="command-surface connection-ops-surface" tone="strong">
           <SectionHeader
-            kicker="运行摘要"
-            title="核心组件"
-            description="把网关、微信、Redis、调度与通道池信号汇总到统一面板。"
+            kicker="主命令与控制面"
+            title="动作前判断"
           />
           <CommandBar
             label="主命令"
@@ -106,25 +106,19 @@ export function OverviewPanel({
               <SignalBadge tone="neutral">只读观察</SignalBadge>
             )}
           </CommandBar>
-          <div className="connection-signal-grid connection-signal-grid-command">
+          <div className="connection-ops-grid">
             {signalCards.map((card) => (
-              <ConnectionSignalCard key={card.label} {...card} />
+              <MetricCard
+                key={card.label}
+                label={card.label}
+                value={card.value}
+                detail={card.meta}
+                tone={card.tone === "good" ? "healthy" : "warning"}
+                className="connection-ops-metric"
+              />
             ))}
           </div>
-          <div className="connection-signal-note command-target-note">
-            <span>当前控制台目标</span>
-            <strong>{consoleTarget}</strong>
-          </div>
-          {modelCheckText ? (
-            <div className="info-stack connection-inline-info">
-              <InfoRow label="模型检测" value={modelCheckText} />
-            </div>
-          ) : null}
-          {lastError ? (
-            <div className="info-stack connection-inline-info">
-              <InfoRow label="最近错误" value={lastError} multiline />
-            </div>
-          ) : null}
+          {supplementalItems.length ? <InfoList items={supplementalItems} className="connection-ops-info" /> : null}
           {dispatchWarning ? <div className="topbar-notice dispatch-warning">{dispatchWarning}</div> : null}
         </SurfaceCard>
       </div>

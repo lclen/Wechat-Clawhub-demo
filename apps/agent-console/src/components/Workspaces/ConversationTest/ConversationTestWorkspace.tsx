@@ -76,7 +76,7 @@ export function ConversationTestWorkspace({
           </div>
           <h2>{title}</h2>
         </div>
-        <div className="workspace-caption">{description}</div>
+        {description ? <div className="workspace-caption">{description}</div> : null}
       </div>
 
       {!launcherAvailable ? (
@@ -96,9 +96,8 @@ export function ConversationTestWorkspace({
         <div className="conversation-test-layout">
           <SurfaceCard className="conversation-command-shell" tone="accent">
             <SectionHeader
-              kicker="Test Setup"
+              kicker="测试链路"
               title={heroTitle}
-              description={heroDescription}
               actions={
                 <div className="inline-actions">
                   <button type="button" className="ghost-button" onClick={onRefreshLocalNodeDiagnostics} disabled={busyKey !== null}>
@@ -149,7 +148,7 @@ export function ConversationTestWorkspace({
 
             <CommandBar
               label="当前测试链路"
-              detail="先用短问题验证连通性，再切换到更长的业务提示词。当前仅支持阿里云 DashScope / 通义千问模型。"
+              detail="先测连通，再测业务提示词。"
               className="conversation-test-command-bar"
             >
               <SignalBadge tone="info">{provider === "current" ? "当前配置" : provider === "openai" ? "DashScope" : "Dify"}</SignalBadge>
@@ -165,15 +164,14 @@ export function ConversationTestWorkspace({
             </label>
 
             <div className="inline-tip">
-              建议先用一句短问题测试连通性，确认成功后再试业务提示词。
+              建议先发短句。
             </div>
           </SurfaceCard>
 
           <SurfaceCard className="conversation-result-shell" tone="strong">
             <SectionHeader
-              kicker="Test Result"
+              kicker="回执面板"
               title="本次对话回执"
-              description="右侧专门承接 provider、耗时、结果与回复正文，形成固定排障视角。"
             />
 
             {errorText ? (

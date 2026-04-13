@@ -107,6 +107,13 @@ export function SessionsWorkspace({
         { label: "消息总量", value: `${selectedSession.message_count}` },
       ]
     : [];
+  const consoleStatusTone = !sessionsLoaded ? "neutral" : systemStatus ? "good" : "warn";
+  const topStatusMetrics = [
+    { label: "运行态", value: wechatRuntimeSummaryValue },
+    { label: "在线节点", value: String(systemStatus?.active_nodes ?? 0) },
+    { label: "会话总数", value: String(sessions.length) },
+    { label: "筛选结果", value: String(filteredSessions.length) },
+  ];
 
   return (
     <section className="session-workspace-shell">
@@ -115,46 +122,39 @@ export function SessionsWorkspace({
           <div className="section-kicker">Session Command</div>
           <h2>{title}</h2>
         </div>
-        <div className="workspace-caption">{description}</div>
+        {description ? <div className="workspace-caption">{description}</div> : null}
       </div>
-      {effectiveRole === "console_only" ? (
-        systemStatus !== null ? (
-          <div className="console-gateway-banner">
-            <span>网关：{currentGatewayBaseUrl}</span>
-            <span>Redis：{systemStatus.redis_ok ? "在线" : "不可用"}</span>
-            <span>在线节点：{systemStatus.active_nodes}</span>
+      <section className={`surface session-console-topbar ${effectiveRole === "console_only" && sessionsLoaded && systemStatus === null ? "is-warning" : ""}`}>
+        <div className="session-console-topbar-copy">
+          <div className="session-console-topbar-head">
+            <div>
+              <div className="section-kicker">微信通道</div>
+              <h3>{heroTitle}</h3>
+            </div>
+            <SignalBadge tone={consoleStatusTone}>
+              {!sessionsLoaded ? "加载中" : systemStatus ? "运行正常" : "网关不可达"}
+            </SignalBadge>
           </div>
-        ) : sessionsLoaded ? (
-          <div className="console-gateway-banner-error">
-            <span>目标网关不可达</span>
-            <button type="button" className="ghost-button" onClick={onGoToQuickSetup}>前往快速配置</button>
+          {heroDescription ? <p className="session-console-topbar-description">{heroDescription}</p> : null}
+          <div className="session-console-topbar-meta">
+            {effectiveRole === "console_only" ? <span>网关：{currentGatewayBaseUrl}</span> : null}
+            <span>Redis：{systemStatus ? (systemStatus.redis_ok ? "在线" : "不可用") : "待连接"}</span>
+            {effectiveRole === "console_only" && sessionsLoaded && systemStatus === null ? (
+              <button type="button" className="ghost-button" onClick={onGoToQuickSetup}>前往快速配置</button>
+            ) : null}
           </div>
-        ) : null
-      ) : null}
+        </div>
+        <MetricStrip className="session-console-topbar-metrics" items={topStatusMetrics} />
+      </section>
       <div className="workspace-frame session-workspace">
         <aside className="session-rail surface session-rail-command">
-          <div className="rail-channel-card rail-channel-card-command">
+          <div className="rail-heading session-list-heading">
             <SectionHeader
-              kicker="微信通道"
-              title={heroTitle}
-              description={heroDescription}
-              actions={<span className="count-badge">{sessions.length}</span>}
+              kicker="会话列表"
+              title="微信会话"
+              actions={<span className="count-badge session-list-count">{filteredSessions.length}/{sessions.length}</span>}
+              className="session-list-section-header"
             />
-            <MetricStrip
-              className="session-rail-metrics"
-              items={[
-                { label: "运行态", value: wechatRuntimeSummaryValue },
-                { label: "在线节点", value: String(systemStatus?.active_nodes ?? 0) },
-                { label: "筛选结果", value: String(filteredSessions.length) },
-              ]}
-            />
-            </div>
-          <div className="rail-heading">
-            <div>
-              <div className="section-kicker">筛选</div>
-              <h3>会话列表</h3>
-            </div>
-            <SignalBadge tone={sessionsLoaded ? "good" : "neutral"}>{sessionsLoaded ? "实时" : "加载中"}</SignalBadge>
           </div>
           <div className="filter-row" role="tablist" aria-label="Session filters">
             {filters.map((item) => <button key={item.key} type="button" className={`filter-chip ${sessionFilter === item.key ? "filter-chip-active" : ""}`} onClick={() => onChangeFilter(item.key)}>{item.label} {counts[item.key]}</button>)}

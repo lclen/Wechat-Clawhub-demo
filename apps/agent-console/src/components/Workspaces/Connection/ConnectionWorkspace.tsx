@@ -184,7 +184,6 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
               prepItems={props.connectionPrepItems}
               signalCards={props.connectionSignalCards}
               canManageGateway={showGatewayControls}
-              consoleTarget={props.setupProfileConsoleGatewayBaseUrl || props.currentGatewayBaseUrl}
               modelCheckText={props.modelCheckText}
               lastError={props.wechatLastError}
               dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无可用远端节点；网关无法完成实际回复。" : null}
@@ -234,10 +233,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   </button>
                 </div>
                 <div className="inline-tip">
-                  基础安装信息直接展示，按地址直连和局域网扫描收纳到折叠区，降低首次配置时的认知负担。
-                </div>
-                <div className="inline-tip">
-                  当前远端节点模型仅支持阿里云 DashScope / 通义千问模型；这里的 DashScope 配置会映射到现有兼容字段。
+                  当前仅支持 DashScope / 通义千问。
                 </div>
                 <div className="connection-form-grid">
                   <label><span>节点 ID</span><input value={props.workerSetup.node_id} onChange={(event) => props.onUpdateWorkerSetup("node_id", event.target.value)} /></label>
@@ -303,9 +299,6 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                     <span className="section-kicker">高级功能</span>
                     <span className="connection-fold-hint">按地址直接纳管远端节点</span>
                   </summary>
-                  <div className="inline-tip">
-                    如果广播扫描搜不到节点，可直接填写工作节点 IP/主机名和配对密钥；更适合多网卡、跨网段调试。
-                  </div>
                   <div className="connection-form-grid">
                     <label><span>目标 IP / 主机名</span><input value={props.manualPair.host} onChange={(event) => props.onUpdateManualPair("host", event.target.value)} placeholder="例如 192.168.0.23" /></label>
                     <label><span>配对端口</span><input type="number" value={props.manualPair.pairing_port} onChange={(event) => props.onUpdateManualPair("pairing_port", Number(event.target.value) || 9532)} /></label>
@@ -332,7 +325,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                     </button>
                   </div>
                   <div className="inline-tip">
-                    当前网关回连地址：{props.currentGatewayBaseUrl}。扫描后可以直接输入密钥配对，适合调试和节点替换。
+                    网关地址：{props.currentGatewayBaseUrl}
                   </div>
                   {!props.discoveredNodes.length ? (
                     <div className="empty-state">还没有扫描结果。先确认目标机器已运行 `claw-node` 并开启发现响应，然后点击“搜索局域网节点”。</div>
@@ -490,7 +483,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   </div>
                 </div>
                 <div className="inline-tip">
-                  当前角色只负责这台机器自己的安装、回连、凭据与发现响应。扫描并纳管其它节点需要切回网关角色操作。
+                  当前角色只管理本机节点。
                 </div>
                 <div className="info-stack">
                   <InfoRow label="节点身份" value="远端工作节点（当前机器）" multiline />

@@ -119,10 +119,10 @@ type QuickSetupWorkspaceProps = {
 
 export function QuickSetupWorkspace(props: QuickSetupWorkspaceProps) {
   const headingCaption = props.currentRoleIsWorker
-    ? "当前按节点视角收敛界面，只配置这台机器如何安装、回连网关和响应局域网发现。"
+    ? "按节点视角推进。"
     : props.currentRoleIsConsole
-      ? "当前按控制台视角收敛界面，只保留控制台连接与观察相关能力。"
-      : "首版支持当前这台机器上的受控执行：保存网关配置、组合完成“网关主机+控制台”、单独校验控制台目标，以及纳管局域网中的其它节点。";
+      ? "按控制台视角推进。"
+      : "按当前角色推进配置。";
   const stepCaption = props.setupMode === "status" ? "当前连接状态" : props.setupMode === "role" ? "选择角色" : props.setupMode === "config" ? "填写参数" : props.setupMode === "preview" ? "执行前确认" : "查看结果";
 
   return (

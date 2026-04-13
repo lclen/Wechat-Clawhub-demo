@@ -385,6 +385,7 @@ export function App() {
   );
   const activeRoleLabel = useMemo(() => roleVariantLabel(roleCapabilities), [roleCapabilities]);
   const activeRoleDescription = useMemo(() => roleVariantDescription(roleCapabilities), [roleCapabilities]);
+  const topbarNotice = useMemo(() => normalizeTopbarNotice(notice), [notice]);
   const localGatewayManaged = launcherAvailable ? launcherShouldRunGateway(launcherStatus) : null;
   const shouldUseLocalGatewayApi = shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
   const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
@@ -1459,51 +1460,50 @@ export function App() {
   const connectionSignalCards = useMemo<Array<{ label: string; value: string; meta: string; tone: "good" | "warn" }>>(
     () => [
       {
-        label: "模型",
-        value: modelStatus?.configured ? "已就绪" : "待检测",
-        meta: builtinModelStatusMeta,
-        tone: modelStatus?.configured ? "good" : "warn",
+        label: "分发策略",
+        value: systemStatus?.dispatch_mode_enabled ? "分发模式" : "本机处理",
+        meta: systemStatus?.dispatch_mode_enabled
+          ? availableDispatchNodes > 0
+            ? `${availableDispatchNodes} 个远端节点可接单，切换后会优先把回复分发出去。`
+            : "已开启分发，但当前没有可接单的远端节点，切换前需要先恢复节点在线。"
+          : "当前请求默认由本机网关或内置节点处理，适合单机联调与回归。",
+        tone: systemStatus?.dispatch_mode_enabled && availableDispatchNodes === 0 ? "warn" : "good",
       },
       {
-        label: "微信",
-        value: wechatRuntimeSummary.value,
-        meta: wechatStatus?.has_token ? "Token 已存在" : "尚未写入 Token",
-        tone: wechatRuntimeSummary.tone,
+        label: "控制台目标",
+        value: setupProfile?.console.gateway_base_url || currentGatewayBaseUrl || "当前页",
+        meta: setupProfile?.console.gateway_base_url
+          ? "二维码接入、节点纳管和状态刷新都会围绕这个主网关目标展开。"
+          : "当前还没有保存默认观察目标；刷新和联调会以当前页所在主机为准。",
+        tone: setupProfile?.console.gateway_base_url ? "good" : "warn",
       },
       {
-        label: "Redis",
+        label: "Redis 基线",
         value: systemStatus?.redis_ok ? "正常" : "未就绪",
-        meta: systemStatus?.redis_ok ? "主状态存储可用" : "请先恢复主存储",
+        meta: systemStatus?.redis_ok ? "主状态存储可用，微信状态、会话和节点调度可持续写入。" : "主状态存储异常，先恢复它再继续接入和排障。",
         tone: systemStatus?.redis_ok ? "good" : "warn",
       },
       {
-        label: "调度",
-        value: systemStatus?.dispatch_mode_enabled ? "分发模式" : "本机处理",
-        meta: `${systemStatus?.active_nodes ?? 0} 个在线节点`,
-        tone: (systemStatus?.active_nodes ?? 0) > 0 || !systemStatus?.dispatch_mode_enabled ? "good" : "warn",
-      },
-      {
-        label: "通道池",
-        value: `${nodeChannelOverview.onlineIdle} 空闲`,
+        label: "通道余量",
+        value: nodeChannelOverview.onlineCapacity > 0 ? `${nodeChannelOverview.onlineIdle} / ${nodeChannelOverview.onlineCapacity}` : "待上报",
         meta:
           nodeChannelOverview.onlineCapacity > 0
-            ? `${nodeChannelOverview.onlineInUse} 占用 / ${nodeChannelOverview.onlineCapacity} 总量`
-            : "在线节点尚未上报通道容量",
+            ? `${nodeChannelOverview.onlineInUse} 条正在占用，当前空闲通道决定还能否继续扩容和抢单。`
+            : "在线节点尚未上报通道容量，先检查节点版本或心跳诊断。",
         tone: nodeChannelOverview.onlineIdle > 0 || nodeChannelOverview.onlineCapacity === 0 ? "good" : "warn",
       },
     ],
     [
+      availableDispatchNodes,
       builtinModelStatusMeta,
-      modelStatus?.configured,
+      currentGatewayBaseUrl,
       nodeChannelOverview.onlineCapacity,
       nodeChannelOverview.onlineIdle,
       nodeChannelOverview.onlineInUse,
+      setupProfile?.console.gateway_base_url,
       systemStatus?.active_nodes,
       systemStatus?.dispatch_mode_enabled,
       systemStatus?.redis_ok,
-      wechatRuntimeSummary.tone,
-      wechatRuntimeSummary.value,
-      wechatStatus?.has_token,
     ],
   );
   const nodeInventoryCards = useMemo<Array<{
@@ -1787,13 +1787,12 @@ export function App() {
           <div className="topbar-main">
             <div className="topbar-kicker">{activeWorkspacePresentation.kicker}</div>
             <div className="topbar-title">{activeWorkspacePresentation.label}</div>
-            <div className="topbar-copy">{activeWorkspacePresentation.description}</div>
+            {activeWorkspacePresentation.description ? <div className="topbar-copy">{activeWorkspacePresentation.description}</div> : null}
           </div>
           <div className="topbar-side">
             <div className="topbar-role-card">
               <span>当前角色</span>
               <strong>{activeRoleLabel}</strong>
-              <small>{activeRoleDescription}</small>
             </div>
             <div className="topbar-status-row">
               {topbarHighlights.map((item) => (
@@ -1801,7 +1800,7 @@ export function App() {
               ))}
             </div>
           </div>
-          {notice && <div className="topbar-notice">{notice}</div>}
+          {topbarNotice ? <div className="topbar-notice">{topbarNotice}</div> : null}
         </header>
 
         {workspace === "quick_setup" ? (
@@ -2107,3 +2106,11 @@ function gatewayTokenMismatchHint(nodeId: string) {
   return `请核对目标网关 ${GATEWAY_NODE_TOKEN_LOCATION} 中 ${nodeId} 对应的 token，是否与当前节点保存的一致。`;
 }
 function pairingDebugStatusLabel(status: PairingDebugEntry["status"]) { return status === "succeeded" ? "成功" : status === "running" ? "进行中" : status === "pending" ? "等待中" : "失败"; }
+
+function normalizeTopbarNotice(value: string | null): string | null {
+  const trimmed = safeTrim(value);
+  if (!trimmed) return null;
+  if (trimmed === "正在读取主网关状态。") return null;
+  if (trimmed === "主网关在线。微信、节点和会话概览会通过实时流持续更新。") return null;
+  return trimmed;
+}
