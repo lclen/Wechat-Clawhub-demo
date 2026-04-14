@@ -260,15 +260,9 @@ class Worker:
                             continue
                         await self._flush_pending_diagnostics_events()
                         await self._send_task_stream_event({"type": "ready"})
-                        raw_payload = await websocket.recv()
-                        payload = json.loads(raw_payload)
-                        payload_type = payload.get("type")
-                        if payload_type == "noop":
+                        task = await self._receive_task_stream_assignment(websocket)
+                        if task is None:
                             continue
-                        if payload_type not in {"task", "task_assigned"} or not isinstance(payload.get("task"), dict):
-                            logger.warning("[worker] task stream received unexpected payload: %s", payload)
-                            continue
-                        task = payload["task"]
                         logger.info(
                             "[dispatch] streamed task_id=%s session=%s context_version=%s user=%s preview=%s",
                             task.get("task_id"),
@@ -953,6 +947,26 @@ class Worker:
             if websocket is None:
                 raise RuntimeError("Task stream websocket is not connected")
             await websocket.send(json.dumps(event))
+
+    async def _receive_task_stream_assignment(self, websocket: WebSocketClientProtocol) -> dict[str, Any] | None:
+        """
+        在单次 ready 请求后持续接收控制帧，直到真正拿到任务或 noop。
+
+        这样可以避免 diagnostics/channel-released 的 ack 触发 worker 立即再次发送 ready，
+        把大量 ready 事件堆在网关接收队列前面，进而延迟真正的 task_result 消费。
+        """
+        while True:
+            raw_payload = await websocket.recv()
+            payload = json.loads(raw_payload)
+            payload_type = payload.get("type")
+            if payload_type == "noop":
+                return None
+            if payload_type in {"ack", "pong"}:
+                logger.debug("[worker] task stream control payload ignored: %s", payload)
+                continue
+            if payload_type in {"task", "task_assigned"} and isinstance(payload.get("task"), dict):
+                return payload["task"]
+            logger.warning("[worker] task stream received unexpected payload: %s", payload)
 
     def _enqueue_diagnostics_event(self, event: dict[str, object], snapshot: dict[str, object]) -> None:
         self._pending_diagnostics_events.append(

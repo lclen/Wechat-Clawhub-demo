@@ -412,8 +412,6 @@ async def stream_node_tasks(
                 diagnostics = event.get("diagnostics")
                 if isinstance(diagnostics, dict):
                     websocket.app.state.setup_service.ingest_node_diagnostics_event(node_id, diagnostics)
-                    # Store diagnostics (future enhancement)
-                    await websocket.send_json({"type": "ack"})
 
             else:
                 # Unknown event type, but don't close connection
