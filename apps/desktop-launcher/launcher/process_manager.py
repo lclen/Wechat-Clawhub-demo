@@ -353,7 +353,13 @@ class ProcessManager:
         stopped: list[str] = []
         for service_name in conflicting:
             try:
-                subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+                subprocess.run(  # noqa: S603
+                    ["sc.exe", "stop", service_name],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    creationflags=self._WINDOWS_NO_WINDOW,
+                )
                 stopped.append(service_name)
             except Exception:
                 continue
@@ -531,26 +537,49 @@ class ProcessManager:
         return install_dir / "logs" / f"{self._local_node_service_name(profile)}.wrapper.log"
 
     def _stop_local_node_service(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
-        target_services = {self._local_node_service_name(profile), *self._list_managed_node_services()}
-        for service_name in target_services:
-            service = self._query_windows_service(service_name)
-            install_dir = self._extract_windows_service_install_dir(str((service or {}).get("path_name", "") or ""))
-            if install_dir is None:
-                install_dir = self._local_node_install_dir(layout)
-            exe_path = install_dir / f"{service_name}.exe"
-            result = subprocess.run(["sc.exe", "stop", service_name], capture_output=True, text=True, check=False)  # noqa: S603
-            if result.returncode == 0 or not exe_path.exists():
-                continue
-            subprocess.run([str(exe_path), "stop"], capture_output=True, text=True, check=False)  # noqa: S603
+        service_name = self._local_node_service_name(profile)
+        service = self._query_windows_service(service_name)
+        install_dir = self._extract_windows_service_install_dir(str((service or {}).get("path_name", "") or ""))
+        if install_dir is None:
+            install_dir = self._local_node_install_dir(layout)
+        exe_path = install_dir / f"{service_name}.exe"
+        result = subprocess.run(  # noqa: S603
+            ["sc.exe", "stop", service_name],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=self._WINDOWS_NO_WINDOW,
+        )
+        if result.returncode == 0 or not exe_path.exists():
+            return
+        subprocess.run(  # noqa: S603
+            [str(exe_path), "stop"],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=self._WINDOWS_NO_WINDOW,
+        )
 
     def _start_existing_local_node_service(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         service_name = self._local_node_service_name(profile)
         install_dir = self.local_node_runtime_install_dir(profile, layout)
         exe_path = install_dir / f"{service_name}.exe"
-        result = subprocess.run(["sc.exe", "start", service_name], capture_output=True, text=True, check=False)  # noqa: S603
+        result = subprocess.run(  # noqa: S603
+            ["sc.exe", "start", service_name],
+            capture_output=True,
+            text=True,
+            check=False,
+            creationflags=self._WINDOWS_NO_WINDOW,
+        )
         primary_output = (result.stdout or result.stderr or "").strip()
         if result.returncode != 0 and exe_path.exists():
-            result = subprocess.run([str(exe_path), "start"], capture_output=True, text=True, check=False)  # noqa: S603
+            result = subprocess.run(  # noqa: S603
+                [str(exe_path), "start"],
+                capture_output=True,
+                text=True,
+                check=False,
+                creationflags=self._WINDOWS_NO_WINDOW,
+            )
             fallback_output = (result.stdout or result.stderr or "").strip()
             if result.returncode != 0 and self._looks_like_windows_access_denied(fallback_output):
                 raise PermissionError(
