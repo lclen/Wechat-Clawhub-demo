@@ -91,12 +91,33 @@ def _emit_wechat_debug(message: str, *args: object) -> None:
 
 
 def _encrypt_aes_ecb(plaintext: bytes, key: bytes) -> bytes:
-    from Crypto.Cipher import AES
-
     pad_len = 16 - (len(plaintext) % 16)
     padded = plaintext + bytes([pad_len] * pad_len)
-    cipher = AES.new(key, AES.MODE_ECB)
-    return cipher.encrypt(padded)
+    try:
+        from Crypto.Cipher import AES  # type: ignore[import-not-found]
+
+        cipher = AES.new(key, AES.MODE_ECB)
+        return cipher.encrypt(padded)
+    except ModuleNotFoundError:
+        pass
+
+    try:
+        from Cryptodome.Cipher import AES  # type: ignore[import-not-found]
+
+        cipher = AES.new(key, AES.MODE_ECB)
+        return cipher.encrypt(padded)
+    except ModuleNotFoundError:
+        pass
+
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+        encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
+        return encryptor.update(padded) + encryptor.finalize()
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "No module named 'Crypto'. Install pycryptodome, pycryptodomex, or cryptography."
+        ) from exc
 
 
 def _aes_ecb_padded_size(plaintext_size: int) -> int:
@@ -415,7 +436,7 @@ class WeChatBotService:
 
         client_ids: list[str] = []
         pending_text_parts: list[str] = []
-        for segment in segments:
+        for segment_index, segment in enumerate(segments, start=1):
             if segment.kind == "text":
                 pending_text_parts.append(segment.text)
                 continue
@@ -423,24 +444,44 @@ class WeChatBotService:
             pending_text_parts = []
             if plain_text:
                 _emit_wechat_debug(
-                    "wechat-bot: send_markdown text_chunk user_id=%s text_len=%d",
+                    "wechat-bot: send_markdown text_chunk_start user_id=%s segment_index=%d text_len=%d",
                     user_id,
+                    segment_index,
                     len(plain_text),
                 )
+                text_started_at = time.perf_counter()
                 text_client_id = await self.send_text(user_id=user_id, text=plain_text, context_token=context_token)
+                logger.info(
+                    "wechat-bot: send_markdown text_chunk_finished user_id=%s segment_index=%d text_len=%d send_ms=%.0f client_id=%s",
+                    user_id,
+                    segment_index,
+                    len(plain_text),
+                    (time.perf_counter() - text_started_at) * 1000,
+                    text_client_id,
+                )
                 if text_client_id:
                     client_ids.append(text_client_id)
             try:
                 _emit_wechat_debug(
-                    "wechat-bot: send_markdown image_chunk user_id=%s image_url=%s alt=%s",
+                    "wechat-bot: send_markdown image_chunk_start user_id=%s segment_index=%d image_url=%s alt=%s",
                     user_id,
+                    segment_index,
                     segment.url,
                     segment.alt,
                 )
+                image_started_at = time.perf_counter()
                 image_client_id = await self.send_image_url(
                     user_id=user_id,
                     image_url=segment.url,
                     context_token=context_token,
+                )
+                logger.info(
+                    "wechat-bot: send_markdown image_chunk_finished user_id=%s segment_index=%d image_url=%s send_ms=%.0f client_id=%s",
+                    user_id,
+                    segment_index,
+                    segment.url,
+                    (time.perf_counter() - image_started_at) * 1000,
+                    image_client_id,
                 )
                 if image_client_id:
                     client_ids.append(image_client_id)
@@ -449,15 +490,25 @@ class WeChatBotService:
                 fallback_text = "\n".join(part for part in [segment.alt, segment.url] if part).strip()
                 if fallback_text:
                     _emit_wechat_debug(
-                        "wechat-bot: send_markdown image_fallback_text user_id=%s fallback_len=%d image_url=%s",
+                        "wechat-bot: send_markdown image_fallback_text_start user_id=%s segment_index=%d fallback_len=%d image_url=%s",
                         user_id,
+                        segment_index,
                         len(fallback_text),
                         segment.url,
                     )
+                    fallback_started_at = time.perf_counter()
                     fallback_client_id = await self.send_text(
                         user_id=user_id,
                         text=fallback_text,
                         context_token=context_token,
+                    )
+                    logger.info(
+                        "wechat-bot: send_markdown image_fallback_text_finished user_id=%s segment_index=%d fallback_len=%d send_ms=%.0f client_id=%s",
+                        user_id,
+                        segment_index,
+                        len(fallback_text),
+                        (time.perf_counter() - fallback_started_at) * 1000,
+                        fallback_client_id,
                     )
                     if fallback_client_id:
                         client_ids.append(fallback_client_id)
@@ -465,14 +516,24 @@ class WeChatBotService:
         trailing_plain_text = _markdown_to_plaintext("".join(pending_text_parts))
         if trailing_plain_text:
             _emit_wechat_debug(
-                "wechat-bot: send_markdown trailing_text user_id=%s text_len=%d",
+                "wechat-bot: send_markdown trailing_text_start user_id=%s segment_index=%d text_len=%d",
                 user_id,
+                len(segments),
                 len(trailing_plain_text),
             )
+            trailing_started_at = time.perf_counter()
             trailing_client_id = await self.send_text(
                 user_id=user_id,
                 text=trailing_plain_text,
                 context_token=context_token,
+            )
+            logger.info(
+                "wechat-bot: send_markdown trailing_text_finished user_id=%s segment_index=%d text_len=%d send_ms=%.0f client_id=%s",
+                user_id,
+                len(segments),
+                len(trailing_plain_text),
+                (time.perf_counter() - trailing_started_at) * 1000,
+                trailing_client_id,
             )
             if trailing_client_id:
                 client_ids.append(trailing_client_id)

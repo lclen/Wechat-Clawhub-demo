@@ -1170,6 +1170,15 @@ class Worker:
         )
         task_id = normalized_metadata.get("task_id", "")
         session_id = normalized_metadata.get("session_id", "")
+        if category == "inference":
+            logger.info(
+                "[inference] provider=%s result=%s session=%s task_id=%s details=%s",
+                normalized_metadata.get("provider", "unknown"),
+                result,
+                session_id or "-",
+                task_id or "-",
+                self._format_inference_event_details(normalized_metadata),
+            )
         if task_id or session_id:
             latest_payload: dict[str, Any] = {
                 "task_id": task_id,
@@ -1237,6 +1246,30 @@ class Worker:
         if not usage:
             return None
         return self._coerce_int(usage.get(key))
+
+    def _format_inference_event_details(self, metadata: dict[str, str]) -> str:
+        preferred_keys = (
+            "status_code",
+            "elapsed_ms",
+            "latency",
+            "mode",
+            "conversation_id",
+            "query_chars",
+            "file_count",
+            "recent_message_count",
+            "answer_chars",
+            "response_chars",
+            "response_preview",
+        )
+        parts: list[str] = []
+        for key in preferred_keys:
+            value = metadata.get(key, "").strip()
+            if not value:
+                continue
+            if key == "response_preview":
+                value = self._preview_text(value, max_len=160)
+            parts.append(f"{key}={value}")
+        return " ".join(parts) if parts else "-"
 
     def _coerce_int(self, value: Any) -> int | None:
         if value in (None, ""):

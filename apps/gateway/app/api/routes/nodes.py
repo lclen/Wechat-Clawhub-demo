@@ -295,10 +295,11 @@ async def stream_node_tasks(
     try:
         while True:
             receive_started_at = time.perf_counter()
-            event = await node_stream.receive_event(websocket)
-            if event is None:
+            event_packet = await node_stream.receive_event(websocket)
+            if event_packet is None:
                 # Connection closed
                 break
+            event, receive_metrics = event_packet
 
             event_type = event.get("type")
             receive_ms = (time.perf_counter() - receive_started_at) * 1000
@@ -330,12 +331,15 @@ async def stream_node_tasks(
                         metadata={k: str(v) for k, v in (event.get("metadata") or {}).items()} if isinstance(event.get("metadata"), dict) else {},
                     )
                     logger.info(
-                        "[dispatch] task_result_received source=ws node=%s task_id=%s session=%s chars=%s receive_ms=%.0f",
+                        "[dispatch] task_result_received source=ws node=%s task_id=%s session=%s chars=%s receive_ms=%.0f read_ms=%.0f decode_ms=%.0f message_chars=%s",
                         node_id,
                         payload.task_id,
                         payload.session_id,
                         len(payload.content),
                         receive_ms,
+                        float(receive_metrics.get("read_ms", 0.0)),
+                        float(receive_metrics.get("decode_ms", 0.0)),
+                        int(receive_metrics.get("message_chars", 0)),
                     )
                     submit_started_at = time.perf_counter()
                     logger.info(

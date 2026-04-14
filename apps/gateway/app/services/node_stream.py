@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from fastapi import WebSocket
@@ -49,15 +50,28 @@ class NodeStreamBroker:
             await self.unregister_connection(node_id)
             return False
 
-    async def receive_event(self, websocket: WebSocket) -> dict[str, Any] | None:
+    async def receive_event(self, websocket: WebSocket) -> tuple[dict[str, Any], dict[str, float | int | str]] | None:
         """
         Receive an event from a node.
 
-        Returns the event dict, or None if connection closed.
+        Returns the event dict plus basic receive timing, or None if connection closed.
         """
         try:
+            read_started_at = time.perf_counter()
             message = await websocket.receive_text()
-            return json.loads(message)
+            read_ms = (time.perf_counter() - read_started_at) * 1000
+            decode_started_at = time.perf_counter()
+            event = json.loads(message)
+            decode_ms = (time.perf_counter() - decode_started_at) * 1000
+            receive_metrics: dict[str, float | int | str] = {
+                "read_ms": read_ms,
+                "decode_ms": decode_ms,
+                "message_chars": len(message),
+            }
+            event_type = event.get("type")
+            if event_type is not None:
+                receive_metrics["event_type"] = str(event_type)
+            return event, receive_metrics
         except Exception:
             return None
 

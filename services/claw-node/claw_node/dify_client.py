@@ -84,6 +84,25 @@ class DifyClient:
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPStatusError as exc:
+            response_text = exc.response.text.strip()
+            response_preview = response_text[:500]
+            self._emit_event(
+                result="dify_request_http_error",
+                message="Dify 请求返回 HTTP 错误。",
+                session_id=session_id,
+                metadata={
+                    **(trace_metadata or {}),
+                    "status_code": str(exc.response.status_code),
+                    "elapsed_ms": str(max(1, int((time.perf_counter() - request_started_at) * 1000))),
+                    "response_preview": response_preview,
+                    "response_chars": str(len(response_text)),
+                    "mode": str(payload.get("response_mode") or ""),
+                    "conversation_id": conversation_id,
+                    "query_chars": str(len(query)),
+                    "file_count": str(len(files)),
+                },
+                level="warning",
+            )
             if self._should_retry_with_streaming(exc):
                 self._emit_event(
                     result="dify_blocking_rejected",
@@ -93,6 +112,8 @@ class DifyClient:
                         **(trace_metadata or {}),
                         "status_code": str(exc.response.status_code),
                         "elapsed_ms": str(max(1, int((time.perf_counter() - request_started_at) * 1000))),
+                        "response_preview": response_preview,
+                        "response_chars": str(len(response_text)),
                     },
                     level="warning",
                 )
