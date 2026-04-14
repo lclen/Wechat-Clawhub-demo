@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -12,9 +14,15 @@ from claw_node.local_cache import LocalCache
 class DifyClient:
     """Best-effort Dify client for the worker node."""
 
-    def __init__(self, settings: NodeSettings, local_cache: LocalCache | None = None) -> None:
+    def __init__(
+        self,
+        settings: NodeSettings,
+        local_cache: LocalCache | None = None,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self._settings = settings
         self._local_cache = local_cache
+        self._event_callback = event_callback
         self._conversation_ids: dict[str, str] = {}
         self._client = httpx.AsyncClient(
             base_url=settings.dify_base_url.rstrip("/"),
@@ -37,6 +45,7 @@ class DifyClient:
         query: str,
         context_summary: str,
         recent_messages: list[dict[str, Any]],
+        trace_metadata: dict[str, str] | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         conversation_key = self._conversation_key(session_id=session_id, user_id=user_id)
         conversation_id = await self._resolve_conversation_id(conversation_key, recent_messages)
@@ -56,15 +65,41 @@ class DifyClient:
         files = self._collect_files(recent_messages)
         if files:
             payload["files"] = files
+        request_started_at = time.perf_counter()
+        self._emit_event(
+            result="dify_request_started",
+            message="开始调用 Dify。",
+            session_id=session_id,
+            metadata={
+                **(trace_metadata or {}),
+                "mode": "blocking",
+                "conversation_id": conversation_id,
+                "query_chars": str(len(query)),
+                "recent_message_count": str(len(recent_messages)),
+                "file_count": str(len(files)),
+            },
+        )
         try:
             response = await self._client.post("/chat-messages", json=payload)
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPStatusError as exc:
             if self._should_retry_with_streaming(exc):
-                data = await self._ask_streaming(payload)
+                self._emit_event(
+                    result="dify_blocking_rejected",
+                    message="Dify blocking 模式被拒绝，改用 streaming 重试。",
+                    session_id=session_id,
+                    metadata={
+                        **(trace_metadata or {}),
+                        "status_code": str(exc.response.status_code),
+                        "elapsed_ms": str(max(1, int((time.perf_counter() - request_started_at) * 1000))),
+                    },
+                    level="warning",
+                )
+                data = await self._ask_streaming(payload, session_id=session_id, trace_metadata=trace_metadata)
             else:
                 raise
+        elapsed_ms = max(1, int((time.perf_counter() - request_started_at) * 1000))
         answer = data.get("answer")
         if not answer:
             answer = (
@@ -79,9 +114,32 @@ class DifyClient:
         if returned_conversation_id:
             await self._remember_conversation_id(conversation_key, returned_conversation_id)
         effective_conversation_id = returned_conversation_id or conversation_id
-        return str(answer), self._inject_conversation_metadata(usage, effective_conversation_id)
+        usage_payload = self._inject_conversation_metadata(usage, effective_conversation_id)
+        self._emit_event(
+            result="dify_request_finished",
+            message="Dify 已返回响应。",
+            session_id=session_id,
+            metadata={
+                **(trace_metadata or {}),
+                "mode": "streaming" if data.get("_streaming_retry") else "blocking",
+                "conversation_id": effective_conversation_id,
+                "elapsed_ms": str(elapsed_ms),
+                "answer_chars": str(len(str(answer))),
+                "prompt_tokens": self._string_usage_value(usage_payload, "prompt_tokens"),
+                "completion_tokens": self._string_usage_value(usage_payload, "completion_tokens"),
+                "total_tokens": self._string_usage_value(usage_payload, "total_tokens"),
+                "latency": self._string_usage_value(usage_payload, "latency"),
+            },
+        )
+        return str(answer), usage_payload
 
-    async def _ask_streaming(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def _ask_streaming(
+        self,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        trace_metadata: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         streaming_payload = dict(payload)
         streaming_payload["response_mode"] = "streaming"
         answer_parts: list[str] = []
@@ -89,6 +147,16 @@ class DifyClient:
         metadata: dict[str, Any] | None = None
         message_id = ""
         conversation_id = str(streaming_payload.get("conversation_id") or "").strip()
+        stream_started_at = time.perf_counter()
+        self._emit_event(
+            result="dify_streaming_started",
+            message="开始用 Dify streaming 模式重试。",
+            session_id=session_id,
+            metadata={
+                **(trace_metadata or {}),
+                "conversation_id": conversation_id,
+            },
+        )
 
         async with self._client.stream("POST", "/chat-messages", json=streaming_payload) as response:
             response.raise_for_status()
@@ -128,6 +196,8 @@ class DifyClient:
             "conversation_id": conversation_id,
             "metadata": metadata or {},
             "usage": usage or metadata or {},
+            "_streaming_retry": True,
+            "_streaming_elapsed_ms": max(1, int((time.perf_counter() - stream_started_at) * 1000)),
         }
 
     def _conversation_key(self, *, session_id: str, user_id: str) -> str:
@@ -177,6 +247,40 @@ class DifyClient:
         payload = dict(usage or {})
         payload["dify_conversation_id"] = conversation_id
         return payload
+
+    def _emit_event(
+        self,
+        *,
+        result: str,
+        message: str,
+        session_id: str,
+        metadata: dict[str, str] | None = None,
+        level: str = "info",
+    ) -> None:
+        if self._event_callback is None:
+            return
+        try:
+            self._event_callback(
+                {
+                    "category": "inference",
+                    "result": result,
+                    "message": message,
+                    "level": level,
+                    "metadata": {
+                        "provider": "dify",
+                        "session_id": session_id,
+                        **(metadata or {}),
+                    },
+                }
+            )
+        except Exception:
+            return
+
+    def _string_usage_value(self, usage: dict[str, Any] | None, key: str) -> str:
+        if not usage:
+            return ""
+        value = usage.get(key)
+        return "" if value is None else str(value)
 
     def _collect_files(self, recent_messages: list[dict[str, Any]]) -> list[dict[str, str]]:
         files: list[dict[str, str]] = []

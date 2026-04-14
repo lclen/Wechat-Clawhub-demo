@@ -73,6 +73,7 @@ class NodeDiagnostics:
             "last_register_at": None,
             "last_heartbeat_result": "",
             "last_heartbeat_at": None,
+            "latest_task": self._default_latest_task(),
             "channel_assessment": self._default_channel_assessment(),
             "updated_at": self._utcnow().isoformat(),
             "events": [],
@@ -97,6 +98,12 @@ class NodeDiagnostics:
             self._snapshot["channel_assessment"] = {
                 **self._default_channel_assessment(),
                 **previous_channel_assessment,
+            }
+        previous_latest_task = previous_snapshot.get("latest_task")
+        if isinstance(previous_latest_task, dict):
+            self._snapshot["latest_task"] = {
+                **self._default_latest_task(),
+                **previous_latest_task,
             }
         self.flush()
 
@@ -300,9 +307,17 @@ class NodeDiagnostics:
             "last_register_at": self._snapshot.get("last_register_at"),
             "last_heartbeat_result": self._snapshot.get("last_heartbeat_result", ""),
             "last_heartbeat_at": self._snapshot.get("last_heartbeat_at"),
+            "latest_task": self._snapshot.get("latest_task", self._default_latest_task()),
             "channel_assessment": self._snapshot.get("channel_assessment", self._default_channel_assessment()),
             "updated_at": self._snapshot.get("updated_at"),
         }
+
+    def update_latest_task(self, payload: dict[str, Any]) -> None:
+        self._snapshot["latest_task"] = {
+            **self._default_latest_task(),
+            **payload,
+        }
+        self.flush()
 
     def update_channel_assessment(
         self,
@@ -468,4 +483,26 @@ class NodeDiagnostics:
             "active_session_count": 0,
             "active_task_count": 0,
             "last_error": "",
+        }
+
+    def _default_latest_task(self) -> dict[str, Any]:
+        return {
+            "task_id": "",
+            "session_id": "",
+            "slot_id": "",
+            "status": "",
+            "stage": "",
+            "provider": "",
+            "query_preview": "",
+            "started_at": None,
+            "finished_at": None,
+            "total_ms": None,
+            "inference_ms": None,
+            "submit_ms": None,
+            "model_latency_ms": None,
+            "answer_chars": None,
+            "prompt_tokens": None,
+            "completion_tokens": None,
+            "total_tokens": None,
+            "error": "",
         }

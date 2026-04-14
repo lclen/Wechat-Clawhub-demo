@@ -88,7 +88,8 @@ class PairingDiagnosticState:
     last_auth_path: str = ""
     expected_token_masked: str = ""
     provided_token_masked: str = ""
-    timeline: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=24))
+    latest_task: dict[str, object] = field(default_factory=dict)
+    timeline: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=60))
     updated_at: object = field(default_factory=utcnow)
 
 
@@ -952,6 +953,13 @@ class SetupService:
             metadata={str(key): str(value) for key, value in metadata.items()} if isinstance(metadata, dict) else {},
             level=str(event.get("level", "info")),
         )
+        if isinstance(snapshot, dict):
+            latest_task = snapshot.get("latest_task")
+            if isinstance(latest_task, dict):
+                state.latest_task = {
+                    str(key): value
+                    for key, value in latest_task.items()
+                }
         state.updated_at = utcnow()
         self._schedule_node_diagnostics_publish(state.node_id)
 
@@ -975,6 +983,7 @@ class SetupService:
             "last_auth_path": state.last_auth_path,
             "expected_token_masked": state.expected_token_masked,
             "provided_token_masked": state.provided_token_masked,
+            "latest_task": dict(state.latest_task),
             "timeline": list(state.timeline),
         }
 
@@ -1157,6 +1166,12 @@ class SetupService:
         state.last_auth_path = str(payload.get("last_auth_path") or "")
         state.expected_token_masked = str(payload.get("expected_token_masked") or "")
         state.provided_token_masked = str(payload.get("provided_token_masked") or "")
+        latest_task = payload.get("latest_task")
+        if isinstance(latest_task, dict):
+            state.latest_task = {
+                str(key): value
+                for key, value in latest_task.items()
+            }
         state.updated_at = self._coerce_datetime(payload.get("updated_at"), utcnow()) or utcnow()
         timeline = payload.get("timeline")
         if isinstance(timeline, list):

@@ -1304,7 +1304,14 @@ export function App() {
     });
     if (!filtered.length) return "当前节点仅有心跳记录（本机直连鉴权），暂无其他诊断事件。";
     return filtered
-      .map((item) => `[${formatTimeLabel(item.timestamp, true)}] ${item.category}/${item.result} ${item.trace_id ? `trace=${item.trace_id} ` : ""}${item.message}`)
+      .map((item) => {
+        const metadataText = Object.entries(item.metadata || {})
+          .filter(([, value]) => value)
+          .slice(0, 6)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(" ");
+        return `[${formatTimeLabel(item.timestamp, true)}] ${item.category}/${item.result} ${item.trace_id ? `trace=${item.trace_id} ` : ""}${item.message}${metadataText ? ` | ${metadataText}` : ""}`;
+      })
       .join("\n");
   }, [selectedNodeDiagnostics]);
   const displayNodeInventory = useMemo(
@@ -1637,6 +1644,44 @@ export function App() {
         value: selectedNodeDiagnostics.last_heartbeat_at ? formatTimeLabel(selectedNodeDiagnostics.last_heartbeat_at, true) : "暂无",
       },
     ];
+    if (selectedNodeDiagnostics.latest_task?.task_id) {
+      rows.push({ label: "最近任务", value: selectedNodeDiagnostics.latest_task.task_id });
+      if (selectedNodeDiagnostics.latest_task.status || selectedNodeDiagnostics.latest_task.stage) {
+        rows.push({
+          label: "任务状态",
+          value: [selectedNodeDiagnostics.latest_task.status, selectedNodeDiagnostics.latest_task.stage].filter(Boolean).join(" / ") || "未知",
+        });
+      }
+      if (selectedNodeDiagnostics.latest_task.started_at) {
+        rows.push({ label: "任务开始", value: formatTimeLabel(selectedNodeDiagnostics.latest_task.started_at, true) });
+      }
+      if (selectedNodeDiagnostics.latest_task.finished_at) {
+        rows.push({ label: "任务结束", value: formatTimeLabel(selectedNodeDiagnostics.latest_task.finished_at, true) });
+      }
+      const timingParts = [
+        selectedNodeDiagnostics.latest_task.total_ms != null ? `总耗时 ${selectedNodeDiagnostics.latest_task.total_ms} ms` : "",
+        selectedNodeDiagnostics.latest_task.inference_ms != null ? `推理 ${selectedNodeDiagnostics.latest_task.inference_ms} ms` : "",
+        selectedNodeDiagnostics.latest_task.submit_ms != null ? `提交 ${selectedNodeDiagnostics.latest_task.submit_ms} ms` : "",
+        selectedNodeDiagnostics.latest_task.model_latency_ms != null ? `模型 ${selectedNodeDiagnostics.latest_task.model_latency_ms} ms` : "",
+      ].filter(Boolean);
+      if (timingParts.length) {
+        rows.push({ label: "耗时拆分", value: timingParts.join(" · ") });
+      }
+      const tokenParts = [
+        selectedNodeDiagnostics.latest_task.prompt_tokens != null ? `prompt ${selectedNodeDiagnostics.latest_task.prompt_tokens}` : "",
+        selectedNodeDiagnostics.latest_task.completion_tokens != null ? `completion ${selectedNodeDiagnostics.latest_task.completion_tokens}` : "",
+        selectedNodeDiagnostics.latest_task.total_tokens != null ? `total ${selectedNodeDiagnostics.latest_task.total_tokens}` : "",
+      ].filter(Boolean);
+      if (tokenParts.length) {
+        rows.push({ label: "Token", value: tokenParts.join(" · ") });
+      }
+      if (selectedNodeDiagnostics.latest_task.query_preview) {
+        rows.push({ label: "问题预览", value: selectedNodeDiagnostics.latest_task.query_preview, multiline: true });
+      }
+      if (selectedNodeDiagnostics.latest_task.error) {
+        rows.push({ label: "任务错误", value: selectedNodeDiagnostics.latest_task.error, multiline: true });
+      }
+    }
     if (selectedNodeDiagnostics.last_auth_decision) {
       rows.push({ label: "最近鉴权", value: selectedNodeDiagnostics.last_auth_decision });
       if (selectedNodeDiagnostics.last_auth_failure_at) {

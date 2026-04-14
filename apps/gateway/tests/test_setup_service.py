@@ -878,6 +878,51 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(timeline_item["metadata"]["session_id"], "session-1")
         self.assertEqual(timeline_item["metadata"]["slot_id"], "slot-01")
 
+    async def test_ingest_node_diagnostics_event_exposes_latest_task_summary(self) -> None:
+        started_at = datetime.now(UTC)
+        finished_at = datetime.now(UTC)
+        self.service.ingest_node_diagnostics_event(
+            "node-remote",
+            {
+                "event": {
+                    "category": "task",
+                    "result": "completed",
+                    "message": "任务已完成，网关结果提交成功。",
+                    "trace_id": "trace-task",
+                    "level": "info",
+                    "metadata": {
+                        "task_id": "task-1",
+                        "session_id": "session-1",
+                        "total_ms": "4200",
+                    },
+                },
+                "snapshot": {
+                    "node_id": "node-remote",
+                    "node_kind": "remote",
+                    "latest_task": {
+                        "task_id": "task-1",
+                        "session_id": "session-1",
+                        "status": "succeeded",
+                        "stage": "completed",
+                        "provider": "dify",
+                        "started_at": started_at.isoformat(),
+                        "finished_at": finished_at.isoformat(),
+                        "total_ms": 4200,
+                        "inference_ms": 3900,
+                        "submit_ms": 120,
+                        "model_latency_ms": 3200,
+                        "answer_chars": 88,
+                    },
+                },
+            },
+        )
+
+        diagnostics = self.service.get_node_diagnostics("node-remote")
+        self.assertEqual(diagnostics["latest_task"]["task_id"], "task-1")
+        self.assertEqual(diagnostics["latest_task"]["status"], "succeeded")
+        self.assertEqual(diagnostics["latest_task"]["total_ms"], 4200)
+        self.assertEqual(diagnostics["timeline"][-1]["metadata"]["task_id"], "task-1")
+
     async def test_load_persisted_node_diagnostics_restores_timeline(self) -> None:
         persisted_payload = {
             "node_id": "node-remote",
@@ -888,6 +933,12 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
             "last_pairing_status": "paired",
             "last_register_result": "failed",
             "last_register_at": datetime.now(UTC).isoformat(),
+            "latest_task": {
+                "task_id": "task-persisted",
+                "status": "failed",
+                "stage": "failed",
+                "error": "timeout",
+            },
             "timeline": [
                 {
                     "timestamp": datetime.now(UTC).isoformat(),
@@ -915,6 +966,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         diagnostics = service.get_node_diagnostics("node-remote")
         self.assertEqual(diagnostics["connection_state"], "auth_failed")
         self.assertEqual(diagnostics["last_pairing_trace_id"], "trace-restore")
+        self.assertEqual(diagnostics["latest_task"]["task_id"], "task-persisted")
         self.assertEqual(diagnostics["timeline"][-1]["metadata"]["source"], "persisted")
 
     async def test_write_env_updates_normalizes_blank_lines_and_windows_newlines(self) -> None:

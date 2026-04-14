@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, Mock
 
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueue
-from app.models.dispatch import ChannelReleasedRequest
+from app.models.dispatch import ChannelReleasedRequest, DispatchTask
 from app.models.node import NodeRecord, NodeStatus
 from app.models.session import MessageRecord, MessageRole, RoutingMode, SessionRecord, SessionStatus, SessionSwitchAction
 
@@ -372,6 +372,48 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(released, session)
         self.queue._release_slot.assert_not_awaited()
+
+    async def test_reconcile_session_state_recovers_timed_out_inflight_task(self) -> None:
+        session = self._build_session(session_id="session-stale", assigned_node_id="node-1", assigned_slot_id="slot-01")
+        session = session.model_copy(update={"active_task_id": "task-stale", "queue_status": "inflight"})
+        message = self._build_message(session_id="session-stale", message_id="msg-stale")
+        task = Mock()
+        task.task_id = "task-stale"
+        task.session_id = "session-stale"
+        task.created_at = datetime.now(UTC) - timedelta(seconds=180)
+
+        self.store.get.side_effect = [
+            DispatchTask(
+                task_id="task-stale",
+                session_id="session-stale",
+                node_id="node-1",
+                slot_id="slot-01",
+                agent_id="agent-1",
+                user_id="user-1",
+                context_summary="",
+                recent_messages=[message],
+                message=message,
+                context_version=1,
+                retry_count=0,
+                created_at=task.created_at,
+            ).model_dump_json(),
+            "node-1",
+        ]
+        cleared_session = session.model_copy(update={"active_task_id": None, "queue_status": "none"})
+        released_session = cleared_session.model_copy(update={"assigned_slot_id": None})
+        self.session_manager.clear_dispatch_state.return_value = cleared_session
+        self.queue._release_slot = AsyncMock(return_value=released_session)  # type: ignore[method-assign]
+
+        result = await self.queue.reconcile_session_state(session)
+
+        self.assertEqual(result.assigned_slot_id, None)
+        self.assertEqual(result.active_task_id, None)
+        self.store.delete.assert_awaited_once_with(
+            "wch:dispatch:task:task-stale",
+            "wch:dispatch:inflight:task-stale",
+            "wch:dispatch:session:session-stale",
+        )
+        self.queue._release_slot.assert_awaited_once()
 
     async def test_ensure_slot_assignment_keeps_manual_binding_on_selected_node_only(self) -> None:
         session = self._build_session(session_id="session-8", assigned_node_id="node-manual", assigned_slot_id=None)

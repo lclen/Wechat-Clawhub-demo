@@ -120,6 +120,17 @@ class DispatchQueue:
         )
         return task
 
+    async def reconcile_session_state(self, session: SessionRecord) -> SessionRecord:
+        session = await self._release_expired_slot_if_needed(session)
+        session = await self._recover_stale_dispatch_if_needed(session)
+        return session
+
+    async def reconcile_sessions_state(self, sessions: list[SessionRecord]) -> list[SessionRecord]:
+        reconciled_sessions: list[SessionRecord] = []
+        for session in sessions:
+            reconciled_sessions.append(await self.reconcile_session_state(session))
+        return reconciled_sessions
+
     async def handle_inbound_dispatch_failure(
         self,
         *,

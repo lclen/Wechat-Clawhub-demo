@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import logging
 import json
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -17,8 +18,13 @@ logger = logging.getLogger(__name__)
 class OpenAICompatibleClient:
     """OpenAI-compatible chat client for worker-side model execution."""
 
-    def __init__(self, settings: NodeSettings) -> None:
+    def __init__(
+        self,
+        settings: NodeSettings,
+        event_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> None:
         self._settings = settings
+        self._event_callback = event_callback
         self._client = httpx.AsyncClient(
             base_url=settings.openai_base_url.rstrip("/"),
             timeout=httpx.Timeout(60.0),
@@ -40,6 +46,7 @@ class OpenAICompatibleClient:
         query: str,
         context_summary: str,
         recent_messages: list[dict[str, Any]],
+        trace_metadata: dict[str, str] | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         messages = self._build_messages(
             session_id=session_id,
@@ -74,6 +81,18 @@ class OpenAICompatibleClient:
                 "enable_search_extension": self._settings.openai_enable_search_extension,
             }
         started_at = time.perf_counter()
+        self._emit_event(
+            result="model_request_started",
+            message="开始调用 DashScope 兼容接口。",
+            session_id=session_id,
+            metadata={
+                **(trace_metadata or {}),
+                "provider": self._detect_provider(),
+                "model": self._settings.openai_model,
+                "query_chars": str(len(query)),
+                "recent_message_count": str(len(recent_messages)),
+            },
+        )
         response = await self._client.post("/chat/completions", json=payload)
         response.raise_for_status()
         data = response.json()
@@ -96,7 +115,49 @@ class OpenAICompatibleClient:
             self._safe_usage_value(usage, "completion_tokens"),
             self._safe_usage_value(usage, "total_tokens"),
         )
+        self._emit_event(
+            result="model_request_finished",
+            message="DashScope 兼容接口已返回响应。",
+            session_id=session_id,
+            metadata={
+                **(trace_metadata or {}),
+                "provider": self._detect_provider(),
+                "model": self._settings.openai_model,
+                "duration_ms": str(max(1, int(duration_ms))),
+                "answer_chars": str(len(content)),
+                "prompt_tokens": self._safe_usage_value(usage, "prompt_tokens"),
+                "completion_tokens": self._safe_usage_value(usage, "completion_tokens"),
+                "total_tokens": self._safe_usage_value(usage, "total_tokens"),
+            },
+        )
         return content, data.get("usage")
+
+    def _emit_event(
+        self,
+        *,
+        result: str,
+        message: str,
+        session_id: str,
+        metadata: dict[str, str] | None = None,
+        level: str = "info",
+    ) -> None:
+        if self._event_callback is None:
+            return
+        try:
+            self._event_callback(
+                {
+                    "category": "inference",
+                    "result": result,
+                    "message": message,
+                    "level": level,
+                    "metadata": {
+                        "session_id": session_id,
+                        **(metadata or {}),
+                    },
+                }
+            )
+        except Exception:
+            return
 
     def _build_messages(
         self,

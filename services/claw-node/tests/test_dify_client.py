@@ -152,6 +152,7 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_ask_falls_back_to_streaming_for_agent_chat_app(self) -> None:
         requests_seen: list[str] = []
+        emitted_events: list[dict[str, object]] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             payload = json.loads(request.content.decode("utf-8"))
@@ -180,7 +181,7 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
             CLAW_DIFY_BASE_URL="http://127.0.0.1:3000/v1",
             CLAW_DIFY_API_KEY="secret",
         )
-        client = DifyClient(settings)
+        client = DifyClient(settings, event_callback=emitted_events.append)
         await client._client.aclose()
         client._client = httpx.AsyncClient(
             base_url=settings.dify_base_url.rstrip("/"),
@@ -204,6 +205,15 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage["total_tokens"], 12)
         self.assertEqual(usage["dify_conversation_id"], "conv-s")
         self.assertEqual(requests_seen, ["blocking", "streaming"])
+        self.assertEqual(
+            [str(item.get("result")) for item in emitted_events],
+            [
+                "dify_request_started",
+                "dify_blocking_rejected",
+                "dify_streaming_started",
+                "dify_request_finished",
+            ],
+        )
 
     def test_gateway_client_uses_additional_headers_for_websockets_15(self) -> None:
         from claw_node.gateway_client import GatewayClient

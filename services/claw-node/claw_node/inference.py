@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from claw_node.config import NodeSettings
 from claw_node.dify_client import DifyClient
@@ -16,20 +18,21 @@ def create_inference_client(
     settings: NodeSettings,
     *,
     local_cache: LocalCache | None = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[InferenceClient | None, str | None]:
     try:
         provider = settings.model_provider.strip().lower()
         if provider in {"openai", "openai_compatible"}:
             _ensure_openai_config(settings)
-            return OpenAICompatibleClient(settings), None
+            return OpenAICompatibleClient(settings, event_callback=event_callback), None
         if provider == "dify":
             _ensure_dify_config(settings)
-            return DifyClient(settings, local_cache=local_cache), None
+            return DifyClient(settings, local_cache=local_cache, event_callback=event_callback), None
 
         if settings.openai_base_url and settings.openai_api_key and settings.openai_model:
-            return OpenAICompatibleClient(settings), None
+            return OpenAICompatibleClient(settings, event_callback=event_callback), None
         if settings.dify_base_url and settings.dify_api_key:
-            return DifyClient(settings, local_cache=local_cache), None
+            return DifyClient(settings, local_cache=local_cache, event_callback=event_callback), None
 
         raise RuntimeError(
             "No inference backend is configured. Set OpenAI-compatible or Dify environment variables."

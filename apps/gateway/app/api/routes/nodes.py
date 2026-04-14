@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 
 from app.core.config import Settings
@@ -33,6 +35,7 @@ from app.services.redis_store import RedisStore
 from app.services.setup_service import SetupService
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("", response_model=NodeListResponse)
@@ -323,6 +326,13 @@ async def stream_node_tasks(
                         usage=event.get("usage") if isinstance(event.get("usage"), dict) else None,
                         metadata={k: str(v) for k, v in (event.get("metadata") or {}).items()} if isinstance(event.get("metadata"), dict) else {},
                     )
+                    logger.info(
+                        "[dispatch] task_result_received source=ws node=%s task_id=%s session=%s chars=%s",
+                        node_id,
+                        payload.task_id,
+                        payload.session_id,
+                        len(payload.content),
+                    )
                     await dispatch_queue.submit_result(payload)
                 except DispatchTaskNotFoundError:
                     await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "task_not_found"})
@@ -349,6 +359,14 @@ async def stream_node_tasks(
                         error_message=str(event["error_message"]),
                         retryable=bool(event.get("retryable", False)),
                         metadata={k: str(v) for k, v in (event.get("metadata") or {}).items()} if isinstance(event.get("metadata"), dict) else {},
+                    )
+                    logger.warning(
+                        "[dispatch] task_failure_received source=ws node=%s task_id=%s session=%s error_code=%s retryable=%s",
+                        node_id,
+                        payload.task_id,
+                        payload.session_id,
+                        payload.error_code,
+                        payload.retryable,
                     )
                     await dispatch_queue.submit_failure(payload)
                 except DispatchTaskNotFoundError:
@@ -424,6 +442,13 @@ async def submit_task_result(
     if payload.node_id != node_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="node_id mismatch")
     try:
+        logger.info(
+            "[dispatch] task_result_received source=http node=%s task_id=%s session=%s chars=%s",
+            node_id,
+            payload.task_id,
+            payload.session_id,
+            len(payload.content),
+        )
         await dispatch_queue.submit_result(payload)
         node = await registry.get(node_id)
         return NodeOperationResponse(node=node)
@@ -450,6 +475,14 @@ async def submit_task_failure(
     if payload.node_id != node_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="node_id mismatch")
     try:
+        logger.warning(
+            "[dispatch] task_failure_received source=http node=%s task_id=%s session=%s error_code=%s retryable=%s",
+            node_id,
+            payload.task_id,
+            payload.session_id,
+            payload.error_code,
+            payload.retryable,
+        )
         await dispatch_queue.submit_failure(payload)
         node = await registry.get(node_id)
         return NodeOperationResponse(node=node)

@@ -42,7 +42,11 @@ class Worker:
         self._diagnostics = NodeDiagnostics(settings, event_hook=self._enqueue_diagnostics_event)
         self._gateway = GatewayClient(settings)
         self._local_cache = LocalCache(settings)
-        self._inference, self._inference_error = create_inference_client(settings, local_cache=self._local_cache)
+        self._inference, self._inference_error = create_inference_client(
+            settings,
+            local_cache=self._local_cache,
+            event_callback=self._handle_inference_event,
+        )
         self._discovery = DiscoveryService(settings, self._handle_pair_request)
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
         self._active_tasks: set[asyncio.Task] = set()
@@ -634,6 +638,43 @@ class Worker:
                 task["session_id"],
                 len(recent_messages),
             )
+            started_at_iso = self._utcnow().isoformat()
+            common_metadata = self._task_metadata(task)
+            self._update_latest_task(
+                task=task,
+                payload={
+                    "status": "running",
+                    "stage": "received",
+                    "provider": self._effective_provider_name(),
+                    "started_at": started_at_iso,
+                    "finished_at": None,
+                    "query_preview": self._preview_text(str(message.get("content") or ""), max_len=120),
+                    "error": "",
+                },
+            )
+            self._record_task_event(
+                task=task,
+                result="started",
+                message="节点已接收任务，开始准备推理。",
+                metadata={
+                    **common_metadata,
+                    "recent_message_count": str(len(recent_messages)),
+                },
+            )
+            inference_started_at = time.perf_counter()
+            self._update_latest_task(
+                task=task,
+                payload={
+                    "status": "running",
+                    "stage": "inference_started",
+                },
+            )
+            self._record_task_event(
+                task=task,
+                result="inference_started",
+                message="开始执行模型推理。",
+                metadata=common_metadata,
+            )
             answer, usage = await self._inference.ask(
                 session_id=task["session_id"],
                 user_id=task["user_id"],
@@ -641,9 +682,55 @@ class Worker:
                 query=message["content"],
                 context_summary=task.get("context_summary", ""),
                 recent_messages=recent_messages,
+                trace_metadata=common_metadata,
             )
             result_metadata = self._stringify_mapping(usage or {})
+            inference_ms = max(1, int((time.perf_counter() - inference_started_at) * 1000))
+            model_latency_ms = self._coerce_usage_int(usage, "latency")
+            prompt_tokens = self._coerce_usage_int(usage, "prompt_tokens")
+            completion_tokens = self._coerce_usage_int(usage, "completion_tokens")
+            total_tokens = self._coerce_usage_int(usage, "total_tokens")
+            self._update_latest_task(
+                task=task,
+                payload={
+                    "status": "running",
+                    "stage": "inference_finished",
+                    "inference_ms": inference_ms,
+                    "model_latency_ms": model_latency_ms,
+                    "answer_chars": len(answer),
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                },
+            )
+            self._record_task_event(
+                task=task,
+                result="inference_finished",
+                message="模型推理已完成，开始准备提交结果。",
+                metadata={
+                    **common_metadata,
+                    "inference_ms": str(inference_ms),
+                    "model_latency_ms": "" if model_latency_ms is None else str(model_latency_ms),
+                    "answer_chars": str(len(answer)),
+                    "prompt_tokens": "" if prompt_tokens is None else str(prompt_tokens),
+                    "completion_tokens": "" if completion_tokens is None else str(completion_tokens),
+                    "total_tokens": "" if total_tokens is None else str(total_tokens),
+                },
+            )
             submit_started_at = time.perf_counter()
+            self._update_latest_task(
+                task=task,
+                payload={
+                    "status": "running",
+                    "stage": "submit_started",
+                },
+            )
+            self._record_task_event(
+                task=task,
+                result="submit_started",
+                message="开始向网关提交结果。",
+                metadata=common_metadata,
+            )
             await self._submit_task_result(
                 task_id=task["task_id"],
                 session_id=task["session_id"],
@@ -655,6 +742,30 @@ class Worker:
             await self._mark_channel_task_completed(task)
             total_ms = (time.perf_counter() - started_at) * 1000
             submit_ms = (time.perf_counter() - submit_started_at) * 1000
+            self._update_latest_task(
+                task=task,
+                payload={
+                    "status": "succeeded",
+                    "stage": "completed",
+                    "finished_at": self._utcnow().isoformat(),
+                    "total_ms": max(1, int(total_ms)),
+                    "submit_ms": max(1, int(submit_ms)),
+                    "answer_chars": len(answer),
+                    "error": "",
+                },
+            )
+            self._record_task_event(
+                task=task,
+                result="completed",
+                message="任务已完成，网关结果提交成功。",
+                metadata={
+                    **common_metadata,
+                    "total_ms": str(max(1, int(total_ms))),
+                    "submit_ms": str(max(1, int(submit_ms))),
+                    "answer_chars": str(len(answer)),
+                    "reasoning_tokens": self._extract_reasoning_tokens(usage),
+                },
+            )
             logger.info(
                 "[dispatch] done task_id=%s session=%s total_ms=%.0f submit_ms=%.0f answer_chars=%s reasoning_tokens=%s",
                 task["task_id"],
@@ -672,14 +783,40 @@ class Worker:
         except Exception as exc:
             logger.exception("Task execution failed: %s", exc)
             self._last_error = str(exc)
-            self._diagnostics.record_event(
-                category="task",
+            total_ms = max(1, int((time.perf_counter() - started_at) * 1000))
+            common_metadata = self._task_metadata(task)
+            self._update_latest_task(
+                task=task,
+                payload={
+                    "status": "failed",
+                    "stage": "failed",
+                    "finished_at": self._utcnow().isoformat(),
+                    "total_ms": total_ms,
+                    "error": str(exc),
+                },
+            )
+            self._record_task_event(
+                task=task,
                 result="failed",
                 message=str(exc),
-                trace_id=self._settings.pairing_trace_id.strip(),
+                metadata={
+                    **common_metadata,
+                    "total_ms": str(total_ms),
+                    "error_code": type(exc).__name__,
+                },
                 level="error",
             )
             with suppress(Exception):
+                self._record_task_event(
+                    task=task,
+                    result="submit_failure_started",
+                    message="开始向网关提交失败结果。",
+                    metadata={
+                        **common_metadata,
+                        "error_code": type(exc).__name__,
+                    },
+                    level="error",
+                )
                 await self._submit_task_failure(
                     task_id=task["task_id"],
                     session_id=task["session_id"],
@@ -687,6 +824,16 @@ class Worker:
                     error_code=type(exc).__name__,
                     error_message=str(exc),
                     retryable=False,
+                )
+                self._record_task_event(
+                    task=task,
+                    result="submit_failure_finished",
+                    message="失败结果已提交到网关。",
+                    metadata={
+                        **common_metadata,
+                        "error_code": type(exc).__name__,
+                    },
+                    level="error",
                 )
             with suppress(Exception):
                 await self._mark_channel_task_completed(task)
@@ -965,6 +1112,95 @@ class Worker:
 
     def _stringify_mapping(self, payload: dict[str, Any]) -> dict[str, str]:
         return {str(k): str(v) for k, v in payload.items()}
+
+    def _handle_inference_event(self, payload: dict[str, Any]) -> None:
+        category = str(payload.get("category") or "inference").strip() or "inference"
+        result = str(payload.get("result") or "unknown").strip() or "unknown"
+        message = str(payload.get("message") or result).strip() or result
+        level = str(payload.get("level") or "info").strip() or "info"
+        metadata = payload.get("metadata")
+        normalized_metadata = (
+            {str(key): str(value) for key, value in metadata.items()}
+            if isinstance(metadata, dict)
+            else {}
+        )
+        task_id = normalized_metadata.get("task_id", "")
+        session_id = normalized_metadata.get("session_id", "")
+        if task_id or session_id:
+            latest_payload: dict[str, Any] = {
+                "task_id": task_id,
+                "session_id": session_id,
+                "status": "running",
+                "stage": result,
+            }
+            if result == "dify_request_finished":
+                latency_ms = self._coerce_int(normalized_metadata.get("latency"))
+                if latency_ms is not None:
+                    latest_payload["model_latency_ms"] = latency_ms
+            self._diagnostics.update_latest_task(latest_payload)
+        self._diagnostics.record_event(
+            category=category,
+            result=result,
+            message=message,
+            trace_id=self._settings.pairing_trace_id.strip(),
+            metadata=normalized_metadata,
+            level=level,
+        )
+
+    def _task_metadata(self, task: dict[str, Any]) -> dict[str, str]:
+        return {
+            "task_id": str(task.get("task_id") or ""),
+            "session_id": str(task.get("session_id") or ""),
+            "slot_id": str(task.get("slot_id") or ""),
+            "context_version": str(task.get("context_version") or ""),
+            "user_id": str(task.get("user_id") or ""),
+        }
+
+    def _update_latest_task(self, *, task: dict[str, Any], payload: dict[str, Any]) -> None:
+        self._diagnostics.update_latest_task(
+            {
+                **self._task_metadata(task),
+                **payload,
+            }
+        )
+
+    def _record_task_event(
+        self,
+        *,
+        task: dict[str, Any],
+        result: str,
+        message: str,
+        metadata: dict[str, str] | None = None,
+        level: str = "info",
+    ) -> None:
+        self._diagnostics.record_event(
+            category="task",
+            result=result,
+            message=message,
+            trace_id=self._settings.pairing_trace_id.strip(),
+            metadata=metadata or self._task_metadata(task),
+            level=level,
+        )
+
+    def _effective_provider_name(self) -> str:
+        if isinstance(self._inference, DifyClient):
+            return "dify"
+        if isinstance(self._inference, OpenAICompatibleClient):
+            return "dashscope"
+        return str(self._settings.model_provider or "").strip().lower() or "unknown"
+
+    def _coerce_usage_int(self, usage: dict[str, Any] | None, key: str) -> int | None:
+        if not usage:
+            return None
+        return self._coerce_int(usage.get(key))
+
+    def _coerce_int(self, value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            return int(float(str(value)))
+        except (TypeError, ValueError):
+            return None
 
     def _utcnow(self) -> datetime:
         return datetime.now(UTC)

@@ -33,7 +33,27 @@ export type NodeInventoryRecord = { node_id: string; node_kind: NodeKind; paired
 export type NodeInventorySummary = { paired_total: number; online_total: number; offline_total: number };
 export type NodeListResponse = { nodes: NodeRecord[]; inventory: NodeInventoryRecord[]; summary: NodeInventorySummary };
 export type NodeDiagnosticsEvent = { timestamp: string; level: string; category: string; result: string; message: string; trace_id: string; metadata: Record<string, string> };
-export type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; connection_state: NodeInventoryConnectionState; last_error: string; last_pairing_trace_id: string; last_pairing_status: string; last_pairing_at: string | null; last_register_result: string; last_register_at: string | null; last_heartbeat_result: string; last_heartbeat_at: string | null; last_auth_failure_at: string | null; last_auth_decision: string; last_auth_client_host: string; last_auth_path: string; expected_token_masked: string; provided_token_masked: string; timeline: NodeDiagnosticsEvent[] };
+export type NodeLatestTaskRecord = {
+  task_id: string;
+  session_id: string;
+  slot_id: string;
+  status: string;
+  stage: string;
+  provider: string;
+  query_preview: string;
+  started_at: string | null;
+  finished_at: string | null;
+  total_ms: number | null;
+  inference_ms: number | null;
+  submit_ms: number | null;
+  model_latency_ms: number | null;
+  answer_chars: number | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  total_tokens: number | null;
+  error: string;
+};
+export type NodeDiagnosticsRecord = { node_id: string; node_kind: NodeKind; connection_state: NodeInventoryConnectionState; last_error: string; last_pairing_trace_id: string; last_pairing_status: string; last_pairing_at: string | null; last_register_result: string; last_register_at: string | null; last_heartbeat_result: string; last_heartbeat_at: string | null; last_auth_failure_at: string | null; last_auth_decision: string; last_auth_client_host: string; last_auth_path: string; expected_token_masked: string; provided_token_masked: string; latest_task: NodeLatestTaskRecord; timeline: NodeDiagnosticsEvent[] };
 export type NodeDiagnosticsResponse = { node_id: string; diagnostics: NodeDiagnosticsRecord };
 export type NodeDiagnosticsStreamEnvelope = { type: "diagnostics_snapshot"; node_id: string; diagnostics: NodeDiagnosticsRecord };
 export type SessionsResponse = { sessions: SessionRecord[] };

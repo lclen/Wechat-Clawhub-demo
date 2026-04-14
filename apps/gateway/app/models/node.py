@@ -129,6 +129,27 @@ class NodeDiagnosticsEvent(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+class NodeLatestTaskRecord(BaseModel):
+    task_id: str = ""
+    session_id: str = ""
+    slot_id: str = ""
+    status: str = ""
+    stage: str = ""
+    provider: str = ""
+    query_preview: str = ""
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    total_ms: int | None = None
+    inference_ms: int | None = None
+    submit_ms: int | None = None
+    model_latency_ms: int | None = None
+    answer_chars: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    error: str = ""
+
+
 class NodeDiagnosticsRecord(BaseModel):
     node_id: str
     node_kind: NodeKind = "remote"
@@ -147,6 +168,7 @@ class NodeDiagnosticsRecord(BaseModel):
     last_auth_path: str = ""
     expected_token_masked: str = ""
     provided_token_masked: str = ""
+    latest_task: NodeLatestTaskRecord = Field(default_factory=NodeLatestTaskRecord)
     timeline: list[NodeDiagnosticsEvent] = Field(default_factory=list)
 
 
