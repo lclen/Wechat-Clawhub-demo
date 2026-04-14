@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 
@@ -293,12 +294,14 @@ async def stream_node_tasks(
 
     try:
         while True:
+            receive_started_at = time.perf_counter()
             event = await node_stream.receive_event(websocket)
             if event is None:
                 # Connection closed
                 break
 
             event_type = event.get("type")
+            receive_ms = (time.perf_counter() - receive_started_at) * 1000
 
             if event_type == "ready":
                 # Node is ready for a task
@@ -327,13 +330,29 @@ async def stream_node_tasks(
                         metadata={k: str(v) for k, v in (event.get("metadata") or {}).items()} if isinstance(event.get("metadata"), dict) else {},
                     )
                     logger.info(
-                        "[dispatch] task_result_received source=ws node=%s task_id=%s session=%s chars=%s",
+                        "[dispatch] task_result_received source=ws node=%s task_id=%s session=%s chars=%s receive_ms=%.0f",
+                        node_id,
+                        payload.task_id,
+                        payload.session_id,
+                        len(payload.content),
+                        receive_ms,
+                    )
+                    submit_started_at = time.perf_counter()
+                    logger.info(
+                        "[dispatch] task_result_dispatching source=ws node=%s task_id=%s session=%s chars=%s",
                         node_id,
                         payload.task_id,
                         payload.session_id,
                         len(payload.content),
                     )
                     await dispatch_queue.submit_result(payload)
+                    logger.info(
+                        "[dispatch] task_result_dispatched source=ws node=%s task_id=%s session=%s submit_ms=%.0f",
+                        node_id,
+                        payload.task_id,
+                        payload.session_id,
+                        (time.perf_counter() - submit_started_at) * 1000,
+                    )
                 except DispatchTaskNotFoundError:
                     await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "task_not_found"})
                 except DispatchQueueError:

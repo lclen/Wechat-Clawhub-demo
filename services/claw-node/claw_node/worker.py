@@ -851,14 +851,44 @@ class Worker:
             "metadata": metadata or {},
             "usage": usage or {},
         }
+        logger.info(
+            "[dispatch] task_result_submit_started transport=task_stream task_id=%s session=%s context_version=%s chars=%s",
+            task_id,
+            session_id,
+            context_version,
+            len(content),
+        )
+        send_started_at = time.perf_counter()
         if await self._try_send_task_stream_event(event):
+            logger.info(
+                "[dispatch] task_result_submit_finished transport=task_stream task_id=%s session=%s send_ms=%.0f chars=%s",
+                task_id,
+                session_id,
+                (time.perf_counter() - send_started_at) * 1000,
+                len(content),
+            )
             return
+        logger.info(
+            "[dispatch] task_result_submit_fallback transport=http task_id=%s session=%s stream_send_ms=%.0f chars=%s",
+            task_id,
+            session_id,
+            (time.perf_counter() - send_started_at) * 1000,
+            len(content),
+        )
+        http_started_at = time.perf_counter()
         await self._gateway.submit_result(
             task_id=task_id,
             session_id=session_id,
             context_version=context_version,
             content=content,
             metadata=metadata,
+        )
+        logger.info(
+            "[dispatch] task_result_submit_finished transport=http task_id=%s session=%s send_ms=%.0f chars=%s",
+            task_id,
+            session_id,
+            (time.perf_counter() - http_started_at) * 1000,
+            len(content),
         )
 
     async def _submit_task_failure(
