@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import unittest
 
-from app.api.routes.nodes import _task_stream_ready_wait_seconds
+from app.api.routes.nodes import _summarize_task_stream_event, _task_stream_ready_wait_seconds
 from app.models.node import NodeStatus
 from app.models.node import NodeRecord
 from app.services.node_inventory import build_node_inventory
@@ -143,6 +143,27 @@ class NodeTaskStreamReadyWaitTests(unittest.TestCase):
         self.assertEqual(
             _task_stream_ready_wait_seconds(inflight_task_count=1, default_wait_seconds=15),
             0,
+        )
+
+
+class NodeTaskStreamEventSummaryTests(unittest.TestCase):
+    def test_event_summary_includes_type_task_and_session(self) -> None:
+        self.assertEqual(
+            _summarize_task_stream_event(
+                {
+                    "type": "task_result",
+                    "task_id": "task-1",
+                    "session_id": "session-1",
+                    "content": "hello",
+                }
+            ),
+            "type=task_result task_id=task-1 session_id=session-1 keys=content,session_id,task_id,type",
+        )
+
+    def test_event_summary_handles_missing_fields(self) -> None:
+        self.assertEqual(
+            _summarize_task_stream_event({"foo": "bar"}),
+            "type=<missing> task_id=- session_id=- keys=foo",
         )
 
 

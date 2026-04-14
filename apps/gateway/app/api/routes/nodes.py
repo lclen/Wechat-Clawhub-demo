@@ -45,6 +45,14 @@ def _task_stream_ready_wait_seconds(*, inflight_task_count: int, default_wait_se
     return default_wait_seconds
 
 
+def _summarize_task_stream_event(event: dict[str, object]) -> str:
+    event_type = str(event.get("type") or "<missing>")
+    task_id = str(event.get("task_id") or "-")
+    session_id = str(event.get("session_id") or "-")
+    keys = ",".join(sorted(str(key) for key in event.keys()))
+    return f"type={event_type} task_id={task_id} session_id={session_id} keys={keys}"
+
+
 @router.get("", response_model=NodeListResponse)
 async def list_nodes(
     store: RedisStore = Depends(get_redis_store),
@@ -311,12 +319,29 @@ async def stream_node_tasks(
 
             event_type = event.get("type")
             receive_ms = (time.perf_counter() - receive_started_at) * 1000
+            logger.info(
+                "[dispatch] ws_event_received source=ws node=%s %s inflight=%s receive_ms=%.0f read_ms=%.0f decode_ms=%.0f message_chars=%s",
+                node_id,
+                _summarize_task_stream_event(event),
+                len(inflight_task_ids),
+                receive_ms,
+                float(receive_metrics.get("read_ms", 0.0)),
+                float(receive_metrics.get("decode_ms", 0.0)),
+                int(receive_metrics.get("message_chars", 0)),
+            )
 
             if event_type == "ready":
                 # Node is ready for a task
                 effective_wait_seconds = _task_stream_ready_wait_seconds(
                     inflight_task_count=len(inflight_task_ids),
                     default_wait_seconds=wait_seconds,
+                )
+                logger.info(
+                    "[dispatch] ready_received source=ws node=%s inflight=%s default_wait_seconds=%s effective_wait_seconds=%s",
+                    node_id,
+                    len(inflight_task_ids),
+                    wait_seconds,
+                    effective_wait_seconds,
                 )
                 task = await dispatch_queue.pull_for_node(node_id, wait_seconds=effective_wait_seconds)
                 if task is None:
@@ -358,11 +383,12 @@ async def stream_node_tasks(
                         metadata={k: str(v) for k, v in (event.get("metadata") or {}).items()} if isinstance(event.get("metadata"), dict) else {},
                     )
                     logger.info(
-                        "[dispatch] task_result_received source=ws node=%s task_id=%s session=%s chars=%s receive_ms=%.0f read_ms=%.0f decode_ms=%.0f message_chars=%s",
+                        "[dispatch] task_result_received source=ws node=%s task_id=%s session=%s chars=%s inflight_before=%s receive_ms=%.0f read_ms=%.0f decode_ms=%.0f message_chars=%s",
                         node_id,
                         payload.task_id,
                         payload.session_id,
                         len(payload.content),
+                        len(inflight_task_ids),
                         receive_ms,
                         float(receive_metrics.get("read_ms", 0.0)),
                         float(receive_metrics.get("decode_ms", 0.0)),
