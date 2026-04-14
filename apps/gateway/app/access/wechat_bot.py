@@ -67,7 +67,7 @@ TYPING_STALE_THRESHOLD_SECONDS = 1_800
 SWITCH_COMMANDS = {"切换节点", "/switch"}
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((.*?)\)", re.DOTALL)
 STANDALONE_URL_RE = re.compile(r"^\s*(https?://\S+)\s*$", re.IGNORECASE)
-MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 MARKDOWN_ITALIC_RE = re.compile(r"\*(.+?)\*")
 MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
@@ -160,6 +160,11 @@ def _extract_markdown_image_url(raw_url: str) -> str:
     return candidate
 
 
+def _looks_like_remote_url(url: str) -> bool:
+    normalized = url.strip().lower()
+    return normalized.startswith("http://") or normalized.startswith("https://")
+
+
 def _build_wechat_client_version(version: str) -> int:
     parts = [int(part) if part.isdigit() else 0 for part in version.split(".")]
     major = parts[0] if len(parts) > 0 else 0
@@ -200,11 +205,12 @@ def _split_text_segment_with_standalone_urls(text: str) -> list[OutboundMarkdown
     pending_lines: list[str] = []
     for line in text.splitlines(keepends=True):
         match = STANDALONE_URL_RE.match(line)
-        if match and _looks_like_image_url(match.group(1).strip()):
+        if match and _looks_like_remote_url(match.group(1).strip()):
             if pending_lines:
                 parts.append(OutboundMarkdownSegment(kind="text", text="".join(pending_lines)))
                 pending_lines = []
-            parts.append(OutboundMarkdownSegment(kind="image", url=match.group(1).strip()))
+            url = match.group(1).strip()
+            parts.append(OutboundMarkdownSegment(kind="image" if _looks_like_image_url(url) else "file", url=url))
             continue
         pending_lines.append(line)
     if pending_lines:
@@ -215,16 +221,24 @@ def _split_text_segment_with_standalone_urls(text: str) -> list[OutboundMarkdown
 def parse_markdown_segments(content: str) -> list[OutboundMarkdownSegment]:
     base_segments: list[OutboundMarkdownSegment] = []
     cursor = 0
-    for match in MARKDOWN_IMAGE_RE.finditer(content):
+    asset_re = re.compile(r"(!)?\[([^\]]*)\]\((.*?)\)", re.DOTALL)
+    for match in asset_re.finditer(content):
         if match.start() > cursor:
             base_segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:match.start()]))
-        base_segments.append(
-            OutboundMarkdownSegment(
-                kind="image",
-                url=_extract_markdown_image_url(match.group(2)),
-                alt=match.group(1).strip(),
+        raw_markdown = match.group(0)
+        is_image = bool(match.group(1))
+        alt = (match.group(2) or "").strip()
+        url = _extract_markdown_image_url(match.group(3) or "")
+        if _looks_like_remote_url(url):
+            base_segments.append(
+                OutboundMarkdownSegment(
+                    kind="image" if is_image or _looks_like_image_url(url) else "file",
+                    url=url,
+                    alt=alt,
+                )
             )
-        )
+        else:
+            base_segments.append(OutboundMarkdownSegment(kind="text", text=raw_markdown))
         cursor = match.end()
     if cursor < len(content):
         base_segments.append(OutboundMarkdownSegment(kind="text", text=content[cursor:]))
@@ -444,14 +458,17 @@ class WeChatBotService:
             raise RuntimeError("WeChat token is not configured")
         started_at = time.perf_counter()
         segments = parse_markdown_segments(content)
+        image_segments = [segment for segment in segments if segment.kind == "image"]
+        file_segments = [segment for segment in segments if segment.kind == "file"]
         _emit_wechat_debug(
-            "wechat-bot: send_markdown user_id=%s segment_count=%d image_count=%d",
+            "wechat-bot: send_markdown user_id=%s segment_count=%d image_count=%d file_count=%d",
             user_id,
             len(segments),
-            sum(1 for segment in segments if segment.kind == "image"),
+            len(image_segments),
+            len(file_segments),
         )
-        image_segments = [segment for segment in segments if segment.kind == "image"]
-        if not image_segments:
+        asset_segments = [segment for segment in segments if segment.kind in {"image", "file"}]
+        if not asset_segments:
             client_id = await self.send_text(user_id=user_id, text=content, context_token=context_token)
             return [client_id] if client_id else []
 
@@ -459,10 +476,11 @@ class WeChatBotService:
         summary_text = _build_markdown_image_summary(segments)
         if summary_text:
             _emit_wechat_debug(
-                "wechat-bot: send_markdown summary_text_start user_id=%s text_len=%d image_count=%d",
+                "wechat-bot: send_markdown summary_text_start user_id=%s text_len=%d image_count=%d file_count=%d",
                 user_id,
                 len(summary_text),
                 len(image_segments),
+                len(file_segments),
             )
             summary_started_at = time.perf_counter()
             summary_client_id = await self.send_text(user_id=user_id, text=summary_text, context_token=context_token)
@@ -476,39 +494,42 @@ class WeChatBotService:
             if summary_client_id:
                 client_ids.append(summary_client_id)
 
-        for segment_index, segment in enumerate(image_segments, start=1):
+        for segment_index, segment in enumerate(asset_segments, start=1):
             try:
                 _emit_wechat_debug(
-                    "wechat-bot: send_markdown image_chunk_start user_id=%s segment_index=%d image_url=%s alt=%s",
+                    "wechat-bot: send_markdown asset_chunk_start user_id=%s segment_index=%d asset_kind=%s asset_url=%s alt=%s",
                     user_id,
                     segment_index,
+                    segment.kind,
                     segment.url,
                     segment.alt,
                 )
-                image_started_at = time.perf_counter()
-                image_client_id = await self.send_image_url(
+                asset_started_at = time.perf_counter()
+                asset_client_id = await self.send_asset_url(
                     user_id=user_id,
-                    image_url=segment.url,
+                    asset_url=segment.url,
                     context_token=context_token,
                 )
                 logger.info(
-                    "wechat-bot: send_markdown image_chunk_finished user_id=%s segment_index=%d image_url=%s send_ms=%.0f client_id=%s",
+                    "wechat-bot: send_markdown asset_chunk_finished user_id=%s segment_index=%d asset_kind=%s asset_url=%s send_ms=%.0f client_id=%s",
                     user_id,
                     segment_index,
+                    segment.kind,
                     segment.url,
-                    (time.perf_counter() - image_started_at) * 1000,
-                    image_client_id,
+                    (time.perf_counter() - asset_started_at) * 1000,
+                    asset_client_id,
                 )
-                if image_client_id:
-                    client_ids.append(image_client_id)
+                if asset_client_id:
+                    client_ids.append(asset_client_id)
             except Exception:
-                logger.exception("wechat-bot: markdown image send failed for %s", segment.url)
+                logger.exception("wechat-bot: markdown asset send failed for %s", segment.url)
                 fallback_text = "\n".join(part for part in [segment.alt, segment.url] if part).strip()
                 if fallback_text:
                     _emit_wechat_debug(
-                        "wechat-bot: send_markdown image_fallback_text_start user_id=%s segment_index=%d fallback_len=%d image_url=%s",
+                        "wechat-bot: send_markdown asset_fallback_text_start user_id=%s segment_index=%d asset_kind=%s fallback_len=%d asset_url=%s",
                         user_id,
                         segment_index,
+                        segment.kind,
                         len(fallback_text),
                         segment.url,
                     )
@@ -519,9 +540,10 @@ class WeChatBotService:
                         context_token=context_token,
                     )
                     logger.info(
-                        "wechat-bot: send_markdown image_fallback_text_finished user_id=%s segment_index=%d fallback_len=%d send_ms=%.0f client_id=%s",
+                        "wechat-bot: send_markdown asset_fallback_text_finished user_id=%s segment_index=%d asset_kind=%s fallback_len=%d send_ms=%.0f client_id=%s",
                         user_id,
                         segment_index,
+                        segment.kind,
                         len(fallback_text),
                         (time.perf_counter() - fallback_started_at) * 1000,
                         fallback_client_id,
@@ -537,55 +559,59 @@ class WeChatBotService:
         )
         return client_ids
 
-    async def send_image_url(self, *, user_id: str, image_url: str, context_token: str | None = None) -> str:
+    async def send_asset_url(self, *, user_id: str, asset_url: str, context_token: str | None = None) -> str:
         if not self._config.token:
             raise RuntimeError("WeChat token is not configured")
         started_at = time.perf_counter()
         ctx = self._context_tokens.get(user_id) or context_token or ""
-        _emit_wechat_debug("wechat-bot: send_image_url start user_id=%s image_url=%s", user_id, image_url)
-        image_bytes, content_type = await self._download_remote_asset(image_url)
+        _emit_wechat_debug("wechat-bot: send_asset_url start user_id=%s asset_url=%s", user_id, asset_url)
+        asset_bytes, content_type = await self._download_remote_asset(asset_url)
         _emit_wechat_debug(
-            "wechat-bot: send_image_url downloaded user_id=%s image_url=%s bytes=%d content_type=%s",
+            "wechat-bot: send_asset_url downloaded user_id=%s asset_url=%s bytes=%d content_type=%s",
             user_id,
-            image_url,
-            len(image_bytes),
+            asset_url,
+            len(asset_bytes),
             content_type,
         )
         if content_type.startswith("image/"):
             _emit_wechat_debug(
                 "wechat-bot: image_thumbnail disabled user_id=%s image_url=%s reason=official_no_need_thumb_mode",
                 user_id,
-                image_url,
+                asset_url,
             )
         uploaded = await self._cdn_upload_bytes(
-            image_bytes=image_bytes,
+            image_bytes=asset_bytes,
             to_user_id=user_id,
             mime=content_type,
-            source_url=image_url,
+            source_url=asset_url,
         )
         client_id = await self._send_uploaded_media(
             user_id=user_id,
             uploaded=uploaded,
             mime=content_type,
             context_token=ctx,
-            source_name=_guess_remote_filename(image_url, content_type),
+            source_name=_guess_remote_filename(asset_url, content_type),
         )
+        routed_as = "image" if content_type.startswith("image/") else ("video" if content_type.startswith("video/") else "file")
         _emit_wechat_debug(
-            "wechat-bot: send_image_url success user_id=%s image_url=%s client_id=%s routed_as=%s",
+            "wechat-bot: send_asset_url success user_id=%s asset_url=%s client_id=%s routed_as=%s",
             user_id,
-            image_url,
+            asset_url,
             client_id,
-            "image" if content_type.startswith("image/") else ("video" if content_type.startswith("video/") else "file"),
+            routed_as,
         )
         logger.info(
-            "wechat-bot: send_image_url success user_id=%s image_url=%s total_ms=%.0f client_id=%s routed_as=%s",
+            "wechat-bot: send_asset_url success user_id=%s asset_url=%s total_ms=%.0f client_id=%s routed_as=%s",
             user_id,
-            image_url,
+            asset_url,
             (time.perf_counter() - started_at) * 1000,
             client_id,
-            "image" if content_type.startswith("image/") else ("video" if content_type.startswith("video/") else "file"),
+            routed_as,
         )
         return client_id
+
+    async def send_image_url(self, *, user_id: str, image_url: str, context_token: str | None = None) -> str:
+        return await self.send_asset_url(user_id=user_id, asset_url=image_url, context_token=context_token)
 
     async def send_typing(self, *, user_id: str, context_token: str | None = None) -> None:
         if context_token:

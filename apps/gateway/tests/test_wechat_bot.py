@@ -91,10 +91,17 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
             "6511液晶屏接线图\nhttps://example.com/a.jpg\n辅助说明\nhttps://example.com/readme.pdf"
         )
 
-        self.assertEqual([segment.kind for segment in segments], ["text", "image", "text"])
+        self.assertEqual([segment.kind for segment in segments], ["text", "image", "text", "file"])
         self.assertEqual(segments[1].url, "https://example.com/a.jpg")
         self.assertIn("辅助说明", segments[2].text)
-        self.assertIn("https://example.com/readme.pdf", segments[2].text)
+        self.assertEqual(segments[3].url, "https://example.com/readme.pdf")
+
+    def test_parse_markdown_segments_extracts_markdown_file_links(self) -> None:
+        segments = parse_markdown_segments("资料下载：[说明书.pdf](https://example.com/files/manual.pdf)\n补充说明")
+
+        self.assertEqual([segment.kind for segment in segments], ["text", "file", "text"])
+        self.assertEqual(segments[1].url, "https://example.com/files/manual.pdf")
+        self.assertEqual(segments[1].alt, "说明书.pdf")
 
     def test_build_markdown_image_summary_collapses_text_segments(self) -> None:
         segments = parse_markdown_segments("### 标题\n![接线图](https://example.com/a.jpg)\n尾部说明")
@@ -106,7 +113,7 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_markdown_sends_summary_then_images(self) -> None:
         self.service._config.token = "token"
         self.service.send_text = AsyncMock(return_value="text-1")  # type: ignore[method-assign]
-        self.service.send_image_url = AsyncMock(return_value="image-1")  # type: ignore[method-assign]
+        self.service.send_asset_url = AsyncMock(return_value="image-1")  # type: ignore[method-assign]
 
         client_ids = await self.service.send_markdown(
             user_id="wechat-user",
@@ -120,16 +127,16 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
             text="标题\n\n尾部说明",
             context_token="ctx-token",
         )
-        self.service.send_image_url.assert_awaited_once_with(
+        self.service.send_asset_url.assert_awaited_once_with(
             user_id="wechat-user",
-            image_url="https://example.com/a.jpg",
+            asset_url="https://example.com/a.jpg",
             context_token="ctx-token",
         )
 
     async def test_send_markdown_promotes_standalone_image_url_to_image_message(self) -> None:
         self.service._config.token = "token"
         self.service.send_text = AsyncMock(return_value="text-1")  # type: ignore[method-assign]
-        self.service.send_image_url = AsyncMock(return_value="image-1")  # type: ignore[method-assign]
+        self.service.send_asset_url = AsyncMock(return_value="image-1")  # type: ignore[method-assign]
 
         client_ids = await self.service.send_markdown(
             user_id="wechat-user",
@@ -143,9 +150,32 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
             text="6511液晶屏接线图\n尾部说明",
             context_token="ctx-token",
         )
-        self.service.send_image_url.assert_awaited_once_with(
+        self.service.send_asset_url.assert_awaited_once_with(
             user_id="wechat-user",
-            image_url="https://example.com/a.jpg",
+            asset_url="https://example.com/a.jpg",
+            context_token="ctx-token",
+        )
+
+    async def test_send_markdown_promotes_markdown_file_link_to_file_message(self) -> None:
+        self.service._config.token = "token"
+        self.service.send_text = AsyncMock(return_value="text-1")  # type: ignore[method-assign]
+        self.service.send_asset_url = AsyncMock(return_value="file-1")  # type: ignore[method-assign]
+
+        client_ids = await self.service.send_markdown(
+            user_id="wechat-user",
+            content="资料如下：[说明书.pdf](https://example.com/files/manual.pdf)\n请查收",
+            context_token="ctx-token",
+        )
+
+        self.assertEqual(client_ids, ["text-1", "file-1"])
+        self.service.send_text.assert_awaited_once_with(
+            user_id="wechat-user",
+            text="资料如下：\n请查收",
+            context_token="ctx-token",
+        )
+        self.service.send_asset_url.assert_awaited_once_with(
+            user_id="wechat-user",
+            asset_url="https://example.com/files/manual.pdf",
             context_token="ctx-token",
         )
 
