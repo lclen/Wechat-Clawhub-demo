@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 from app.api.routes.nodes import (
     _dispatch_task_queue_age_ms,
     _summarize_task_stream_event,
     _task_stream_ready_wait_seconds,
+    stream_node_tasks,
 )
 from app.models.node import NodeStatus
 from app.models.node import NodeRecord
@@ -185,6 +188,86 @@ class NodeTaskQueueAgeTests(unittest.TestCase):
         self.assertIsNotNone(age_ms)
         assert age_ms is not None
         self.assertGreaterEqual(age_ms, 0)
+
+
+class NodeTaskStreamRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stream_node_tasks_ignores_legacy_ready_without_pulling(self) -> None:
+        websocket = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    redis_store=SimpleNamespace(ping=AsyncMock(return_value=True)),
+                    dispatch_queue=SimpleNamespace(pull_for_node=AsyncMock()),
+                    node_auth=SimpleNamespace(verify_websocket=MagicMock()),
+                    node_stream=SimpleNamespace(
+                        register_connection=AsyncMock(),
+                        unregister_connection=AsyncMock(),
+                        receive_event=AsyncMock(
+                            side_effect=[
+                                ({"type": "ready"}, {"read_ms": 0.0, "decode_ms": 0.0, "message_chars": 16}),
+                                None,
+                            ]
+                        ),
+                        inflight_count=MagicMock(return_value=0),
+                        mark_task_finished=MagicMock(),
+                    ),
+                    setup_service=SimpleNamespace(ingest_node_diagnostics_event=MagicMock()),
+                    gateway_summary_service=SimpleNamespace(publish_if_needed=AsyncMock()),
+                )
+            ),
+            accept=AsyncMock(),
+            close=AsyncMock(),
+            send_json=AsyncMock(),
+        )
+
+        await stream_node_tasks(websocket, "node-1")
+
+        websocket.app.state.dispatch_queue.pull_for_node.assert_not_awaited()
+        websocket.send_json.assert_awaited_once_with({"type": "noop", "reason": "legacy_ready_ignored"})
+
+    async def test_stream_node_tasks_ingests_batched_diagnostics(self) -> None:
+        diagnostics_payload = {
+            "count": 2,
+            "events": [
+                {"category": "task", "result": "started", "message": "任务开始", "trace_id": "trace-1"},
+                {"category": "task", "result": "completed", "message": "任务完成", "trace_id": "trace-1"},
+            ],
+            "snapshot": {"node_id": "node-1", "node_kind": "remote"},
+        }
+        setup_service = SimpleNamespace(ingest_node_diagnostics_event=MagicMock())
+        websocket = SimpleNamespace(
+            app=SimpleNamespace(
+                state=SimpleNamespace(
+                    redis_store=SimpleNamespace(ping=AsyncMock(return_value=True)),
+                    dispatch_queue=SimpleNamespace(),
+                    node_auth=SimpleNamespace(verify_websocket=MagicMock()),
+                    node_stream=SimpleNamespace(
+                        register_connection=AsyncMock(),
+                        unregister_connection=AsyncMock(),
+                        receive_event=AsyncMock(
+                            side_effect=[
+                                (
+                                    {"type": "diagnostics", "diagnostics": diagnostics_payload},
+                                    {"read_ms": 0.0, "decode_ms": 0.0, "message_chars": 64},
+                                ),
+                                None,
+                            ]
+                        ),
+                        inflight_count=MagicMock(return_value=0),
+                        mark_task_finished=MagicMock(),
+                    ),
+                    setup_service=setup_service,
+                    gateway_summary_service=SimpleNamespace(publish_if_needed=AsyncMock()),
+                )
+            ),
+            accept=AsyncMock(),
+            close=AsyncMock(),
+            send_json=AsyncMock(),
+        )
+
+        await stream_node_tasks(websocket, "node-1")
+
+        setup_service.ingest_node_diagnostics_event.assert_called_once_with("node-1", diagnostics_payload)
+        websocket.send_json.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -222,10 +222,7 @@ class GatewayClient:
             "max_size": 4_000_000,
         }
         return websockets.connect(
-            self._build_websocket_url(
-                f"/api/nodes/{self._settings.node_id}/ws",
-                {"wait_seconds": str(self._settings.pull_wait_seconds)},
-            ),
+            self._build_websocket_url(f"/api/nodes/{self._settings.node_id}/ws"),
             **connect_kwargs,
         )
 

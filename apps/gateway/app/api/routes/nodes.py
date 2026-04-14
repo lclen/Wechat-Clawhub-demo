@@ -307,7 +307,6 @@ async def stream_node_tasks(
         dispatch_queue: DispatchQueue = websocket.app.state.dispatch_queue
         node_auth: NodeAuthService = websocket.app.state.node_auth
         node_stream = websocket.app.state.node_stream
-        registry: NodeRegistry = websocket.app.state.node_registry
     except AttributeError:
         await websocket.close(code=4500, reason="server_not_ready")
         return
@@ -329,8 +328,6 @@ async def stream_node_tasks(
     # Register node connection
     await node_stream.register_connection(node_id, websocket)
 
-    inflight_task_ids: set[str] = set()
-
     try:
         while True:
             receive_started_at = time.perf_counter()
@@ -346,7 +343,7 @@ async def stream_node_tasks(
                 "[dispatch] ws_event_received source=ws node=%s %s inflight=%s receive_ms=%.0f read_ms=%.0f decode_ms=%.0f message_chars=%s",
                 node_id,
                 _summarize_task_stream_event(event),
-                len(inflight_task_ids),
+                node_stream.inflight_count(node_id),
                 receive_ms,
                 float(receive_metrics.get("read_ms", 0.0)),
                 float(receive_metrics.get("decode_ms", 0.0)),
@@ -354,43 +351,13 @@ async def stream_node_tasks(
             )
 
             if event_type == "ready":
-                # Node is ready for a task
-                effective_wait_seconds = _task_stream_ready_wait_seconds(
-                    inflight_task_count=len(inflight_task_ids),
-                    default_wait_seconds=wait_seconds,
-                )
                 logger.info(
-                    "[dispatch] ready_received source=ws node=%s inflight=%s default_wait_seconds=%s effective_wait_seconds=%s",
+                    "[dispatch] ready_ignored source=ws node=%s inflight=%s default_wait_seconds=%s",
                     node_id,
-                    len(inflight_task_ids),
+                    node_stream.inflight_count(node_id),
                     wait_seconds,
-                    effective_wait_seconds,
                 )
-                task = await dispatch_queue.pull_for_node(node_id, wait_seconds=effective_wait_seconds)
-                if task is None:
-                    logger.info(
-                        "[dispatch] ready_noop source=ws node=%s inflight=%s default_wait_seconds=%s effective_wait_seconds=%s",
-                        node_id,
-                        len(inflight_task_ids),
-                        wait_seconds,
-                        effective_wait_seconds,
-                    )
-                    await websocket.send_json({"type": "noop"})
-                    continue
-                inflight_task_ids.add(task.task_id)
-                logger.info(
-                    "[dispatch] task_assigned source=ws node=%s task_id=%s slot=%s inflight=%s effective_wait_seconds=%s queue_age_ms=%s",
-                    node_id,
-                    task.task_id,
-                    task.slot_id,
-                    len(inflight_task_ids),
-                    effective_wait_seconds,
-                    _dispatch_task_queue_age_ms(task.created_at),
-                )
-                await websocket.send_json({
-                    "type": "task_assigned",
-                    "task": task.model_dump(mode="json"),
-                })
+                await websocket.send_json({"type": "noop", "reason": "legacy_ready_ignored"})
 
             elif event_type == "task_result":
                 if not event.get("task_id") or not event.get("session_id") or event.get("content") is None:
@@ -413,13 +380,13 @@ async def stream_node_tasks(
                         payload.task_id,
                         payload.session_id,
                         len(payload.content),
-                        len(inflight_task_ids),
+                        node_stream.inflight_count(node_id),
                         receive_ms,
                         float(receive_metrics.get("read_ms", 0.0)),
                         float(receive_metrics.get("decode_ms", 0.0)),
                         int(receive_metrics.get("message_chars", 0)),
                     )
-                    inflight_task_ids.discard(payload.task_id)
+                    node_stream.mark_task_finished(node_id, payload.task_id)
                     submit_started_at = time.perf_counter()
                     logger.info(
                         "[dispatch] task_result_dispatching source=ws node=%s task_id=%s session=%s chars=%s",
@@ -470,7 +437,7 @@ async def stream_node_tasks(
                         payload.error_code,
                         payload.retryable,
                     )
-                    inflight_task_ids.discard(payload.task_id)
+                    node_stream.mark_task_finished(node_id, payload.task_id)
                     await dispatch_queue.submit_failure(payload)
                 except DispatchTaskNotFoundError:
                     await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "task_not_found"})
@@ -511,9 +478,22 @@ async def stream_node_tasks(
                 await websocket.send_json({"type": "pong"})
 
             elif event_type == "diagnostics":
-                # Node diagnostics update
                 diagnostics = event.get("diagnostics")
                 if isinstance(diagnostics, dict):
+                    event_count = diagnostics.get("count")
+                    if not isinstance(event_count, int):
+                        events = diagnostics.get("events")
+                        if isinstance(events, list):
+                            event_count = len(events)
+                        elif isinstance(diagnostics.get("event"), dict):
+                            event_count = 1
+                        else:
+                            event_count = 0
+                    logger.info(
+                        "[dispatch] diagnostics_received source=ws node=%s count=%s",
+                        node_id,
+                        event_count,
+                    )
                     websocket.app.state.setup_service.ingest_node_diagnostics_event(node_id, diagnostics)
 
             else:
@@ -550,6 +530,9 @@ async def submit_task_result(
             payload.session_id,
             len(payload.content),
         )
+        node_stream = getattr(request.app.state, "node_stream", None)
+        if node_stream is not None:
+            node_stream.mark_task_finished(node_id, payload.task_id)
         await dispatch_queue.submit_result(payload)
         node = await registry.get(node_id)
         return NodeOperationResponse(node=node)
@@ -584,6 +567,9 @@ async def submit_task_failure(
             payload.error_code,
             payload.retryable,
         )
+        node_stream = getattr(request.app.state, "node_stream", None)
+        if node_stream is not None:
+            node_stream.mark_task_finished(node_id, payload.task_id)
         await dispatch_queue.submit_failure(payload)
         node = await registry.get(node_id)
         return NodeOperationResponse(node=node)

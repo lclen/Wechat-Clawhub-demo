@@ -819,6 +819,14 @@ class DispatchQueue:
 
         pushed = await self._node_stream.push_task(task.node_id, task)
         if not pushed:
+            logger.warning(
+                "[dispatch] task_push_failed node=%s task_id=%s slot=%s context_version=%s retry=%s",
+                task.node_id,
+                task.task_id,
+                task.slot_id,
+                task.context_version,
+                task.retry_count,
+            )
             try:
                 await self._store.delete(inflight_key)
             except RedisError as exc:
@@ -851,7 +859,7 @@ class DispatchQueue:
             },
         )
         logger.info(
-            "[dispatch] pushed task_id=%s session=%s node=%s slot=%s context_version=%s retry=%s",
+            "[dispatch] task_pushed_immediate task_id=%s session=%s node=%s slot=%s context_version=%s retry=%s",
             task.task_id,
             task.session_id,
             task.node_id,

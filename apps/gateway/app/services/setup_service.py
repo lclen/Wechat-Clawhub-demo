@@ -923,12 +923,13 @@ class SetupService:
         self._schedule_node_diagnostics_publish(state.node_id)
 
     def ingest_node_diagnostics_event(self, node_id: str, payload: dict[str, object]) -> None:
-        event = payload.get("event")
         snapshot = payload.get("snapshot")
-        if not isinstance(event, dict):
-            return
         normalized_node_id = node_id.strip()
-        node_kind = str((snapshot or {}).get("node_kind", self._resolve_node_kind(normalized_node_id))) if isinstance(snapshot, dict) else self._resolve_node_kind(normalized_node_id)
+        node_kind = (
+            str((snapshot or {}).get("node_kind", self._resolve_node_kind(normalized_node_id)))
+            if isinstance(snapshot, dict)
+            else self._resolve_node_kind(normalized_node_id)
+        )
         state = self._ensure_pairing_state(normalized_node_id, node_kind=node_kind)
         if isinstance(snapshot, dict):
             state.last_error = str(snapshot.get("last_error") or state.last_error)
@@ -943,16 +944,25 @@ class SetupService:
             mapped_state = self._map_runtime_state_to_connection_state(runtime_state, state.connection_state, state.node_kind, state.last_error)
             if mapped_state:
                 state.connection_state = mapped_state
-        metadata = event.get("metadata")
-        self._append_diagnostic_timeline(
-            state,
-            category=str(event.get("category", "runtime")),
-            result=str(event.get("result", "")),
-            message=str(event.get("message", "")),
-            trace_id=str(event.get("trace_id", "")),
-            metadata={str(key): str(value) for key, value in metadata.items()} if isinstance(metadata, dict) else {},
-            level=str(event.get("level", "info")),
-        )
+
+        events = payload.get("events")
+        if isinstance(events, list):
+            normalized_events = [item for item in events if isinstance(item, dict)]
+        else:
+            event = payload.get("event")
+            normalized_events = [event] if isinstance(event, dict) else []
+
+        for event in normalized_events:
+            metadata = event.get("metadata")
+            self._append_diagnostic_timeline(
+                state,
+                category=str(event.get("category", "runtime")),
+                result=str(event.get("result", "")),
+                message=str(event.get("message", "")),
+                trace_id=str(event.get("trace_id", "")),
+                metadata={str(key): str(value) for key, value in metadata.items()} if isinstance(metadata, dict) else {},
+                level=str(event.get("level", "info")),
+            )
         if isinstance(snapshot, dict):
             latest_task = snapshot.get("latest_task")
             if isinstance(latest_task, dict):

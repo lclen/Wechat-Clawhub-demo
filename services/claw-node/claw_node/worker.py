@@ -24,6 +24,7 @@ from claw_node.local_cache import LocalCache
 from claw_node.openai_compatible_client import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
+DIAGNOSTICS_FLUSH_INTERVAL_SECONDS = 1.0
 
 
 @dataclass
@@ -59,6 +60,7 @@ class Worker:
         self._polling_task: asyncio.Task | None = None
         self._channel_maintenance_task: asyncio.Task | None = None
         self._register_retry_task: asyncio.Task | None = None
+        self._diagnostics_flush_task: asyncio.Task | None = None
         self._task_stream_websocket: WebSocketClientProtocol | None = None
         self._task_stream_send_lock = asyncio.Lock()
 
@@ -72,11 +74,6 @@ class Worker:
             f"type={event_type} task_id={task_id} session_id={session_id} "
             f"context_version={context_version} keys={keys}"
         )
-
-    def _can_request_task_stream_assignment(self) -> bool:
-        # Keep task stream single-flight on the request side so long-polling "ready"
-        # frames do not block newer task_result frames behind them on the same socket.
-        return not self._active_tasks and not self._semaphore.locked()
 
     async def run(self) -> None:
         self._diagnostics.refresh_settings()
@@ -241,8 +238,15 @@ class Worker:
                 await asyncio.sleep(self._settings.pull_interval_ms / 1000)
             return True
 
+        await self._start_task_assignment(task, source="http")
+        return True
+
+    async def _start_task_assignment(self, task: dict[str, Any], *, source: str) -> None:
+        log_label = "task_assigned_received" if source == "ws" else "pulled"
         logger.info(
-            "[dispatch] pulled task_id=%s session=%s context_version=%s user=%s preview=%s",
+            "[dispatch] %s source=%s task_id=%s session=%s context_version=%s user=%s preview=%s",
+            log_label,
+            source,
             task.get("task_id"),
             task.get("session_id"),
             task.get("context_version"),
@@ -254,59 +258,26 @@ class Worker:
         worker_task = asyncio.create_task(self._handle_task(task))
         self._active_tasks.add(worker_task)
         worker_task.add_done_callback(self._on_task_done)
-        return True
 
     async def _task_stream_loop(self) -> None:
         while not self._shutdown.is_set():
-            if not self._can_request_task_stream_assignment():
-                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
-                continue
             try:
                 async with self._gateway.task_stream_connection() as websocket:
                     self._task_stream_websocket = websocket
                     await self._flush_pending_diagnostics_events()
+                    self._diagnostics_flush_task = asyncio.create_task(
+                        self._task_stream_diagnostics_loop(),
+                        name="task-stream-diagnostics-loop",
+                    )
                     logger.info(
-                        "[worker] task stream connected node_id=%s wait_seconds=%s",
+                        "[worker] task stream connected node_id=%s",
                         self._settings.node_id,
-                        self._settings.pull_wait_seconds,
                     )
                     while not self._shutdown.is_set():
-                        if not self._can_request_task_stream_assignment():
-                            if self._active_tasks:
-                                logger.info(
-                                    "[worker] task stream ready skipped because tasks are inflight node_id=%s active_tasks=%s sleep_ms=%s",
-                                    self._settings.node_id,
-                                    len(self._active_tasks),
-                                    self._settings.pull_interval_ms,
-                                )
-                            await asyncio.sleep(self._settings.pull_interval_ms / 1000)
-                            continue
-                        await self._flush_pending_diagnostics_events()
-                        await self._send_task_stream_event({"type": "ready"})
                         task = await self._receive_task_stream_assignment(websocket)
                         if task is None:
-                            if self._active_tasks:
-                                logger.info(
-                                    "[worker] task stream noop while tasks are inflight node_id=%s active_tasks=%s sleep_ms=%s",
-                                    self._settings.node_id,
-                                    len(self._active_tasks),
-                                    self._settings.pull_interval_ms,
-                                )
-                                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
                             continue
-                        logger.info(
-                            "[dispatch] streamed task_id=%s session=%s context_version=%s user=%s preview=%s",
-                            task.get("task_id"),
-                            task.get("session_id"),
-                            task.get("context_version"),
-                            task.get("user_id"),
-                            self._preview_text(((task.get("message") or {}).get("content") or "")),
-                        )
-                        await self._mark_channel_task_started(task)
-                        await self._semaphore.acquire()
-                        worker_task = asyncio.create_task(self._handle_task(task))
-                        self._active_tasks.add(worker_task)
-                        worker_task.add_done_callback(self._on_task_done)
+                        await self._start_task_assignment(task, source="ws")
             except websockets.exceptions.ConnectionClosedError as exc:
                 if exc.code == 4401:
                     detail = exc.reason or "task stream unauthorized"
@@ -320,16 +291,41 @@ class Worker:
                         level="error",
                     )
                     return
-                logger.warning("[worker] task stream closed node_id=%s code=%s reason=%s", self._settings.node_id, exc.code, exc.reason)
+                logger.warning(
+                    "[worker] task stream closed node_id=%s code=%s reason=%s",
+                    self._settings.node_id,
+                    exc.code,
+                    exc.reason,
+                )
+                logger.info(
+                    "[worker] task_stream_fallback_to_http_polling node_id=%s reason=connection_closed code=%s",
+                    self._settings.node_id,
+                    exc.code,
+                )
                 if not await self._poll_once():
                     return
             except Exception as exc:
                 logger.warning("[worker] task stream unavailable, falling back to HTTP polling: %s", exc)
+                logger.info(
+                    "[worker] task_stream_fallback_to_http_polling node_id=%s reason=%s",
+                    self._settings.node_id,
+                    type(exc).__name__,
+                )
                 if not await self._poll_once():
                     return
             finally:
+                if self._diagnostics_flush_task is not None:
+                    self._diagnostics_flush_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await self._diagnostics_flush_task
+                    self._diagnostics_flush_task = None
                 self._task_stream_websocket = None
             await asyncio.sleep(self._settings.task_stream_reconnect_seconds)
+
+    async def _task_stream_diagnostics_loop(self) -> None:
+        while not self._shutdown.is_set() and self._task_stream_websocket is not None:
+            await asyncio.sleep(DIAGNOSTICS_FLUSH_INTERVAL_SECONDS)
+            await self._flush_pending_diagnostics_events()
 
     def _on_task_done(self, task: asyncio.Task) -> None:
         self._active_tasks.discard(task)
@@ -480,7 +476,13 @@ class Worker:
     async def _stop_gateway_loops(self) -> None:
         tasks = [
             task
-            for task in (self._heartbeat_task, self._polling_task, self._channel_maintenance_task, self._register_retry_task)
+            for task in (
+                self._heartbeat_task,
+                self._polling_task,
+                self._channel_maintenance_task,
+                self._register_retry_task,
+                self._diagnostics_flush_task,
+            )
             if task is not None
         ]
         for task in tasks:
@@ -492,6 +494,7 @@ class Worker:
         self._polling_task = None
         self._channel_maintenance_task = None
         self._register_retry_task = None
+        self._diagnostics_flush_task = None
         self._task_stream_websocket = None
 
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:
@@ -1044,10 +1047,10 @@ class Worker:
 
     async def _receive_task_stream_assignment(self, websocket: WebSocketClientProtocol) -> dict[str, Any] | None:
         """
-        在单次 ready 请求后持续接收控制帧，直到真正拿到任务或 noop。
+        持续接收网关下行控制帧，直到真正拿到任务。
 
-        这样可以避免 diagnostics/channel-released 的 ack 触发 worker 立即再次发送 ready，
-        把大量 ready 事件堆在网关接收队列前面，进而延迟真正的 task_result 消费。
+        `ready/noop` 仅作为兼容旧协议的控制帧保留，新主链路只依赖网关主动推送
+        `task_assigned`。
         """
         while True:
             raw_payload = await websocket.recv()
@@ -1071,32 +1074,48 @@ class Worker:
         )
 
     async def _flush_pending_diagnostics_events(self) -> None:
-        """
-        刷新待发送的诊断事件队列。
-
-        注意：使用 try-except 处理 WebSocket 断开的情况，
-        避免在检查后、发送前连接断开导致的异常。
-        """
         if not self._settings.task_stream_enabled:
             return
+        if not self._pending_diagnostics_events:
+            return
 
-        while self._pending_diagnostics_events:
-            payload = self._pending_diagnostics_events[0]
-            try:
-                await self._send_task_stream_event(
-                    {
-                        "type": "diagnostics",
-                        "diagnostics": payload,
-                    }
-                )
-                self._pending_diagnostics_events.popleft()
-            except RuntimeError:
-                # WebSocket 未连接，停止刷新
-                break
-            except Exception as exc:
-                # 其他错误，记录日志并继续
-                logger.warning("[worker] failed to send diagnostics event: %s", exc)
-                self._pending_diagnostics_events.popleft()
+        payloads = list(self._pending_diagnostics_events)
+        events = [payload["event"] for payload in payloads if isinstance(payload.get("event"), dict)]
+        latest_snapshot = payloads[-1].get("snapshot") if payloads else None
+        count = len(events)
+        if count == 0:
+            self._pending_diagnostics_events.clear()
+            return
+
+        logger.info(
+            "[worker] diagnostics_flush_started node_id=%s count=%s",
+            self._settings.node_id,
+            count,
+        )
+        try:
+            await self._send_task_stream_event(
+                {
+                    "type": "diagnostics",
+                    "diagnostics": {
+                        "count": count,
+                        "events": events,
+                        "snapshot": latest_snapshot,
+                    },
+                }
+            )
+        except RuntimeError:
+            return
+        except Exception as exc:
+            logger.warning("[worker] diagnostics flush failed node_id=%s count=%s error=%s", self._settings.node_id, count, exc)
+            return
+
+        for _ in range(min(count, len(self._pending_diagnostics_events))):
+            self._pending_diagnostics_events.popleft()
+        logger.info(
+            "[worker] diagnostics_flush_finished node_id=%s count=%s",
+            self._settings.node_id,
+            count,
+        )
 
     async def _mark_channel_task_started(self, task: dict[str, Any]) -> None:
         session_id = str(task.get("session_id") or "").strip()

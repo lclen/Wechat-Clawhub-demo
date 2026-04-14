@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import unittest
 from datetime import UTC, datetime, timedelta
@@ -287,22 +288,6 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent)
         websocket.send.assert_awaited_once()
 
-    async def test_can_request_task_stream_assignment_requires_no_active_tasks(self) -> None:
-        settings = NodeSettings(
-            CLAW_NODE_ID="node-local-1",
-            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
-            CLAW_NODE_TOKEN="test-token",
-            CLAW_OPENAI_BASE_URL="https://example.com/v1",
-            CLAW_OPENAI_API_KEY="test-key",
-            CLAW_OPENAI_MODEL="test-model",
-            CLAW_TASK_STREAM_ENABLED="true",
-        )
-        worker = Worker(settings)
-
-        self.assertTrue(worker._can_request_task_stream_assignment())
-        worker._active_tasks.add(AsyncMock())
-        self.assertFalse(worker._can_request_task_stream_assignment())
-
     async def test_submit_task_failure_falls_back_to_http_when_stream_send_fails(self) -> None:
         settings = NodeSettings(
             CLAW_NODE_ID="node-local-1",
@@ -356,25 +341,6 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
 
         worker._gateway.submit_result.assert_awaited_once()
 
-    async def test_can_request_task_stream_assignment_returns_false_when_semaphore_locked(self) -> None:
-        settings = NodeSettings(
-            CLAW_NODE_ID="node-local-1",
-            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
-            CLAW_NODE_TOKEN="test-token",
-            CLAW_OPENAI_BASE_URL="https://example.com/v1",
-            CLAW_OPENAI_API_KEY="test-key",
-            CLAW_OPENAI_MODEL="test-model",
-            CLAW_TASK_STREAM_ENABLED="true",
-            CLAW_MAX_CONCURRENCY="1",
-        )
-        worker = Worker(settings)
-
-        await worker._semaphore.acquire()
-        try:
-            self.assertFalse(worker._can_request_task_stream_assignment())
-        finally:
-            worker._semaphore.release()
-
     async def test_flush_pending_diagnostics_events_sends_over_task_stream(self) -> None:
         settings = NodeSettings(
             CLAW_NODE_ID="node-local-1",
@@ -405,11 +371,56 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
                 "last_register_result": "failed",
             },
         )
+        worker._enqueue_diagnostics_event(
+            {
+                "category": "heartbeat",
+                "result": "succeeded",
+                "message": "heartbeat ok",
+                "trace_id": "trace-2",
+                "level": "info",
+                "metadata": {"current_load": "0"},
+            },
+            {
+                "node_id": "node-local-1",
+                "node_kind": "remote",
+                "current_state": "connected",
+                "last_heartbeat_result": "succeeded",
+            },
+        )
 
         await worker._flush_pending_diagnostics_events()
 
         websocket.send.assert_awaited_once()
+        payload = json.loads(websocket.send.await_args.args[0])
+        self.assertEqual(payload["type"], "diagnostics")
+        self.assertEqual(payload["diagnostics"]["count"], 2)
+        self.assertEqual(len(payload["diagnostics"]["events"]), 2)
         self.assertEqual(len(worker._pending_diagnostics_events), 0)
+
+    async def test_flush_pending_diagnostics_events_keeps_queue_when_socket_is_missing(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        worker._enqueue_diagnostics_event(
+            {
+                "category": "register",
+                "result": "failed",
+                "message": "401 Unauthorized",
+                "trace_id": "trace-1",
+                "level": "error",
+            },
+            {"node_id": "node-local-1", "node_kind": "remote"},
+        )
+
+        await worker._flush_pending_diagnostics_events()
+
+        self.assertEqual(len(worker._pending_diagnostics_events), 1)
 
     async def test_receive_task_stream_assignment_ignores_ack_before_noop(self) -> None:
         settings = NodeSettings(
@@ -455,6 +466,56 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         assert task is not None
         self.assertEqual(task["task_id"], "task-1")
         self.assertEqual(websocket.recv.await_count, 2)
+
+    async def test_task_stream_loop_receives_pushed_assignment_without_sending_ready(self) -> None:
+        class _TaskStreamConnection:
+            def __init__(self, websocket: AsyncMock) -> None:
+                self._websocket = websocket
+
+            async def __aenter__(self) -> AsyncMock:
+                return self._websocket
+
+            async def __aexit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_TASK_STREAM_ENABLED="true",
+        )
+        worker = Worker(settings)
+        websocket = AsyncMock()
+        websocket.recv = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "type": "task_assigned",
+                    "task": {
+                        "task_id": "task-1",
+                        "session_id": "session-1",
+                        "context_version": 2,
+                        "user_id": "user-1",
+                        "message": {"content": "hi"},
+                    },
+                }
+            )
+        )
+        worker._gateway.task_stream_connection = MagicMock(return_value=_TaskStreamConnection(websocket))
+
+        async def stop_after_start(task: dict[str, object], *, source: str) -> None:
+            self.assertEqual(source, "ws")
+            self.assertEqual(task["task_id"], "task-1")
+            worker._shutdown.set()
+
+        worker._start_task_assignment = AsyncMock(side_effect=stop_after_start)  # type: ignore[method-assign]
+
+        await worker._task_stream_loop()
+
+        worker._start_task_assignment.assert_awaited_once()
+        websocket.send.assert_not_awaited()
 
     async def test_handle_task_submits_dify_conversation_id_in_metadata(self) -> None:
         settings = NodeSettings(

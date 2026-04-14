@@ -923,6 +923,42 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(diagnostics["latest_task"]["total_ms"], 4200)
         self.assertEqual(diagnostics["timeline"][-1]["metadata"]["task_id"], "task-1")
 
+    async def test_ingest_node_diagnostics_event_accepts_batched_events(self) -> None:
+        self.service.ingest_node_diagnostics_event(
+            "node-remote",
+            {
+                "events": [
+                    {
+                        "category": "register",
+                        "result": "started",
+                        "message": "开始注册",
+                        "trace_id": "trace-batch",
+                        "level": "info",
+                    },
+                    {
+                        "category": "register",
+                        "result": "completed",
+                        "message": "注册完成",
+                        "trace_id": "trace-batch",
+                        "level": "info",
+                        "metadata": {"step": "register"},
+                    },
+                ],
+                "snapshot": {
+                    "node_id": "node-remote",
+                    "node_kind": "remote",
+                    "current_state": "connected",
+                    "last_register_result": "completed",
+                },
+            },
+        )
+
+        diagnostics = self.service.get_node_diagnostics("node-remote")
+        self.assertEqual(diagnostics["connection_state"], "connected")
+        self.assertEqual(diagnostics["last_register_result"], "completed")
+        self.assertEqual(diagnostics["timeline"][-2]["result"], "started")
+        self.assertEqual(diagnostics["timeline"][-1]["metadata"]["step"], "register")
+
     async def test_load_persisted_node_diagnostics_restores_timeline(self) -> None:
         persisted_payload = {
             "node_id": "node-remote",

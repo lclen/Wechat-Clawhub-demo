@@ -16,18 +16,30 @@ class NodeStreamBroker:
 
     def __init__(self) -> None:
         self._connections: dict[str, WebSocket] = {}
+        self._inflight_task_ids: dict[str, set[str]] = {}
 
     async def register_connection(self, node_id: str, websocket: WebSocket) -> None:
         """Register a node's WebSocket connection."""
         self._connections[node_id] = websocket
+        self._inflight_task_ids.setdefault(node_id, set())
 
     async def unregister_connection(self, node_id: str) -> None:
         """Unregister a node's WebSocket connection."""
         self._connections.pop(node_id, None)
+        self._inflight_task_ids.pop(node_id, None)
 
     def is_connected(self, node_id: str) -> bool:
         """Check if a node has an active WebSocket connection."""
         return node_id in self._connections
+
+    def inflight_count(self, node_id: str) -> int:
+        return len(self._inflight_task_ids.get(node_id, set()))
+
+    def mark_task_finished(self, node_id: str, task_id: str) -> None:
+        inflight = self._inflight_task_ids.get(node_id)
+        if inflight is None:
+            return
+        inflight.discard(task_id)
 
     async def push_task(self, node_id: str, task: DispatchTask) -> bool:
         """
@@ -44,6 +56,7 @@ class NodeStreamBroker:
                 "type": "task_assigned",
                 "task": task.model_dump(mode="json"),
             })
+            self._inflight_task_ids.setdefault(node_id, set()).add(task.task_id)
             return True
         except Exception:
             # Connection broken, remove it
