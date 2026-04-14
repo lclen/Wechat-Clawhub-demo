@@ -4,6 +4,96 @@
 
 ---
 
+## 2026-04-14 — 节点-网关任务流长延迟修复与协议收口
+
+### 背景
+
+在会话联调里曾多次观察到一种非常误导人的延迟：
+
+- 节点本地 Dify 执行只花了 `5-30s`
+- 节点也几乎立即执行了 `task_result_submit_finished`
+- 但网关要再过 `15s`、`30s`，甚至更久，才出现 `task_result_received`
+
+这会让人误以为 Dify 很慢，或者节点处理很慢，但真实慢点其实在节点到网关的任务流协议本身。
+
+### 根因
+
+旧模型把“取任务”和“回结果”复用在同一条带长等待的 WebSocket 主链路里：
+
+1. 节点发送 `ready`
+2. 网关执行 `pull_for_node(wait_seconds=15)`
+3. 节点完成任务后再通过同一条连接发送 `task_result`
+
+当网关还卡在这轮长等待时，即使节点已经把结果写进 socket，网关也可能要等本轮等待结束后才真正消费到结果，最终形成固定 `15s/30s` 档位延迟。
+
+### 本次调整
+
+- `apps/gateway/app/api/routes/nodes.py`
+  - WebSocket 主链路不再接受 `ready` 作为常规接单协议
+  - 收到旧 `ready` 时直接记录 `legacy_protocol_rejected` 并断开
+  - 新增 `ws_registered / ws_unregistered / task_result_received` 等结构化日志
+
+- `apps/gateway/app/services/node_stream.py`
+  - `push_task()` 成为正式 WebSocket 任务分发入口
+  - 只允许 `protocol_version=task-stream-v2` 的节点参与直推
+  - `receive_event()` 返回结构化结果，明确区分关闭、解码失败和传输异常
+
+- `services/claw-node/claw_node/worker.py`
+  - 节点握手协议固定为 `task-stream-v2`
+  - 主链路改为等待网关直接下发 `task_assigned`
+  - 断流策略改为“重连优先，fallback 兜底”
+  - fallback polling 使用短等待，不再复用 `wait_seconds=15` 的长等待轮询
+  - diagnostics 改为批量 flush，避免任务完成瞬间刷一串小包
+
+- `services/claw-node/claw_node/diagnostics.py`
+  - 新增结构化 `task_stream` 健康状态：
+    - `protocol_version`
+    - `connection_mode`
+    - `last_disconnect_code`
+    - `last_disconnect_reason`
+    - `reconnect_count`
+    - `fallback_poll_count`
+
+- `apps/desktop-launcher/launcher/models.py`
+- `apps/desktop-launcher/launcher/app.py`
+- `apps/agent-console/src/types/index.ts`
+- `apps/agent-console/src/components/Workspaces/Connection/*`
+  - 前端与 launcher 统一展示链路健康状态，避免只能靠翻日志判断协议是否生效
+
+### 运行态验收信号
+
+修复生效后，应看到以下新链路特征：
+
+- 网关：
+  - `ws_registered node=... protocol_version=task-stream-v2`
+  - `task_pushed_immediate`
+  - `task_result_received source=ws`
+  - `task_result_dispatched`
+- 节点：
+  - `task_assigned_received source=ws`
+  - `task_result_submit_finished`
+  - `task_stream_reconnect_scheduled`（如发生断流）
+  - `task_stream_fallback_to_http_polling`（仅连续重连失败后）
+
+如果仍然看到：
+
+- `legacy_protocol_rejected`
+- `protocol_version=<missing>`
+
+说明该节点仍在跑旧协议，任务流延迟问题有回归风险。
+
+### 收益
+
+- 消除了 `ready + pull-task(wait_seconds=15)` 带来的固定档位额外延迟
+- 节点完成后，网关可以更快消费 `task_result`
+- 断流、降级、旧协议节点现在都有结构化状态和明确日志，不再只能靠猜
+- 后续判断慢点可以明确区分：
+  - Dify 执行慢
+  - 节点到网关回传慢
+  - 网关到微信发送慢
+
+---
+
 ## 2026-04-14 — 微信 Markdown 文件链接渲染与发送修复
 
 ### 背景

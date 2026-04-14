@@ -154,6 +154,83 @@ $pids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinu
 
 **节点端**：`/api/setup/node/reset-credentials` 502。已修复，节点端使用 `/local/node/reset-credentials`。如果仍然失败，手动清空 `config/node.env` 中的相关字段。
 
+### 节点与网关之间存在 10-30 秒额外延迟
+
+**现象**：
+
+- 节点侧日志显示 Dify 已在 5-30 秒内完成
+- 但微信最终收到回复仍然比节点完成时间晚很多
+- 网关 `task_result_received` 与节点 `task_result_submit_finished` 之间曾经出现 `15s` / `30s` 档位延迟
+
+**已确认的历史根因**：
+
+旧任务流把两件事混在同一条 WebSocket 上：
+
+1. 节点先发 `ready`
+2. 网关在同一连接里阻塞执行 `pull_for_node(wait_seconds=15)`
+3. 节点完成后再复用这条连接回传 `task_result`
+
+这会导致一个典型竞态：
+
+- 网关还在长等待 `pull-task`
+- 节点虽然已经把结果写到 socket
+- 但网关要等本轮长等待返回后，才真正消费到 `task_result`
+
+于是就会出现肉眼可见的 `15s` / `30s` 级额外耗时。
+
+**当前修复后的正式模型**：
+
+- 任务分配只走网关主动下发 `task_assigned`
+- 节点不再依赖 `ready` 作为主协议
+- 节点只单向上报：
+  - `task_result`
+  - `task_failure`
+  - `channel_released`
+  - `diagnostics`
+- 节点握手协议固定为 `task-stream-v2`
+- WebSocket 抖动时先重连，连续失败后才进入 `degraded_http_polling`
+- fallback polling 使用短等待，不再复用 `wait_seconds=15` 的长轮询
+
+**修复后的关键日志信号**：
+
+1. 正常新协议接入时，应看到：
+   - `ws_registered node=agent-1 protocol_version=task-stream-v2`
+   - `task_pushed_immediate`
+   - `task_assigned_received source=ws`
+   - `task_result_received source=ws`
+2. 如果仍有旧节点在跑旧协议，会看到：
+   - `legacy_protocol_rejected`
+   - `protocol_version=<missing>`
+3. 如果链路进入降级模式，会看到：
+   - 节点侧 `task_stream_fallback_to_http_polling`
+   - 状态里的 `connection_mode=degraded_http_polling`
+
+**排查顺序**：
+
+1. 先对齐节点与网关时钟，不要把机器时间偏差误判成链路延迟。
+2. 对比以下时间点：
+   - 节点 `task_result_submit_finished`
+   - 网关 `task_result_received`
+   - 网关 `outgoing_reply_sent`
+3. 判断慢点落在哪一段：
+   - 如果节点完成到网关收包仍差 `15s` / `30s`，优先检查是否还有旧 `ready/pull-task` 主链路残留
+   - 如果网关收包后才慢，继续看 `send_markdown` / `send_asset_url` / `send_uploaded_media`
+4. 查看网关节点状态或接入中心：
+   - `protocol_version`
+   - `connection_mode`
+   - `last_disconnect_code`
+   - `fallback_poll_count`
+
+**建议验收方式**：
+
+1. 发送一条纯文本测试消息。
+2. 确认网关日志中：
+   - `task_pushed_immediate`
+   - `task_result_received`
+   - `task_result_dispatched`
+   三者时间差不再出现固定 `15s/30s` 档位。
+3. 如果节点发生 `1012` / `1001`，确认它会先重连，而不是立刻进入长轮询。
+
 ### 微信图片消息显示“图片已过期”
 
 **现象**：

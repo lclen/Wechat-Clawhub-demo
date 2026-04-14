@@ -42,13 +42,15 @@
 
 2. **节点事件 WebSocket 端点** (`apps/gateway/app/api/routes/nodes.py`)
    - 路径：`/api/nodes/{node_id}/ws`
-   - 双向通信：任务分发 + 结果回传
-   - 支持多种事件类型（ready、task_result、task_failure、heartbeat、diagnostics）
+   - 双向通信：网关主动推任务 + 节点单向回结果/诊断
+   - 新主协议固定为 `task-stream-v2`
+   - 旧 `ready` 协议只用于拒绝和升级提示，不再作为常规接单路径
 
 3. **节点 Worker** (`services/claw-node/claw_node/worker.py`)
    - 维护与网关的 WebSocket 连接
-   - 发送事件到网关
-   - 优雅降级到 HTTP（WebSocket 不可用时）
+   - 等待网关主动下发 `task_assigned`
+   - 发送结果、失败、诊断、通道释放事件到网关
+   - 重连优先，连续失败后才降级到 HTTP
 
 #### 3. 节点诊断流
 
@@ -117,13 +119,34 @@
   ↑                              ↓
   └──────── 任务分发 ←────────────┘
 
-事件类型：
-- ready: 节点请求任务
+下行主事件：
+- task_assigned: 网关主动分配任务
+
+上行主事件：
 - task_result: 任务结果回传
 - task_failure: 任务失败报告
-- heartbeat: 心跳保活
+- channel_released: 节点空闲通道释放
 - diagnostics: 诊断信息上报
+- heartbeat / pong: 保活与兼容事件
 ```
+
+### 节点任务流延迟修复
+
+旧实现里，节点会先发 `ready`，网关在同一条 WebSocket 上阻塞执行 `pull_for_node(wait_seconds=15)`，节点完成后再复用这条连接回传 `task_result`。这会让结果收包被长等待阻塞，形成 `15s/30s` 档位额外延迟。
+
+当前正式模型已经收口为：
+
+- 网关主动 `push_task()` 下发 `task_assigned`
+- 节点只单向上报 `task_result/task_failure/channel_released/diagnostics`
+- WebSocket 抖动时先重连，只有连续失败后才进入 `degraded_http_polling`
+- fallback polling 使用短等待，不再把主链路重新拖回长轮询
+
+验收时应重点关注：
+
+- 网关：`task_pushed_immediate` → `task_result_received` → `task_result_dispatched`
+- 节点：`task_assigned_received` → `task_result_submit_finished`
+
+如果节点完成后，网关仍然总是晚 `15s/30s` 才看到 `task_result_received`，优先检查是否还有旧节点在发送 `ready`，或是否错误地回到了旧协议。
 
 #### 节点诊断流
 
