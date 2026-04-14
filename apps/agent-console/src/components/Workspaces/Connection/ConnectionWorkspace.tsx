@@ -283,6 +283,44 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                         <button type="button" className="ghost-button" style={{ width: "100%", fontSize: 12 }} onClick={props.onScanLanNodes} disabled={props.busyKey !== null}>
                           局域网扫描
                         </button>
+                        {!props.discoveredNodes.length ? (
+                          <div className="empty-state" style={{ margin: 0, padding: "14px 12px", fontSize: 12 }}>
+                            扫描结果会显示在这里。已纳管节点也会列出，方便确认局域网发现链路是否正常。
+                          </div>
+                        ) : (
+                          <div className="discovery-list" style={{ gap: 8 }}>
+                            {props.discoveredNodes.map((item) => {
+                              const status = props.pairingStatuses[item.discovery_id] || (item.already_paired ? "already_paired" : "pending");
+                              return (
+                                <div key={item.discovery_id} className="discovery-card" style={{ padding: 12 }}>
+                                  <div className="discovery-card-top" style={{ gap: 8 }}>
+                                    <div>
+                                      <div className="node-card-title">{item.pairing_label || item.hostname}</div>
+                                      <div className="node-card-subtitle">{[item.lan_ip || "-", item.platform || "-", item.node_version || "-"].join(" · ")}</div>
+                                    </div>
+                                    <span className={`session-badge session-badge-${pairingStatusTone(status)}`}>{pairingStatusLabel(status)}</span>
+                                  </div>
+                                  <div className="node-card-grid" style={{ marginTop: 10 }}>
+                                    <div><div className="node-card-label">局域网 IP</div><div className="node-card-value">{item.lan_ip || "未上报"}</div></div>
+                                    <div><div className="node-card-label">配对端口</div><div className="node-card-value">{item.pairing_port}</div></div>
+                                    <div><div className="node-card-label">能力</div><div className="node-card-value">{item.capabilities.join(", ") || "未声明"}</div></div>
+                                    <div><div className="node-card-label">节点 ID</div><div className="node-card-value">{item.node_id || "配对时生成"}</div></div>
+                                  </div>
+                                  <div className="discovery-actions" style={{ marginTop: 10 }}>
+                                    <input
+                                      value={props.pairingSecrets[item.discovery_id] || ""}
+                                      onChange={(event) => props.onUpdatePairingSecret(item.discovery_id, event.target.value)}
+                                      placeholder="输入该机器的配对密钥"
+                                    />
+                                    <button type="button" onClick={() => props.onPairLanNode(item)} disabled={props.busyKey !== null}>
+                                      {props.busyKey === "setup-discovery-pair" ? "连接中..." : status === "already_paired" ? "重新确认连接" : "输入密钥并连接"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                         <button type="button" className="ghost-button" style={{ width: "100%", fontSize: 12, borderStyle: "dashed" }} onClick={props.onRunWorkerSetup} disabled={props.busyKey !== null}>
                           在本机安装新节点
                         </button>

@@ -511,7 +511,7 @@ def create_app() -> FastAPI:
                     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
             apply_state = _read_local_node_apply_state(apply_state_path)
             node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
-            _migrate_worker_model_config_from_gateway_env(
+            _sync_node_model_config_from_gateway_env(
                 config_path=config_path,
                 gateway_env_path=gateway_env_path,
                 node_kind=node_kind,
@@ -695,7 +695,7 @@ def create_app() -> FastAPI:
         current_status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
         node_spec = await asyncio.to_thread(app.state.manager._resolved_local_node_spec, profile)  # type: ignore[attr-defined]
         repair_reason = await asyncio.to_thread(app.state.manager.local_node_service_repair_reason, profile, layout, node_spec)
-        _migrate_worker_model_config_from_gateway_env(
+        _sync_node_model_config_from_gateway_env(
             config_path=config_path,
             gateway_env_path=gateway_env_path,
             node_kind=_read_local_node_kind(config_path),
@@ -1071,7 +1071,7 @@ def create_app() -> FastAPI:
         gateway_env_path = app.state.repo_root / "apps" / "gateway" / ".env"
         if not config_path.exists():
             raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
-        _migrate_worker_model_config_from_gateway_env(
+        _sync_node_model_config_from_gateway_env(
             config_path=config_path,
             gateway_env_path=gateway_env_path,
             node_kind=_read_local_node_kind(config_path),
@@ -1271,6 +1271,43 @@ def _has_worker_model_config(values: dict[str, str]) -> bool:
     return any(item.strip() for item in (*openai_fields, *dify_fields))
 
 
+def _build_node_model_config_from_gateway_env(gateway_values: dict[str, str]) -> dict[str, str]:
+    openai_ready = all(
+        gateway_values.get(key, "").strip()
+        for key in ("WCH_BUILTIN_MODEL_BASE_URL", "WCH_BUILTIN_MODEL_API_KEY", "WCH_BUILTIN_MODEL_NAME")
+    )
+    dify_ready = all(
+        gateway_values.get(key, "").strip()
+        for key in ("WCH_DIFY_BASE_URL", "WCH_DIFY_API_KEY")
+    )
+    if openai_ready:
+        return {
+            "CLAW_MODEL_PROVIDER": "openai",
+            "CLAW_OPENAI_BASE_URL": gateway_values.get("WCH_BUILTIN_MODEL_BASE_URL", "").strip(),
+            "CLAW_OPENAI_API_KEY": gateway_values.get("WCH_BUILTIN_MODEL_API_KEY", "").strip(),
+            "CLAW_OPENAI_MODEL": gateway_values.get("WCH_BUILTIN_MODEL_NAME", "").strip(),
+            "CLAW_OPENAI_ENABLE_THINKING": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_THINKING", "false").strip() or "false",
+            "CLAW_OPENAI_TEMPERATURE": gateway_values.get("WCH_BUILTIN_MODEL_TEMPERATURE", "0.3").strip() or "0.3",
+            "CLAW_OPENAI_TOP_P": gateway_values.get("WCH_BUILTIN_MODEL_TOP_P", "1.0").strip() or "1.0",
+            "CLAW_OPENAI_MAX_TOKENS": gateway_values.get("WCH_BUILTIN_MODEL_MAX_TOKENS", "0").strip() or "0",
+            "CLAW_OPENAI_SEED": gateway_values.get("WCH_BUILTIN_MODEL_SEED", "0").strip() or "0",
+            "CLAW_OPENAI_THINKING_BUDGET": gateway_values.get("WCH_BUILTIN_MODEL_THINKING_BUDGET", "0").strip() or "0",
+            "CLAW_OPENAI_STOP": gateway_values.get("WCH_BUILTIN_MODEL_STOP", ""),
+            "CLAW_OPENAI_ENABLE_SEARCH": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_SEARCH", "false").strip() or "false",
+            "CLAW_OPENAI_SEARCH_FORCED": gateway_values.get("WCH_BUILTIN_MODEL_SEARCH_FORCED", "false").strip() or "false",
+            "CLAW_OPENAI_SEARCH_STRATEGY": gateway_values.get("WCH_BUILTIN_MODEL_SEARCH_STRATEGY", "turbo").strip() or "turbo",
+            "CLAW_OPENAI_ENABLE_SEARCH_EXTENSION": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_SEARCH_EXTENSION", "false").strip() or "false",
+            "CLAW_OPENAI_MULTIMODAL_ENABLED": gateway_values.get("WCH_BUILTIN_MODEL_MULTIMODAL_ENABLED", "true").strip() or "true",
+        }
+    if dify_ready:
+        return {
+            "CLAW_MODEL_PROVIDER": "dify",
+            "CLAW_DIFY_BASE_URL": gateway_values.get("WCH_DIFY_BASE_URL", "").strip(),
+            "CLAW_DIFY_API_KEY": gateway_values.get("WCH_DIFY_API_KEY", "").strip(),
+        }
+    return {}
+
+
 def _migrate_worker_model_config_from_gateway_env(
     *,
     config_path: Path,
@@ -1286,48 +1323,62 @@ def _migrate_worker_model_config_from_gateway_env(
     if _has_worker_model_config(node_values):
         return False
     gateway_values = _read_env_file(gateway_env_path)
-    openai_ready = all(
-        gateway_values.get(key, "").strip()
-        for key in ("WCH_BUILTIN_MODEL_BASE_URL", "WCH_BUILTIN_MODEL_API_KEY", "WCH_BUILTIN_MODEL_NAME")
-    )
-    dify_ready = all(
-        gateway_values.get(key, "").strip()
-        for key in ("WCH_DIFY_BASE_URL", "WCH_DIFY_API_KEY")
-    )
-    if openai_ready:
-        node_values.update(
-            {
-                "CLAW_MODEL_PROVIDER": "openai",
-                "CLAW_OPENAI_BASE_URL": gateway_values.get("WCH_BUILTIN_MODEL_BASE_URL", "").strip(),
-                "CLAW_OPENAI_API_KEY": gateway_values.get("WCH_BUILTIN_MODEL_API_KEY", "").strip(),
-                "CLAW_OPENAI_MODEL": gateway_values.get("WCH_BUILTIN_MODEL_NAME", "").strip(),
-                "CLAW_OPENAI_ENABLE_THINKING": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_THINKING", "false").strip() or "false",
-                "CLAW_OPENAI_TEMPERATURE": gateway_values.get("WCH_BUILTIN_MODEL_TEMPERATURE", "0.3").strip() or "0.3",
-                "CLAW_OPENAI_TOP_P": gateway_values.get("WCH_BUILTIN_MODEL_TOP_P", "1.0").strip() or "1.0",
-                "CLAW_OPENAI_MAX_TOKENS": gateway_values.get("WCH_BUILTIN_MODEL_MAX_TOKENS", "0").strip() or "0",
-                "CLAW_OPENAI_SEED": gateway_values.get("WCH_BUILTIN_MODEL_SEED", "0").strip() or "0",
-                "CLAW_OPENAI_THINKING_BUDGET": gateway_values.get("WCH_BUILTIN_MODEL_THINKING_BUDGET", "0").strip() or "0",
-                "CLAW_OPENAI_STOP": gateway_values.get("WCH_BUILTIN_MODEL_STOP", ""),
-                "CLAW_OPENAI_ENABLE_SEARCH": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_SEARCH", "false").strip() or "false",
-                "CLAW_OPENAI_SEARCH_FORCED": gateway_values.get("WCH_BUILTIN_MODEL_SEARCH_FORCED", "false").strip() or "false",
-                "CLAW_OPENAI_SEARCH_STRATEGY": gateway_values.get("WCH_BUILTIN_MODEL_SEARCH_STRATEGY", "turbo").strip() or "turbo",
-                "CLAW_OPENAI_ENABLE_SEARCH_EXTENSION": gateway_values.get("WCH_BUILTIN_MODEL_ENABLE_SEARCH_EXTENSION", "false").strip() or "false",
-                "CLAW_OPENAI_MULTIMODAL_ENABLED": gateway_values.get("WCH_BUILTIN_MODEL_MULTIMODAL_ENABLED", "true").strip() or "true",
-            }
+    updates = _build_node_model_config_from_gateway_env(gateway_values)
+    if not updates:
+        return False
+    node_values.update(updates)
+    _write_env_file(config_path, node_values)
+    return True
+
+
+def _sync_local_node_model_config_from_gateway_env(
+    *,
+    config_path: Path,
+    gateway_env_path: Path,
+    node_kind: str,
+) -> bool:
+    if not config_path.exists():
+        return False
+    normalized_kind = (node_kind or "").strip().lower()
+    if normalized_kind != "local":
+        return False
+    gateway_values = _read_env_file(gateway_env_path)
+    updates = _build_node_model_config_from_gateway_env(gateway_values)
+    if not updates:
+        return False
+    node_values = _read_env_file(config_path)
+    local_model_ready = _has_worker_model_config(node_values)
+    gateway_mtime = gateway_env_path.stat().st_mtime if gateway_env_path.exists() else 0.0
+    node_mtime = config_path.stat().st_mtime if config_path.exists() else 0.0
+    gateway_is_newer = gateway_mtime >= node_mtime
+    if local_model_ready and not gateway_is_newer:
+        return False
+    changed = any(node_values.get(key, "") != value for key, value in updates.items())
+    if not changed:
+        return False
+    node_values.update(updates)
+    _write_env_file(config_path, node_values)
+    return True
+
+
+def _sync_node_model_config_from_gateway_env(
+    *,
+    config_path: Path,
+    gateway_env_path: Path,
+    node_kind: str,
+) -> bool:
+    normalized_kind = (node_kind or "").strip().lower()
+    if normalized_kind == "local":
+        return _sync_local_node_model_config_from_gateway_env(
+            config_path=config_path,
+            gateway_env_path=gateway_env_path,
+            node_kind=node_kind,
         )
-        _write_env_file(config_path, node_values)
-        return True
-    if dify_ready:
-        node_values.update(
-            {
-                "CLAW_MODEL_PROVIDER": "dify",
-                "CLAW_DIFY_BASE_URL": gateway_values.get("WCH_DIFY_BASE_URL", "").strip(),
-                "CLAW_DIFY_API_KEY": gateway_values.get("WCH_DIFY_API_KEY", "").strip(),
-            }
-        )
-        _write_env_file(config_path, node_values)
-        return True
-    return False
+    return _migrate_worker_model_config_from_gateway_env(
+        config_path=config_path,
+        gateway_env_path=gateway_env_path,
+        node_kind=node_kind,
+    )
 
 
 def _parse_int(raw: str | None, default: int) -> int:

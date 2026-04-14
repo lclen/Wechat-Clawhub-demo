@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from launcher.app import _migrate_worker_model_config_from_gateway_env, _read_env_file, create_app
+from launcher.app import (
+    _migrate_worker_model_config_from_gateway_env,
+    _read_env_file,
+    _sync_node_model_config_from_gateway_env,
+    create_app,
+)
 from launcher.models import LauncherProfile
 
 
@@ -177,6 +184,98 @@ class WorkerModelEnvMigrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(migrated)
         self.assertEqual(values.get("CLAW_OPENAI_BASE_URL", ""), "")
+
+    async def test_sync_local_node_model_config_copies_gateway_template_when_local_model_is_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            node_env = root / "node.env"
+            gateway_env = root / "gateway.env"
+            node_env.write_text(
+                "\n".join(
+                    [
+                        "CLAW_NODE_KIND=local",
+                        "CLAW_MODEL_PROVIDER=auto",
+                        "CLAW_OPENAI_BASE_URL=",
+                        "CLAW_OPENAI_API_KEY=",
+                        "CLAW_OPENAI_MODEL=",
+                        "CLAW_DIFY_BASE_URL=",
+                        "CLAW_DIFY_API_KEY=",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            gateway_env.write_text(
+                "\n".join(
+                    [
+                        "WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "WCH_BUILTIN_MODEL_API_KEY=sk-local",
+                        "WCH_BUILTIN_MODEL_NAME=qwen-local",
+                        "WCH_BUILTIN_MODEL_ENABLE_SEARCH=true",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.utime(gateway_env, (time.time() + 1, time.time() + 1))
+
+            synced = _sync_node_model_config_from_gateway_env(
+                config_path=node_env,
+                gateway_env_path=gateway_env,
+                node_kind="local",
+            )
+            values = _read_env_file(node_env)
+
+        self.assertTrue(synced)
+        self.assertEqual(values["CLAW_MODEL_PROVIDER"], "openai")
+        self.assertEqual(values["CLAW_OPENAI_BASE_URL"], "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        self.assertEqual(values["CLAW_OPENAI_API_KEY"], "sk-local")
+        self.assertEqual(values["CLAW_OPENAI_MODEL"], "qwen-local")
+        self.assertEqual(values["CLAW_OPENAI_ENABLE_SEARCH"], "true")
+
+    async def test_sync_local_node_model_config_preserves_newer_local_values_when_gateway_is_older(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            node_env = root / "node.env"
+            gateway_env = root / "gateway.env"
+            gateway_env.write_text(
+                "\n".join(
+                    [
+                        "WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "WCH_BUILTIN_MODEL_API_KEY=sk-gateway",
+                        "WCH_BUILTIN_MODEL_NAME=qwen-gateway",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            node_env.write_text(
+                "\n".join(
+                    [
+                        "CLAW_NODE_KIND=local",
+                        "CLAW_MODEL_PROVIDER=openai",
+                        "CLAW_OPENAI_BASE_URL=https://custom.example/v1",
+                        "CLAW_OPENAI_API_KEY=sk-custom",
+                        "CLAW_OPENAI_MODEL=qwen-custom",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.utime(gateway_env, (time.time() - 10, time.time() - 10))
+            os.utime(node_env, (time.time(), time.time()))
+
+            synced = _sync_node_model_config_from_gateway_env(
+                config_path=node_env,
+                gateway_env_path=gateway_env,
+                node_kind="local",
+            )
+            values = _read_env_file(node_env)
+
+        self.assertFalse(synced)
+        self.assertEqual(values["CLAW_OPENAI_BASE_URL"], "https://custom.example/v1")
+        self.assertEqual(values["CLAW_OPENAI_API_KEY"], "sk-custom")
+        self.assertEqual(values["CLAW_OPENAI_MODEL"], "qwen-custom")
 
 
 if __name__ == "__main__":
