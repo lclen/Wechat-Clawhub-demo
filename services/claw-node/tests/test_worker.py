@@ -287,6 +287,22 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sent)
         websocket.send.assert_awaited_once()
 
+    async def test_can_request_task_stream_assignment_requires_no_active_tasks(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_TASK_STREAM_ENABLED="true",
+        )
+        worker = Worker(settings)
+
+        self.assertTrue(worker._can_request_task_stream_assignment())
+        worker._active_tasks.add(AsyncMock())
+        self.assertFalse(worker._can_request_task_stream_assignment())
+
     async def test_submit_task_failure_falls_back_to_http_when_stream_send_fails(self) -> None:
         settings = NodeSettings(
             CLAW_NODE_ID="node-local-1",
@@ -339,6 +355,25 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         worker._gateway.submit_result.assert_awaited_once()
+
+    async def test_can_request_task_stream_assignment_returns_false_when_semaphore_locked(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_TASK_STREAM_ENABLED="true",
+            CLAW_MAX_CONCURRENCY="1",
+        )
+        worker = Worker(settings)
+
+        await worker._semaphore.acquire()
+        try:
+            self.assertFalse(worker._can_request_task_stream_assignment())
+        finally:
+            worker._semaphore.release()
 
     async def test_flush_pending_diagnostics_events_sends_over_task_stream(self) -> None:
         settings = NodeSettings(

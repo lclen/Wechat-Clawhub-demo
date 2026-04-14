@@ -73,6 +73,11 @@ class Worker:
             f"context_version={context_version} keys={keys}"
         )
 
+    def _can_request_task_stream_assignment(self) -> bool:
+        # Keep task stream single-flight on the request side so long-polling "ready"
+        # frames do not block newer task_result frames behind them on the same socket.
+        return not self._active_tasks and not self._semaphore.locked()
+
     async def run(self) -> None:
         self._diagnostics.refresh_settings()
         self._diagnostics.set_state(
@@ -253,7 +258,7 @@ class Worker:
 
     async def _task_stream_loop(self) -> None:
         while not self._shutdown.is_set():
-            if self._semaphore.locked():
+            if not self._can_request_task_stream_assignment():
                 await asyncio.sleep(self._settings.pull_interval_ms / 1000)
                 continue
             try:
@@ -266,7 +271,14 @@ class Worker:
                         self._settings.pull_wait_seconds,
                     )
                     while not self._shutdown.is_set():
-                        if self._semaphore.locked():
+                        if not self._can_request_task_stream_assignment():
+                            if self._active_tasks:
+                                logger.info(
+                                    "[worker] task stream ready skipped because tasks are inflight node_id=%s active_tasks=%s sleep_ms=%s",
+                                    self._settings.node_id,
+                                    len(self._active_tasks),
+                                    self._settings.pull_interval_ms,
+                                )
                             await asyncio.sleep(self._settings.pull_interval_ms / 1000)
                             continue
                         await self._flush_pending_diagnostics_events()
