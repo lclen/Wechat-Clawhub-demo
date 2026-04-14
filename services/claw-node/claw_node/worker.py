@@ -262,6 +262,14 @@ class Worker:
                         await self._send_task_stream_event({"type": "ready"})
                         task = await self._receive_task_stream_assignment(websocket)
                         if task is None:
+                            if self._active_tasks:
+                                logger.info(
+                                    "[worker] task stream noop while tasks are inflight node_id=%s active_tasks=%s sleep_ms=%s",
+                                    self._settings.node_id,
+                                    len(self._active_tasks),
+                                    self._settings.pull_interval_ms,
+                                )
+                                await asyncio.sleep(self._settings.pull_interval_ms / 1000)
                             continue
                         logger.info(
                             "[dispatch] streamed task_id=%s session=%s context_version=%s user=%s preview=%s",

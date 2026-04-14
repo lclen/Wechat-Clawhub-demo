@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import unittest
 
+from app.api.routes.nodes import _task_stream_ready_wait_seconds
 from app.models.node import NodeStatus
 from app.models.node import NodeRecord
 from app.services.node_inventory import build_node_inventory
@@ -129,6 +130,20 @@ class NodeInventoryTests(unittest.TestCase):
         self.assertEqual(len(inventory), 1)
         self.assertEqual(inventory[0].connection_state, "needs_repair")
         self.assertEqual(inventory[0].last_error, "推理后端未配置")
+
+
+class NodeTaskStreamReadyWaitTests(unittest.TestCase):
+    def test_ready_uses_default_wait_when_no_inflight_tasks(self) -> None:
+        self.assertEqual(
+            _task_stream_ready_wait_seconds(inflight_task_count=0, default_wait_seconds=15),
+            15,
+        )
+
+    def test_ready_switches_to_non_blocking_when_inflight_tasks_exist(self) -> None:
+        self.assertEqual(
+            _task_stream_ready_wait_seconds(inflight_task_count=1, default_wait_seconds=15),
+            0,
+        )
 
 
 if __name__ == "__main__":

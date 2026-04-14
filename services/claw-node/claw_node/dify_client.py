@@ -24,6 +24,7 @@ class DifyClient:
         self._local_cache = local_cache
         self._event_callback = event_callback
         self._conversation_ids: dict[str, str] = {}
+        self._streaming_only = False
         self._client = httpx.AsyncClient(
             base_url=settings.dify_base_url.rstrip("/"),
             timeout=httpx.Timeout(60.0),
@@ -49,6 +50,7 @@ class DifyClient:
     ) -> tuple[str, dict[str, Any] | None]:
         conversation_key = self._conversation_key(session_id=session_id, user_id=user_id)
         conversation_id = await self._resolve_conversation_id(conversation_key, recent_messages)
+        response_mode = "streaming" if self._streaming_only else "blocking"
         payload = {
             "inputs": {
                 "session_id": session_id,
@@ -57,7 +59,7 @@ class DifyClient:
                 "recent_messages": recent_messages,
             },
             "query": query,
-            "response_mode": "blocking",
+            "response_mode": response_mode,
             "user": user_id,
         }
         if conversation_id:
@@ -72,41 +74,26 @@ class DifyClient:
             session_id=session_id,
             metadata={
                 **(trace_metadata or {}),
-                "mode": "blocking",
+                "mode": response_mode,
                 "conversation_id": conversation_id,
                 "query_chars": str(len(query)),
                 "recent_message_count": str(len(recent_messages)),
                 "file_count": str(len(files)),
             },
         )
-        try:
-            response = await self._client.post("/chat-messages", json=payload)
-            response.raise_for_status()
-            data = response.json()
-        except httpx.HTTPStatusError as exc:
-            response_text = exc.response.text.strip()
-            response_preview = response_text[:500]
-            self._emit_event(
-                result="dify_request_http_error",
-                message="Dify 请求返回 HTTP 错误。",
-                session_id=session_id,
-                metadata={
-                    **(trace_metadata or {}),
-                    "status_code": str(exc.response.status_code),
-                    "elapsed_ms": str(max(1, int((time.perf_counter() - request_started_at) * 1000))),
-                    "response_preview": response_preview,
-                    "response_chars": str(len(response_text)),
-                    "mode": str(payload.get("response_mode") or ""),
-                    "conversation_id": conversation_id,
-                    "query_chars": str(len(query)),
-                    "file_count": str(len(files)),
-                },
-                level="warning",
-            )
-            if self._should_retry_with_streaming(exc):
+        if self._streaming_only:
+            data = await self._ask_streaming(payload, session_id=session_id, trace_metadata=trace_metadata)
+        else:
+            try:
+                response = await self._client.post("/chat-messages", json=payload)
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as exc:
+                response_text = exc.response.text.strip()
+                response_preview = response_text[:500]
                 self._emit_event(
-                    result="dify_blocking_rejected",
-                    message="Dify blocking 模式被拒绝，改用 streaming 重试。",
+                    result="dify_request_http_error",
+                    message="Dify 请求返回 HTTP 错误。",
                     session_id=session_id,
                     metadata={
                         **(trace_metadata or {}),
@@ -114,12 +101,31 @@ class DifyClient:
                         "elapsed_ms": str(max(1, int((time.perf_counter() - request_started_at) * 1000))),
                         "response_preview": response_preview,
                         "response_chars": str(len(response_text)),
+                        "mode": str(payload.get("response_mode") or ""),
+                        "conversation_id": conversation_id,
+                        "query_chars": str(len(query)),
+                        "file_count": str(len(files)),
                     },
                     level="warning",
                 )
-                data = await self._ask_streaming(payload, session_id=session_id, trace_metadata=trace_metadata)
-            else:
-                raise
+                if self._should_retry_with_streaming(exc):
+                    self._streaming_only = True
+                    self._emit_event(
+                        result="dify_blocking_rejected",
+                        message="Dify blocking 模式被拒绝，改用 streaming 重试。",
+                        session_id=session_id,
+                        metadata={
+                            **(trace_metadata or {}),
+                            "status_code": str(exc.response.status_code),
+                            "elapsed_ms": str(max(1, int((time.perf_counter() - request_started_at) * 1000))),
+                            "response_preview": response_preview,
+                            "response_chars": str(len(response_text)),
+                        },
+                        level="warning",
+                    )
+                    data = await self._ask_streaming(payload, session_id=session_id, trace_metadata=trace_metadata)
+                else:
+                    raise
         elapsed_ms = max(1, int((time.perf_counter() - request_started_at) * 1000))
         answer = data.get("answer")
         if not answer:

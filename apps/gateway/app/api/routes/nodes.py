@@ -39,6 +39,12 @@ router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 logger = logging.getLogger(__name__)
 
 
+def _task_stream_ready_wait_seconds(*, inflight_task_count: int, default_wait_seconds: int) -> int:
+    if inflight_task_count > 0:
+        return 0
+    return default_wait_seconds
+
+
 @router.get("", response_model=NodeListResponse)
 async def list_nodes(
     store: RedisStore = Depends(get_redis_store),
@@ -292,6 +298,8 @@ async def stream_node_tasks(
     # Register node connection
     await node_stream.register_connection(node_id, websocket)
 
+    inflight_task_ids: set[str] = set()
+
     try:
         while True:
             receive_started_at = time.perf_counter()
@@ -306,10 +314,29 @@ async def stream_node_tasks(
 
             if event_type == "ready":
                 # Node is ready for a task
-                task = await dispatch_queue.pull_for_node(node_id, wait_seconds=wait_seconds)
+                effective_wait_seconds = _task_stream_ready_wait_seconds(
+                    inflight_task_count=len(inflight_task_ids),
+                    default_wait_seconds=wait_seconds,
+                )
+                task = await dispatch_queue.pull_for_node(node_id, wait_seconds=effective_wait_seconds)
                 if task is None:
+                    if effective_wait_seconds != wait_seconds:
+                        logger.info(
+                            "[dispatch] ready_noop source=ws node=%s inflight=%s effective_wait_seconds=%s",
+                            node_id,
+                            len(inflight_task_ids),
+                            effective_wait_seconds,
+                        )
                     await websocket.send_json({"type": "noop"})
                     continue
+                inflight_task_ids.add(task.task_id)
+                logger.info(
+                    "[dispatch] task_assigned source=ws node=%s task_id=%s inflight=%s effective_wait_seconds=%s",
+                    node_id,
+                    task.task_id,
+                    len(inflight_task_ids),
+                    effective_wait_seconds,
+                )
                 await websocket.send_json({
                     "type": "task_assigned",
                     "task": task.model_dump(mode="json"),
@@ -341,6 +368,7 @@ async def stream_node_tasks(
                         float(receive_metrics.get("decode_ms", 0.0)),
                         int(receive_metrics.get("message_chars", 0)),
                     )
+                    inflight_task_ids.discard(payload.task_id)
                     submit_started_at = time.perf_counter()
                     logger.info(
                         "[dispatch] task_result_dispatching source=ws node=%s task_id=%s session=%s chars=%s",
@@ -391,6 +419,7 @@ async def stream_node_tasks(
                         payload.error_code,
                         payload.retryable,
                     )
+                    inflight_task_ids.discard(payload.task_id)
                     await dispatch_queue.submit_failure(payload)
                 except DispatchTaskNotFoundError:
                     await websocket.send_json({"type": "error", "task_id": str(event.get("task_id", "")), "reason": "task_not_found"})

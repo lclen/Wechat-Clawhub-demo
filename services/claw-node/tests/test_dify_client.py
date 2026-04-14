@@ -209,11 +209,26 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
             [str(item.get("result")) for item in emitted_events],
             [
                 "dify_request_started",
+                "dify_request_http_error",
                 "dify_blocking_rejected",
                 "dify_streaming_started",
                 "dify_request_finished",
             ],
         )
+        self.assertTrue(client._streaming_only)
+
+        answer_2, usage_2 = await client.ask(
+            session_id="session-stream",
+            user_id="user-stream",
+            agent_id="agent-stream",
+            query="继续",
+            context_summary="",
+            recent_messages=[],
+        )
+
+        self.assertEqual(answer_2, "你好，我是 Dify")
+        self.assertEqual(usage_2["dify_conversation_id"], "conv-s")
+        self.assertEqual(requests_seen, ["blocking", "streaming", "streaming"])
 
     def test_gateway_client_uses_additional_headers_for_websockets_15(self) -> None:
         from claw_node.gateway_client import GatewayClient
