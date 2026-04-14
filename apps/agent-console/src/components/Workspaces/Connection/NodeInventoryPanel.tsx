@@ -17,6 +17,9 @@ type InventoryCardView = {
   badgeTone: "human" | "typing" | "queued";
   address: string;
   detail: string;
+  taskStreamLabel: string;
+  taskStreamDetail: string;
+  taskStreamTone: "human" | "typing" | "queued";
   platform: string;
   version: string;
   concurrency: string;
@@ -82,6 +85,11 @@ export function NodeInventoryPanel({ headline, cards, selectedDiagnostics }: Nod
                 </div>
                 <div className="connection-node-address">{card.address}</div>
                 <div className="connection-node-detail">{card.detail}</div>
+                <div className="connection-node-detail" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ opacity: 0.65 }}>链路</span>
+                  <span className={`session-badge session-badge-${card.taskStreamTone}`}>{card.taskStreamLabel}</span>
+                  <span>{card.taskStreamDetail}</span>
+                </div>
                 <div className="connection-node-channel-band">
                   <div className="connection-node-channel-band-top">
                     <div>

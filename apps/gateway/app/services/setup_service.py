@@ -69,6 +69,21 @@ class SetupTaskState:
         )
 
 
+def _default_task_stream_state() -> dict[str, object]:
+    return {
+        "protocol_version": "",
+        "connection_mode": "disconnected",
+        "connected_at": None,
+        "last_event_at": None,
+        "last_disconnect_at": None,
+        "last_disconnect_code": None,
+        "last_disconnect_reason": "",
+        "reconnect_count": 0,
+        "fallback_poll_count": 0,
+        "upgrade_required": False,
+    }
+
+
 @dataclass
 class PairingDiagnosticState:
     node_id: str
@@ -89,6 +104,7 @@ class PairingDiagnosticState:
     expected_token_masked: str = ""
     provided_token_masked: str = ""
     latest_task: dict[str, object] = field(default_factory=dict)
+    task_stream: dict[str, object] = field(default_factory=_default_task_stream_state)
     timeline: deque[dict[str, object]] = field(default_factory=lambda: deque(maxlen=60))
     updated_at: object = field(default_factory=utcnow)
 
@@ -716,7 +732,7 @@ class SetupService:
         task.status = status
         task.updated_at = utcnow()
 
-    def get_pairing_diagnostics(self) -> dict[str, dict[str, str]]:
+    def get_pairing_diagnostics(self) -> dict[str, dict[str, object]]:
         return {
             node_id: {
                 "connection_state": item.connection_state,
@@ -726,6 +742,7 @@ class SetupService:
                 "last_register_result": item.last_register_result,
                 "last_register_at": item.last_register_at.isoformat() if item.last_register_at else "",
                 "last_auth_failure_at": item.last_auth_failure_at.isoformat() if item.last_auth_failure_at else "",
+                "task_stream": self._serialize_task_stream_state(item.task_stream),
                 "updated_at": str(item.updated_at),
             }
             for node_id, item in self._pairing_diagnostics.items()
@@ -922,6 +939,145 @@ class SetupService:
         )
         self._schedule_node_diagnostics_publish(state.node_id)
 
+    def record_task_stream_connected(
+        self,
+        node_id: str,
+        *,
+        protocol_version: str,
+        node_kind: str | None = None,
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        connected_at = utcnow()
+        state.task_stream = {
+            **_default_task_stream_state(),
+            **state.task_stream,
+            "protocol_version": protocol_version.strip(),
+            "connection_mode": "ws",
+            "connected_at": connected_at,
+            "last_event_at": connected_at,
+            "upgrade_required": bool(protocol_version.strip() and protocol_version.strip() != "task-stream-v2"),
+        }
+        state.updated_at = connected_at
+        self._append_diagnostic_timeline(
+            state,
+            category="task_stream",
+            result="ws_registered",
+            message=f"节点任务流 websocket 已注册，协议 {protocol_version.strip() or 'unknown'}",
+            metadata={
+                "protocol_version": protocol_version.strip(),
+                "connection_mode": "ws",
+            },
+        )
+        self._schedule_node_diagnostics_publish(state.node_id)
+
+    def record_task_stream_event(
+        self,
+        node_id: str,
+        *,
+        protocol_version: str | None = None,
+        node_kind: str | None = None,
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        current = state.task_stream
+        state.task_stream = {
+            **_default_task_stream_state(),
+            **current,
+            "protocol_version": (protocol_version if protocol_version is not None else str(current.get("protocol_version") or "")).strip(),
+            "last_event_at": utcnow(),
+            "upgrade_required": bool(
+                ((protocol_version if protocol_version is not None else str(current.get("protocol_version") or "")).strip())
+                and ((protocol_version if protocol_version is not None else str(current.get("protocol_version") or "")).strip() != "task-stream-v2")
+            ),
+        }
+        state.updated_at = utcnow()
+        self._schedule_node_diagnostics_publish(state.node_id)
+
+    def record_task_stream_disconnected(
+        self,
+        node_id: str,
+        *,
+        disconnect_code: int | None,
+        disconnect_reason: str,
+        node_kind: str | None = None,
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        disconnected_at = utcnow()
+        state.task_stream = {
+            **_default_task_stream_state(),
+            **state.task_stream,
+            "connection_mode": "disconnected",
+            "last_disconnect_at": disconnected_at,
+            "last_disconnect_code": disconnect_code,
+            "last_disconnect_reason": disconnect_reason,
+        }
+        state.updated_at = disconnected_at
+        self._append_diagnostic_timeline(
+            state,
+            category="task_stream",
+            result="ws_closed",
+            message=f"节点任务流 websocket 已断开：{disconnect_reason or 'unknown'}",
+            metadata={
+                "disconnect_code": str(disconnect_code or ""),
+                "disconnect_reason": disconnect_reason,
+                "connection_mode": "disconnected",
+            },
+            level="warn",
+        )
+        self._schedule_node_diagnostics_publish(state.node_id)
+
+    def record_task_stream_receive_failure(
+        self,
+        node_id: str,
+        *,
+        detail: str,
+        node_kind: str | None = None,
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        state.updated_at = utcnow()
+        self._append_diagnostic_timeline(
+            state,
+            category="task_stream",
+            result="ws_receive_failed",
+            message=detail,
+            metadata={
+                "connection_mode": str(state.task_stream.get("connection_mode") or "disconnected"),
+            },
+            level="warn",
+        )
+        self._schedule_node_diagnostics_publish(state.node_id)
+
+    def record_task_stream_legacy_protocol_rejected(
+        self,
+        node_id: str,
+        *,
+        protocol_version: str,
+        node_kind: str | None = None,
+    ) -> None:
+        state = self._ensure_pairing_state(node_id, node_kind=node_kind or self._resolve_node_kind(node_id))
+        state.task_stream = {
+            **_default_task_stream_state(),
+            **state.task_stream,
+            "protocol_version": protocol_version.strip() or "legacy-ready",
+            "connection_mode": "disconnected",
+            "last_disconnect_at": utcnow(),
+            "last_disconnect_code": 4409,
+            "last_disconnect_reason": "legacy_protocol_rejected",
+            "upgrade_required": True,
+        }
+        state.updated_at = utcnow()
+        self._append_diagnostic_timeline(
+            state,
+            category="task_stream",
+            result="legacy_protocol_rejected",
+            message="节点仍在发送 legacy ready 协议，已拒绝连接，请升级节点版本。",
+            metadata={
+                "protocol_version": protocol_version.strip() or "legacy-ready",
+                "connection_mode": "disconnected",
+            },
+            level="error",
+        )
+        self._schedule_node_diagnostics_publish(state.node_id)
+
     def ingest_node_diagnostics_event(self, node_id: str, payload: dict[str, object]) -> None:
         snapshot = payload.get("snapshot")
         normalized_node_id = node_id.strip()
@@ -944,6 +1100,9 @@ class SetupService:
             mapped_state = self._map_runtime_state_to_connection_state(runtime_state, state.connection_state, state.node_kind, state.last_error)
             if mapped_state:
                 state.connection_state = mapped_state
+            snapshot_task_stream = snapshot.get("task_stream")
+            if isinstance(snapshot_task_stream, dict):
+                state.task_stream = self._coerce_task_stream_state(snapshot_task_stream, fallback=state.task_stream)
 
         events = payload.get("events")
         if isinstance(events, list):
@@ -994,6 +1153,7 @@ class SetupService:
             "expected_token_masked": state.expected_token_masked,
             "provided_token_masked": state.provided_token_masked,
             "latest_task": dict(state.latest_task),
+            "task_stream": self._coerce_task_stream_state(state.task_stream),
             "timeline": list(state.timeline),
         }
 
@@ -1038,6 +1198,8 @@ class SetupService:
         )
 
     def _coerce_datetime(self, value: object, fallback: datetime | None = None) -> datetime | None:
+        if isinstance(value, datetime):
+            return value
         if not isinstance(value, str) or not value.strip():
             return fallback
         try:
@@ -1151,6 +1313,9 @@ class SetupService:
                     entry["timestamp"] = timestamp.isoformat()
                 serialized_timeline.append(entry)
             payload["timeline"] = serialized_timeline
+        task_stream = payload.get("task_stream")
+        if isinstance(task_stream, dict):
+            payload["task_stream"] = self._serialize_task_stream_state(task_stream)
         return payload
 
     def _deserialize_pairing_state(self, node_id: str, payload: dict[str, object]) -> PairingDiagnosticState | None:
@@ -1199,7 +1364,63 @@ class SetupService:
                         "metadata": {str(key): str(value) for key, value in (item.get("metadata") or {}).items()} if isinstance(item.get("metadata"), dict) else {},
                     }
                 )
+        task_stream = payload.get("task_stream")
+        if isinstance(task_stream, dict):
+            state.task_stream = self._coerce_task_stream_state(task_stream, fallback=state.task_stream)
         return state
+
+    def _serialize_task_stream_state(self, payload: dict[str, object]) -> dict[str, object]:
+        serialized = self._coerce_task_stream_state(payload)
+        for key in ("connected_at", "last_event_at", "last_disconnect_at"):
+            value = serialized.get(key)
+            if isinstance(value, datetime):
+                serialized[key] = value.isoformat()
+        return serialized
+
+    def _coerce_task_stream_state(
+        self,
+        payload: dict[str, object],
+        *,
+        fallback: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        base = {
+            **_default_task_stream_state(),
+            **(fallback or {}),
+        }
+        normalized = {
+            **base,
+            **payload,
+        }
+        normalized["protocol_version"] = str(normalized.get("protocol_version") or "").strip()
+        connection_mode = str(normalized.get("connection_mode") or base.get("connection_mode") or "disconnected").strip()
+        if connection_mode not in {"ws", "degraded_http_polling", "disconnected"}:
+            connection_mode = "disconnected"
+        normalized["connection_mode"] = connection_mode
+        normalized["connected_at"] = self._coerce_datetime(normalized.get("connected_at"))
+        normalized["last_event_at"] = self._coerce_datetime(normalized.get("last_event_at"))
+        normalized["last_disconnect_at"] = self._coerce_datetime(normalized.get("last_disconnect_at"))
+        disconnect_code = normalized.get("last_disconnect_code")
+        try:
+            normalized["last_disconnect_code"] = int(disconnect_code) if disconnect_code not in (None, "", False) else None
+        except (TypeError, ValueError):
+            normalized["last_disconnect_code"] = None
+        normalized["last_disconnect_reason"] = str(normalized.get("last_disconnect_reason") or "").strip()
+        try:
+            normalized["reconnect_count"] = max(0, int(normalized.get("reconnect_count") or 0))
+        except (TypeError, ValueError):
+            normalized["reconnect_count"] = 0
+        try:
+            normalized["fallback_poll_count"] = max(0, int(normalized.get("fallback_poll_count") or 0))
+        except (TypeError, ValueError):
+            normalized["fallback_poll_count"] = 0
+        normalized["upgrade_required"] = bool(
+            normalized.get("upgrade_required")
+            or (
+                normalized["protocol_version"]
+                and normalized["protocol_version"] != "task-stream-v2"
+            )
+        )
+        return normalized
 
     async def _apply_gateway_config(
         self,

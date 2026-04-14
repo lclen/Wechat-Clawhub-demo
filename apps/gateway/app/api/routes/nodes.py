@@ -40,12 +40,6 @@ router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 logger = logging.getLogger(__name__)
 
 
-def _task_stream_ready_wait_seconds(*, inflight_task_count: int, default_wait_seconds: int) -> int:
-    if inflight_task_count > 0:
-        return 0
-    return default_wait_seconds
-
-
 def _summarize_task_stream_event(event: dict[str, object]) -> str:
     event_type = str(event.get("type") or "<missing>")
     task_id = str(event.get("task_id") or "-")
@@ -307,6 +301,7 @@ async def stream_node_tasks(
         dispatch_queue: DispatchQueue = websocket.app.state.dispatch_queue
         node_auth: NodeAuthService = websocket.app.state.node_auth
         node_stream = websocket.app.state.node_stream
+        setup_service: SetupService = websocket.app.state.setup_service
     except AttributeError:
         await websocket.close(code=4500, reason="server_not_ready")
         return
@@ -325,20 +320,81 @@ async def stream_node_tasks(
         await websocket.close(code=4503, reason="redis_unavailable")
         return
 
-    # Register node connection
-    await node_stream.register_connection(node_id, websocket)
+    protocol_version = websocket.headers.get("x-task-stream-protocol", "").strip()
+    await node_stream.register_connection(node_id, websocket, protocol_version=protocol_version)
+    logger.info(
+        "[dispatch] ws_registered node=%s protocol_version=%s wait_seconds=%s",
+        node_id,
+        protocol_version or "<missing>",
+        wait_seconds,
+    )
+    setup_service.record_task_stream_connected(node_id, protocol_version=protocol_version)
 
+    disconnect_code: int | None = None
+    disconnect_reason = ""
+    connection_registered = True
     try:
         while True:
             receive_started_at = time.perf_counter()
-            event_packet = await node_stream.receive_event(websocket)
-            if event_packet is None:
-                # Connection closed
+            receive_result = await node_stream.receive_event(node_id, websocket)
+            if receive_result.kind == "closed":
+                disconnect_code = receive_result.close_code
+                disconnect_reason = receive_result.close_reason
+                logger.info(
+                    "[dispatch] ws_closed node=%s code=%s reason=%s",
+                    node_id,
+                    disconnect_code,
+                    disconnect_reason,
+                )
+                setup_service.record_task_stream_disconnected(
+                    node_id,
+                    disconnect_code=disconnect_code,
+                    disconnect_reason=disconnect_reason or "closed",
+                )
                 break
-            event, receive_metrics = event_packet
+            if receive_result.kind == "invalid_json":
+                logger.warning(
+                    "[dispatch] ws_receive_failed node=%s kind=invalid_json error=%s",
+                    node_id,
+                    receive_result.error,
+                )
+                setup_service.record_task_stream_receive_failure(
+                    node_id,
+                    detail=f"invalid_json: {receive_result.error}",
+                )
+                disconnect_code = 4400
+                disconnect_reason = "invalid_json"
+                setup_service.record_task_stream_disconnected(
+                    node_id,
+                    disconnect_code=disconnect_code,
+                    disconnect_reason=disconnect_reason,
+                )
+                await websocket.close(code=4400, reason="invalid_json")
+                break
+            if receive_result.kind == "receive_error":
+                logger.warning(
+                    "[dispatch] ws_receive_failed node=%s kind=transport error=%s",
+                    node_id,
+                    receive_result.error,
+                )
+                setup_service.record_task_stream_receive_failure(
+                    node_id,
+                    detail=f"receive_error: {receive_result.error}",
+                )
+                setup_service.record_task_stream_disconnected(
+                    node_id,
+                    disconnect_code=None,
+                    disconnect_reason=receive_result.error or "receive_error",
+                )
+                disconnect_reason = receive_result.error
+                break
+
+            event = receive_result.event or {}
+            receive_metrics = receive_result.metrics
 
             event_type = event.get("type")
             receive_ms = (time.perf_counter() - receive_started_at) * 1000
+            setup_service.record_task_stream_event(node_id, protocol_version=protocol_version)
             logger.info(
                 "[dispatch] ws_event_received source=ws node=%s %s inflight=%s receive_ms=%.0f read_ms=%.0f decode_ms=%.0f message_chars=%s",
                 node_id,
@@ -351,13 +407,20 @@ async def stream_node_tasks(
             )
 
             if event_type == "ready":
-                logger.info(
-                    "[dispatch] ready_ignored source=ws node=%s inflight=%s default_wait_seconds=%s",
+                logger.warning(
+                    "[dispatch] legacy_protocol_rejected source=ws node=%s protocol_version=%s inflight=%s",
                     node_id,
+                    protocol_version or "<missing>",
                     node_stream.inflight_count(node_id),
-                    wait_seconds,
                 )
-                await websocket.send_json({"type": "noop", "reason": "legacy_ready_ignored"})
+                setup_service.record_task_stream_legacy_protocol_rejected(
+                    node_id,
+                    protocol_version=protocol_version,
+                )
+                disconnect_code = 4409
+                disconnect_reason = "legacy_protocol_rejected"
+                await websocket.close(code=4409, reason="legacy_protocol_rejected")
+                break
 
             elif event_type == "task_result":
                 if not event.get("task_id") or not event.get("session_id") or event.get("content") is None:
@@ -501,11 +564,18 @@ async def stream_node_tasks(
                 await websocket.send_json({"type": "error", "reason": "unknown_event_type"})
 
     except WebSocketDisconnect:
-        pass
+        logger.info("[dispatch] ws_closed node=%s code=%s reason=%s", node_id, disconnect_code, disconnect_reason)
     except DispatchQueueError:
         await websocket.close(code=4503, reason="dispatch_unavailable")
     finally:
-        await node_stream.unregister_connection(node_id)
+        if connection_registered:
+            await node_stream.unregister_connection(node_id)
+            logger.info(
+                "[dispatch] ws_unregistered node=%s code=%s reason=%s",
+                node_id,
+                disconnect_code,
+                disconnect_reason,
+            )
 
 
 @router.post("/{node_id}/task-result", response_model=NodeOperationResponse)

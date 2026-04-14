@@ -55,6 +55,9 @@ type NodeInventoryCardView = {
   badgeTone: "human" | "typing" | "queued";
   address: string;
   detail: string;
+  taskStreamLabel: string;
+  taskStreamDetail: string;
+  taskStreamTone: "human" | "typing" | "queued";
   platform: string;
   version: string;
   concurrency: string;

@@ -85,6 +85,20 @@ NodeInventoryConnectionState = Literal[
     "online_unpaired",
 ]
 NodeKind = Literal["local", "remote"]
+TaskStreamConnectionMode = Literal["ws", "degraded_http_polling", "disconnected"]
+
+
+class TaskStreamHealth(BaseModel):
+    protocol_version: str = ""
+    connection_mode: TaskStreamConnectionMode = "disconnected"
+    connected_at: datetime | None = None
+    last_event_at: datetime | None = None
+    last_disconnect_at: datetime | None = None
+    last_disconnect_code: int | None = None
+    last_disconnect_reason: str = ""
+    reconnect_count: int = 0
+    fallback_poll_count: int = 0
+    upgrade_required: bool = False
 
 
 class NodeInventoryRecord(BaseModel):
@@ -111,6 +125,7 @@ class NodeInventoryRecord(BaseModel):
     last_register_result: str | None = None
     last_register_at: datetime | None = None
     last_auth_failure_at: datetime | None = None
+    task_stream: TaskStreamHealth = Field(default_factory=TaskStreamHealth)
 
 
 class NodeInventorySummary(BaseModel):
@@ -169,6 +184,7 @@ class NodeDiagnosticsRecord(BaseModel):
     expected_token_masked: str = ""
     provided_token_masked: str = ""
     latest_task: NodeLatestTaskRecord = Field(default_factory=NodeLatestTaskRecord)
+    task_stream: TaskStreamHealth = Field(default_factory=TaskStreamHealth)
     timeline: list[NodeDiagnosticsEvent] = Field(default_factory=list)
 
 

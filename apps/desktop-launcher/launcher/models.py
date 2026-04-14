@@ -173,6 +173,7 @@ class LocalNodeStatusResponse(BaseModel):
     inference_ready: bool = False
     inference_detail: str = ""
     diagnostics: dict[str, object] = Field(default_factory=dict)
+    task_stream: "LocalNodeTaskStreamHealth" = Field(default_factory=lambda: LocalNodeTaskStreamHealth())
     channel_assessment: "LocalNodeChannelAssessmentResult" = Field(default_factory=lambda: LocalNodeChannelAssessmentResult())
     model_settings: "LocalNodeModelConfig" = Field(default_factory=lambda: LocalNodeModelConfig())
 
@@ -250,6 +251,19 @@ class LocalNodeModelConfigRequest(BaseModel):
 
 class LocalNodeChannelAssessmentStartRequest(BaseModel):
     max_rounds: int = Field(default=20, ge=1, le=999)
+
+
+class LocalNodeTaskStreamHealth(BaseModel):
+    protocol_version: str = ""
+    connection_mode: str = "disconnected"
+    connected_at: datetime | None = None
+    last_event_at: datetime | None = None
+    last_disconnect_at: datetime | None = None
+    last_disconnect_code: int | None = None
+    last_disconnect_reason: str = ""
+    reconnect_count: int = 0
+    fallback_poll_count: int = 0
+    upgrade_required: bool = False
 
 
 class LocalNodeChannelAssessmentRound(BaseModel):

@@ -10,6 +10,21 @@ from typing import Any, Callable
 from claw_node.config import NodeSettings
 
 
+def _default_task_stream_state() -> dict[str, object]:
+    return {
+        "protocol_version": "",
+        "connection_mode": "disconnected",
+        "connected_at": None,
+        "last_event_at": None,
+        "last_disconnect_at": None,
+        "last_disconnect_code": None,
+        "last_disconnect_reason": "",
+        "reconnect_count": 0,
+        "fallback_poll_count": 0,
+        "upgrade_required": False,
+    }
+
+
 @dataclass
 class NodeDiagnosticEvent:
     timestamp: datetime
@@ -75,6 +90,7 @@ class NodeDiagnostics:
             "last_heartbeat_at": None,
             "latest_task": self._default_latest_task(),
             "channel_assessment": self._default_channel_assessment(),
+            "task_stream": _default_task_stream_state(),
             "updated_at": self._utcnow().isoformat(),
             "events": [],
         }
@@ -105,6 +121,12 @@ class NodeDiagnostics:
                 **self._default_latest_task(),
                 **previous_latest_task,
             }
+        previous_task_stream = previous_snapshot.get("task_stream")
+        if isinstance(previous_task_stream, dict):
+            self._snapshot["task_stream"] = {
+                **_default_task_stream_state(),
+                **previous_task_stream,
+            }
         self.flush()
 
     @property
@@ -132,6 +154,10 @@ class NodeDiagnostics:
                 "dify_configured": self._has_dify_config(self._settings),
                 "openai_model": self._settings.openai_model,
                 "last_pairing_trace_id": self._settings.pairing_trace_id.strip(),
+                "task_stream": {
+                    **_default_task_stream_state(),
+                    **(self._snapshot.get("task_stream") if isinstance(self._snapshot.get("task_stream"), dict) else {}),
+                },
             }
         )
         self.flush()
@@ -309,6 +335,7 @@ class NodeDiagnostics:
             "last_heartbeat_at": self._snapshot.get("last_heartbeat_at"),
             "latest_task": self._snapshot.get("latest_task", self._default_latest_task()),
             "channel_assessment": self._snapshot.get("channel_assessment", self._default_channel_assessment()),
+            "task_stream": self._snapshot.get("task_stream", _default_task_stream_state()),
             "updated_at": self._snapshot.get("updated_at"),
         }
 
@@ -317,6 +344,16 @@ class NodeDiagnostics:
             **self._default_latest_task(),
             **payload,
         }
+        self.flush()
+
+    def update_task_stream(self, payload: dict[str, Any]) -> None:
+        current = self._snapshot.get("task_stream")
+        merged = {
+            **_default_task_stream_state(),
+            **(current if isinstance(current, dict) else {}),
+            **payload,
+        }
+        self._snapshot["task_stream"] = merged
         self.flush()
 
     def update_channel_assessment(

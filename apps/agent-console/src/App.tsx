@@ -81,6 +81,7 @@ import {
   selectCurrentSession,
 } from "./selectors/consoleSelectors";
 import {
+  describeTaskStreamHealth,
   getInventoryNodeAddress,
   getNodeAddress,
   normalizeInventoryRuntimeMetrics,
@@ -1537,6 +1538,9 @@ export function App() {
     badgeTone: "human" | "typing" | "queued";
     address: string;
     detail: string;
+    taskStreamLabel: string;
+    taskStreamDetail: string;
+    taskStreamTone: "human" | "typing" | "queued";
     platform: string;
     version: string;
     concurrency: string;
@@ -1554,6 +1558,7 @@ export function App() {
     () =>
       displayNodeInventory.map((node) => {
         const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
+        const taskStream = describeTaskStreamHealth(node.task_stream);
         const channelCapacity = Math.max(node.channel_capacity ?? 0, 0);
         const channelBusy = Math.max(node.channel_in_use ?? 0, 0);
         const channelIdle = Math.max(channelCapacity - channelBusy, 0);
@@ -1583,6 +1588,9 @@ export function App() {
           badgeTone: presentation.tone as "human" | "typing" | "queued",
           address: getInventoryNodeAddress(node),
           detail: presentation.detail,
+          taskStreamLabel: taskStream.label,
+          taskStreamDetail: taskStream.detail,
+          taskStreamTone: taskStream.tone,
           platform: node.platform || "未知",
           version: node.node_version || "-",
           concurrency: String(node.max_concurrency ?? "-"),
@@ -1625,8 +1633,33 @@ export function App() {
   );
   const selectedNodeDiagnosticsView = useMemo(() => {
     if (!selectedNodeId || !selectedNodeDiagnostics) return null;
+    const taskStream = selectedNodeDiagnostics.task_stream;
     const rows: Array<{ label: string; value: string; multiline?: boolean }> = [
       { label: "连接状态", value: selectedNodeDiagnostics.connection_state || "未记录" },
+      {
+        label: "任务流模式",
+        value: taskStream.upgrade_required
+          ? `需要升级 · ${taskStream.protocol_version || "unknown"}`
+          : `${taskStream.connection_mode || "disconnected"} · ${taskStream.protocol_version || "未上报"}`,
+      },
+      {
+        label: "最近链路事件",
+        value: taskStream.last_event_at
+          ? formatTimeLabel(taskStream.last_event_at, true)
+          : taskStream.last_disconnect_at
+            ? `最近断流 ${formatTimeLabel(taskStream.last_disconnect_at, true)}`
+            : "暂无",
+      },
+      {
+        label: "断流摘要",
+        value: taskStream.last_disconnect_at
+          ? `code ${taskStream.last_disconnect_code ?? "-"} · ${taskStream.last_disconnect_reason || "unknown"}`
+          : "暂无",
+      },
+      {
+        label: "重连 / 降级",
+        value: `${taskStream.reconnect_count} 次重连 · ${taskStream.fallback_poll_count} 次 fallback`,
+      },
       {
         label: "最近配对",
         value: selectedNodeDiagnostics.last_pairing_status

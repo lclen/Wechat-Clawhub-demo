@@ -88,10 +88,7 @@ export function OverviewPanel({
   const assessment = localNodeStatus?.channel_assessment;
   const assessmentStatus = assessment?.status || "idle";
   const localNodeRunning = localNodeStatus?.state === "running";
-  const localNodeControlLabel = localNodeRunning ? "运行中" : "已停止";
-  const localNodeControlDetail = localNodeRunning
-    ? "评估前建议先停止节点。"
-    : "节点已空闲，可开始评估。";
+  const taskStream = localNodeStatus?.task_stream;
 
   const configuredMaxRounds = Math.max(
     1,
@@ -113,7 +110,6 @@ export function OverviewPanel({
     ? [...assessment.rounds].reverse().find((round) => !round.stable) ?? null
     : null;
 
-  const appliedPlanLabel = assessmentApplyStrategy === "balanced" ? "平衡方案" : "最高建议";
   const appliedPlanValue =
     assessmentApplyStrategy === "balanced" && balancedRecommendationAvailable
       ? `${assessment?.balanced_channel_capacity} / ${assessment?.balanced_max_concurrency}`
@@ -232,6 +228,46 @@ export function OverviewPanel({
         <div className="connection-assessment-sidebar-shell" style={{ marginTop: 12 }}>
           <div
             style={{
+              background:
+                taskStream?.upgrade_required
+                  ? "rgba(176, 63, 69, 0.08)"
+                  : taskStream?.connection_mode === "ws"
+                    ? "rgba(44, 111, 90, 0.08)"
+                    : "rgba(184, 119, 31, 0.08)",
+              padding: 12,
+              borderRadius: 8,
+              border: "1px solid var(--line)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12, opacity: 0.6 }}>链路健康</span>
+              <SignalBadge
+                tone={
+                  taskStream?.upgrade_required
+                    ? "warn"
+                    : taskStream?.connection_mode === "ws"
+                      ? "good"
+                      : "info"
+                }
+              >
+                {taskStream?.upgrade_required ? "需要升级" : taskStream?.connection_mode || "disconnected"}
+              </SignalBadge>
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>
+              协议 {taskStream?.protocol_version || "未上报"}
+            </div>
+            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.72 }}>
+              {taskStream?.last_disconnect_at
+                ? `最近断流 ${formatAssessmentTimestamp(taskStream.last_disconnect_at)} · code ${taskStream.last_disconnect_code ?? "-"}`
+                : "最近没有记录到断流。"}
+            </div>
+            <div style={{ marginTop: 4, fontSize: 12, opacity: 0.72 }}>
+              {`累计重连 ${taskStream?.reconnect_count ?? 0} 次 · fallback ${taskStream?.fallback_poll_count ?? 0} 次`}
+            </div>
+          </div>
+
+          <div
+            style={{
               backgroundColor: "rgba(0,0,0,0.03)",
               padding: 12,
               borderRadius: 8,
@@ -274,7 +310,7 @@ export function OverviewPanel({
               tone="healthy"
             />
             <MetricCard
-              label="平衡方案"
+              label="延迟优先方案"
               value={balancedRecommendationAvailable ? `${assessment?.balanced_channel_capacity}/${assessment?.balanced_max_concurrency}` : "-"}
               tone="accent"
             />
@@ -332,7 +368,7 @@ export function OverviewPanel({
                 disabled={busy || assessmentBusy || !canManageGateway}
                 style={{ width: "100%", marginBottom: 8 }}
               >
-                <option value="balanced">方案：均衡稳定</option>
+                <option value="balanced">方案：优先选择平均延迟 &lt;= 5000ms 的最后稳定轮次</option>
                 <option value="peak">方案：极限容量</option>
               </select>
               <button

@@ -38,6 +38,7 @@ from launcher.models import (
     LocalNodeModelConfig,
     LocalNodeModelConfigRequest,
     LocalNodeStatusResponse,
+    LocalNodeTaskStreamHealth,
     NodeCacheToggleRequest,
     StartRequest,
     StopRequest,
@@ -558,6 +559,9 @@ def create_app() -> FastAPI:
             active_model_provider = str(diagnostics.get("effective_model_provider", "") or "").strip() or configured_model_provider
             inference_ready = bool(diagnostics.get("inference_ready", False))
             inference_detail = str(diagnostics.get("inference_detail", "") or "").strip()
+            task_stream = _build_local_node_task_stream_health(
+                diagnostics.get("task_stream") if isinstance(diagnostics.get("task_stream"), dict) else {},
+            )
             config_apply_state = str(apply_state.get("config_apply_state", "idle") or "idle")
             last_apply_error = str(apply_state.get("last_apply_error", "") or "")
             last_apply_at = _parse_optional_datetime(apply_state.get("last_apply_at"))
@@ -642,6 +646,7 @@ def create_app() -> FastAPI:
                 inference_ready=inference_ready,
                 inference_detail=inference_detail,
                 diagnostics=diagnostics,
+                task_stream=task_stream,
                 channel_assessment=channel_assessment,
                 model_settings=model_settings,
             )
@@ -2042,11 +2047,47 @@ def _safe_int(value: str, default: int) -> int:
 
 
 def _parse_optional_datetime(value: object) -> object:
+    if isinstance(value, datetime):
+        return value
     if not isinstance(value, str) or not value.strip():
         return None
     with contextlib.suppress(ValueError):
         return datetime.fromisoformat(value)
     return None
+
+
+def _build_local_node_task_stream_health(payload: dict[str, object]) -> LocalNodeTaskStreamHealth:
+    protocol_version = str(payload.get("protocol_version") or "").strip()
+    connection_mode = str(payload.get("connection_mode") or "disconnected").strip() or "disconnected"
+    if connection_mode not in {"ws", "degraded_http_polling", "disconnected"}:
+        connection_mode = "disconnected"
+    disconnect_code_raw = payload.get("last_disconnect_code")
+    try:
+        disconnect_code = int(disconnect_code_raw) if disconnect_code_raw not in (None, "", False) else None
+    except (TypeError, ValueError):
+        disconnect_code = None
+    reconnect_count_raw = payload.get("reconnect_count")
+    fallback_count_raw = payload.get("fallback_poll_count")
+    try:
+        reconnect_count = max(0, int(reconnect_count_raw or 0))
+    except (TypeError, ValueError):
+        reconnect_count = 0
+    try:
+        fallback_poll_count = max(0, int(fallback_count_raw or 0))
+    except (TypeError, ValueError):
+        fallback_poll_count = 0
+    return LocalNodeTaskStreamHealth(
+        protocol_version=protocol_version,
+        connection_mode=connection_mode,
+        connected_at=_parse_optional_datetime(payload.get("connected_at")),
+        last_event_at=_parse_optional_datetime(payload.get("last_event_at")),
+        last_disconnect_at=_parse_optional_datetime(payload.get("last_disconnect_at")),
+        last_disconnect_code=disconnect_code,
+        last_disconnect_reason=str(payload.get("last_disconnect_reason") or "").strip(),
+        reconnect_count=reconnect_count,
+        fallback_poll_count=fallback_poll_count,
+        upgrade_required=bool(payload.get("upgrade_required") or (protocol_version and protocol_version != "task-stream-v2")),
+    )
 
 
 def _has_openai_model_config(model_settings: LocalNodeModelConfig) -> bool:

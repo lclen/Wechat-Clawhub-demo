@@ -7,7 +7,7 @@ def build_node_inventory(
     nodes: list[NodeRecord],
     node_tokens: dict[str, str],
     local_node_id: str,
-    pairing_diagnostics: dict[str, dict[str, str]] | None = None,
+    pairing_diagnostics: dict[str, dict[str, object]] | None = None,
 ) -> list[NodeInventoryRecord]:
     online_by_id = {node.node_id: node for node in nodes}
     paired_ids = {node_id.strip() for node_id in node_tokens if node_id.strip()}
@@ -62,6 +62,7 @@ def build_node_inventory(
                 last_register_result=diagnostic.get("last_register_result") or None,
                 last_register_at=_parse_optional_datetime(diagnostic.get("last_register_at")),
                 last_auth_failure_at=_parse_optional_datetime(diagnostic.get("last_auth_failure_at")),
+                task_stream=diagnostic.get("task_stream") if isinstance(diagnostic.get("task_stream"), dict) else {},
             )
         )
     inventory.sort(key=lambda item: (not item.online, item.node_kind != "local", not item.paired, item.node_id))
@@ -72,7 +73,7 @@ def build_node_list_response(
     nodes: list[NodeRecord],
     node_tokens: dict[str, str],
     local_node_id: str,
-    pairing_diagnostics: dict[str, dict[str, str]] | None = None,
+    pairing_diagnostics: dict[str, dict[str, object]] | None = None,
 ) -> NodeListResponse:
     inventory = build_node_inventory(nodes, node_tokens, local_node_id, pairing_diagnostics)
     summary = NodeInventorySummary(
@@ -83,6 +84,8 @@ def build_node_list_response(
     return NodeListResponse(nodes=nodes, inventory=inventory, summary=summary)
 
 
-def _parse_optional_datetime(value: str | None) -> str | None:
-    normalized = (value or "").strip()
-    return normalized or None
+def _parse_optional_datetime(value: object) -> str | None:
+    if isinstance(value, str):
+        normalized = value.strip()
+        return normalized or None
+    return None

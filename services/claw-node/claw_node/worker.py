@@ -25,6 +25,9 @@ from claw_node.openai_compatible_client import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
 DIAGNOSTICS_FLUSH_INTERVAL_SECONDS = 1.0
+TASK_STREAM_PROTOCOL_VERSION = "task-stream-v2"
+TASK_STREAM_FALLBACK_FAILURE_THRESHOLD = 3
+TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS = 0
 
 
 @dataclass
@@ -63,6 +66,8 @@ class Worker:
         self._diagnostics_flush_task: asyncio.Task | None = None
         self._task_stream_websocket: WebSocketClientProtocol | None = None
         self._task_stream_send_lock = asyncio.Lock()
+        self._task_stream_reconnect_failures = 0
+        self._task_stream_degraded = False
 
     def _summarize_task_stream_event(self, event: dict[str, Any]) -> str:
         event_type = str(event.get("type") or "<missing>")
@@ -203,13 +208,13 @@ class Worker:
             if not await self._poll_once():
                 return
 
-    async def _poll_once(self) -> bool:
+    async def _poll_once(self, *, wait_seconds: int | None = None) -> bool:
         if self._semaphore.locked():
             await asyncio.sleep(self._settings.pull_interval_ms / 1000)
             return True
 
         try:
-            task = await self._gateway.pull_task()
+            task = await self._gateway.pull_task(wait_seconds=wait_seconds)
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 401:
                 detail = str(exc)
@@ -233,8 +238,9 @@ class Worker:
             await asyncio.sleep(self._settings.pull_interval_ms / 1000)
             return True
 
+        effective_wait_seconds = self._settings.pull_wait_seconds if wait_seconds is None else wait_seconds
         if not task:
-            if self._settings.pull_wait_seconds <= 0:
+            if effective_wait_seconds <= 0:
                 await asyncio.sleep(self._settings.pull_interval_ms / 1000)
             return True
 
@@ -264,6 +270,34 @@ class Worker:
             try:
                 async with self._gateway.task_stream_connection() as websocket:
                     self._task_stream_websocket = websocket
+                    self._task_stream_reconnect_failures = 0
+                    recovered_from_degraded = self._task_stream_degraded
+                    self._task_stream_degraded = False
+                    self._diagnostics.update_task_stream(
+                        {
+                            "protocol_version": TASK_STREAM_PROTOCOL_VERSION,
+                            "connection_mode": "ws",
+                            "connected_at": self._utcnow().isoformat(),
+                            "last_event_at": self._utcnow().isoformat(),
+                            "upgrade_required": False,
+                        }
+                    )
+                    self._enqueue_diagnostics_event(
+                        {
+                            "timestamp": self._utcnow().isoformat(),
+                            "level": "info",
+                            "category": "task_stream",
+                            "result": "connected",
+                            "message": "task stream websocket 已连接",
+                            "trace_id": self._settings.pairing_trace_id.strip(),
+                            "metadata": {
+                                "connection_mode": "ws",
+                                "protocol_version": TASK_STREAM_PROTOCOL_VERSION,
+                                "recovered_from_degraded": "true" if recovered_from_degraded else "false",
+                            },
+                        },
+                        self._diagnostics.export_runtime_state(),
+                    )
                     await self._flush_pending_diagnostics_events()
                     self._diagnostics_flush_task = asyncio.create_task(
                         self._task_stream_diagnostics_loop(),
@@ -278,9 +312,11 @@ class Worker:
                         if task is None:
                             continue
                         await self._start_task_assignment(task, source="ws")
-            except websockets.exceptions.ConnectionClosedError as exc:
-                if exc.code == 4401:
-                    detail = exc.reason or "task stream unauthorized"
+            except websockets.exceptions.ConnectionClosed as exc:
+                close_code = int(getattr(exc, "code", 0) or 0)
+                close_reason = str(getattr(exc, "reason", "") or "")
+                if close_code == 4401:
+                    detail = close_reason or "task stream unauthorized"
                     logger.warning("Task stream unauthorized for node '%s'; stopping loops.", self._settings.node_id)
                     self._last_error = detail
                     self._auth_failed = True
@@ -291,27 +327,26 @@ class Worker:
                         level="error",
                     )
                     return
-                logger.warning(
-                    "[worker] task stream closed node_id=%s code=%s reason=%s",
-                    self._settings.node_id,
-                    exc.code,
-                    exc.reason,
+                await self._handle_task_stream_disconnect(
+                    reason=close_reason or "connection_closed",
+                    disconnect_code=close_code,
+                    event_result="closed",
                 )
-                logger.info(
-                    "[worker] task_stream_fallback_to_http_polling node_id=%s reason=connection_closed code=%s",
-                    self._settings.node_id,
-                    exc.code,
-                )
-                if not await self._poll_once():
+                if not await self._maybe_run_task_stream_fallback(
+                    reason="connection_closed",
+                    disconnect_code=close_code,
+                ):
                     return
             except Exception as exc:
-                logger.warning("[worker] task stream unavailable, falling back to HTTP polling: %s", exc)
-                logger.info(
-                    "[worker] task_stream_fallback_to_http_polling node_id=%s reason=%s",
-                    self._settings.node_id,
-                    type(exc).__name__,
+                await self._handle_task_stream_disconnect(
+                    reason=str(exc),
+                    disconnect_code=None,
+                    event_result="receive_failed",
                 )
-                if not await self._poll_once():
+                if not await self._maybe_run_task_stream_fallback(
+                    reason=type(exc).__name__,
+                    disconnect_code=None,
+                ):
                     return
             finally:
                 if self._diagnostics_flush_task is not None:
@@ -1055,6 +1090,7 @@ class Worker:
         while True:
             raw_payload = await websocket.recv()
             payload = json.loads(raw_payload)
+            self._diagnostics.update_task_stream({"last_event_at": self._utcnow().isoformat()})
             payload_type = payload.get("type")
             if payload_type == "noop":
                 return None
@@ -1072,6 +1108,108 @@ class Worker:
                 "snapshot": snapshot,
             }
         )
+
+    async def _handle_task_stream_disconnect(
+        self,
+        *,
+        reason: str,
+        disconnect_code: int | None,
+        event_result: str,
+    ) -> None:
+        disconnect_at = self._utcnow().isoformat()
+        self._task_stream_reconnect_failures += 1
+        self._diagnostics.update_task_stream(
+            {
+                "protocol_version": TASK_STREAM_PROTOCOL_VERSION,
+                "connection_mode": "disconnected",
+                "last_disconnect_at": disconnect_at,
+                "last_disconnect_code": disconnect_code,
+                "last_disconnect_reason": reason,
+                "reconnect_count": int(
+                    ((self._diagnostics.export_runtime_state().get("task_stream") or {}).get("reconnect_count"))
+                    or 0
+                )
+                + 1,
+            }
+        )
+        self._enqueue_diagnostics_event(
+            {
+                "timestamp": disconnect_at,
+                "level": "warn",
+                "category": "task_stream",
+                "result": event_result,
+                "message": f"task stream 连接断开：{reason or 'unknown'}",
+                "trace_id": self._settings.pairing_trace_id.strip(),
+                "metadata": {
+                    "disconnect_code": str(disconnect_code or ""),
+                    "reconnect_failures": str(self._task_stream_reconnect_failures),
+                },
+            },
+            self._diagnostics.export_runtime_state(),
+        )
+        logger.warning(
+            "[worker] task stream closed node_id=%s code=%s reason=%s reconnect_failures=%s",
+            self._settings.node_id,
+            disconnect_code,
+            reason,
+            self._task_stream_reconnect_failures,
+        )
+
+    async def _maybe_run_task_stream_fallback(
+        self,
+        *,
+        reason: str,
+        disconnect_code: int | None,
+    ) -> bool:
+        if self._task_stream_reconnect_failures < TASK_STREAM_FALLBACK_FAILURE_THRESHOLD:
+            logger.info(
+                "[worker] task_stream_reconnect_scheduled node_id=%s failures=%s threshold=%s reason=%s code=%s",
+                self._settings.node_id,
+                self._task_stream_reconnect_failures,
+                TASK_STREAM_FALLBACK_FAILURE_THRESHOLD,
+                reason,
+                disconnect_code,
+            )
+            return True
+
+        self._task_stream_degraded = True
+        runtime_state = self._diagnostics.export_runtime_state()
+        current_task_stream = runtime_state.get("task_stream")
+        fallback_count = 0
+        if isinstance(current_task_stream, dict):
+            fallback_count = int(current_task_stream.get("fallback_poll_count") or 0)
+        self._diagnostics.update_task_stream(
+            {
+                "protocol_version": TASK_STREAM_PROTOCOL_VERSION,
+                "connection_mode": "degraded_http_polling",
+                "fallback_poll_count": fallback_count + 1,
+            }
+        )
+        self._enqueue_diagnostics_event(
+            {
+                "timestamp": self._utcnow().isoformat(),
+                "level": "warn",
+                "category": "task_stream",
+                "result": "fallback_http_polling",
+                "message": "task stream 连续重连失败，切换到 HTTP polling 兜底",
+                "trace_id": self._settings.pairing_trace_id.strip(),
+                "metadata": {
+                    "disconnect_code": str(disconnect_code or ""),
+                    "reason": reason,
+                    "wait_seconds": str(TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS),
+                },
+            },
+            self._diagnostics.export_runtime_state(),
+        )
+        logger.info(
+            "[worker] task_stream_fallback_to_http_polling node_id=%s reason=%s code=%s wait_seconds=%s failures=%s",
+            self._settings.node_id,
+            reason,
+            disconnect_code,
+            TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS,
+            self._task_stream_reconnect_failures,
+        )
+        return await self._poll_once(wait_seconds=TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS)
 
     async def _flush_pending_diagnostics_events(self) -> None:
         if not self._settings.task_stream_enabled:

@@ -15,6 +15,7 @@ from claw_node.node_identity import NodeIdentity, build_node_identity
 
 
 logger = logging.getLogger(__name__)
+TASK_STREAM_PROTOCOL_VERSION = "task-stream-v2"
 
 
 class GatewayClient:
@@ -85,11 +86,11 @@ class GatewayClient:
     def identity(self) -> NodeIdentity:
         return self._identity
 
-    async def pull_task(self) -> dict[str, Any] | None:
+    async def pull_task(self, *, wait_seconds: int | None = None) -> dict[str, Any] | None:
         client = self._get_client()
         response = await client.post(
             f"/api/nodes/{self._settings.node_id}/pull-task",
-            params={"wait_seconds": self._settings.pull_wait_seconds},
+            params={"wait_seconds": self._settings.pull_wait_seconds if wait_seconds is None else wait_seconds},
             json={},
         )
         response.raise_for_status()
@@ -258,6 +259,7 @@ class GatewayClient:
     def _build_gateway_headers(self) -> dict[str, str]:
         headers = {
             "User-Agent": f"claw-node/{self._settings.node_version}",
+            "X-Task-Stream-Protocol": TASK_STREAM_PROTOCOL_VERSION,
         }
         if self._settings.node_token.strip():
             headers["X-Node-Token"] = self._settings.node_token

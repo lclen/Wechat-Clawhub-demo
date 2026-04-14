@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 from app.api.routes.nodes import (
     _dispatch_task_queue_age_ms,
     _summarize_task_stream_event,
-    _task_stream_ready_wait_seconds,
     stream_node_tasks,
 )
+from app.services.node_stream import NodeStreamReceiveResult
 from app.models.node import NodeStatus
 from app.models.node import NodeRecord
 from app.services.node_inventory import build_node_inventory
@@ -139,20 +139,6 @@ class NodeInventoryTests(unittest.TestCase):
         self.assertEqual(inventory[0].last_error, "推理后端未配置")
 
 
-class NodeTaskStreamReadyWaitTests(unittest.TestCase):
-    def test_ready_uses_default_wait_when_no_inflight_tasks(self) -> None:
-        self.assertEqual(
-            _task_stream_ready_wait_seconds(inflight_task_count=0, default_wait_seconds=15),
-            15,
-        )
-
-    def test_ready_switches_to_non_blocking_when_inflight_tasks_exist(self) -> None:
-        self.assertEqual(
-            _task_stream_ready_wait_seconds(inflight_task_count=1, default_wait_seconds=15),
-            0,
-        )
-
-
 class NodeTaskStreamEventSummaryTests(unittest.TestCase):
     def test_event_summary_includes_type_task_and_session(self) -> None:
         self.assertEqual(
@@ -191,8 +177,17 @@ class NodeTaskQueueAgeTests(unittest.TestCase):
 
 
 class NodeTaskStreamRouteTests(unittest.IsolatedAsyncioTestCase):
-    async def test_stream_node_tasks_ignores_legacy_ready_without_pulling(self) -> None:
+    async def test_stream_node_tasks_rejects_legacy_ready_protocol(self) -> None:
+        setup_service = SimpleNamespace(
+            record_task_stream_connected=MagicMock(),
+            record_task_stream_disconnected=MagicMock(),
+            record_task_stream_receive_failure=MagicMock(),
+            record_task_stream_event=MagicMock(),
+            record_task_stream_legacy_protocol_rejected=MagicMock(),
+            ingest_node_diagnostics_event=MagicMock(),
+        )
         websocket = SimpleNamespace(
+            headers={},
             app=SimpleNamespace(
                 state=SimpleNamespace(
                     redis_store=SimpleNamespace(ping=AsyncMock(return_value=True)),
@@ -203,14 +198,18 @@ class NodeTaskStreamRouteTests(unittest.IsolatedAsyncioTestCase):
                         unregister_connection=AsyncMock(),
                         receive_event=AsyncMock(
                             side_effect=[
-                                ({"type": "ready"}, {"read_ms": 0.0, "decode_ms": 0.0, "message_chars": 16}),
-                                None,
+                                NodeStreamReceiveResult(
+                                    kind="event",
+                                    event={"type": "ready"},
+                                    metrics={"read_ms": 0.0, "decode_ms": 0.0, "message_chars": 16},
+                                ),
+                                NodeStreamReceiveResult(kind="closed"),
                             ]
                         ),
                         inflight_count=MagicMock(return_value=0),
                         mark_task_finished=MagicMock(),
                     ),
-                    setup_service=SimpleNamespace(ingest_node_diagnostics_event=MagicMock()),
+                    setup_service=setup_service,
                     gateway_summary_service=SimpleNamespace(publish_if_needed=AsyncMock()),
                 )
             ),
@@ -222,7 +221,8 @@ class NodeTaskStreamRouteTests(unittest.IsolatedAsyncioTestCase):
         await stream_node_tasks(websocket, "node-1")
 
         websocket.app.state.dispatch_queue.pull_for_node.assert_not_awaited()
-        websocket.send_json.assert_awaited_once_with({"type": "noop", "reason": "legacy_ready_ignored"})
+        websocket.close.assert_awaited_once_with(code=4409, reason="legacy_protocol_rejected")
+        setup_service.record_task_stream_legacy_protocol_rejected.assert_called_once()
 
     async def test_stream_node_tasks_ingests_batched_diagnostics(self) -> None:
         diagnostics_payload = {
@@ -233,8 +233,16 @@ class NodeTaskStreamRouteTests(unittest.IsolatedAsyncioTestCase):
             ],
             "snapshot": {"node_id": "node-1", "node_kind": "remote"},
         }
-        setup_service = SimpleNamespace(ingest_node_diagnostics_event=MagicMock())
+        setup_service = SimpleNamespace(
+            record_task_stream_connected=MagicMock(),
+            record_task_stream_disconnected=MagicMock(),
+            record_task_stream_receive_failure=MagicMock(),
+            record_task_stream_event=MagicMock(),
+            record_task_stream_legacy_protocol_rejected=MagicMock(),
+            ingest_node_diagnostics_event=MagicMock(),
+        )
         websocket = SimpleNamespace(
+            headers={"x-task-stream-protocol": "task-stream-v2"},
             app=SimpleNamespace(
                 state=SimpleNamespace(
                     redis_store=SimpleNamespace(ping=AsyncMock(return_value=True)),
@@ -245,11 +253,12 @@ class NodeTaskStreamRouteTests(unittest.IsolatedAsyncioTestCase):
                         unregister_connection=AsyncMock(),
                         receive_event=AsyncMock(
                             side_effect=[
-                                (
-                                    {"type": "diagnostics", "diagnostics": diagnostics_payload},
-                                    {"read_ms": 0.0, "decode_ms": 0.0, "message_chars": 64},
+                                NodeStreamReceiveResult(
+                                    kind="event",
+                                    event={"type": "diagnostics", "diagnostics": diagnostics_payload},
+                                    metrics={"read_ms": 0.0, "decode_ms": 0.0, "message_chars": 64},
                                 ),
-                                None,
+                                NodeStreamReceiveResult(kind="closed"),
                             ]
                         ),
                         inflight_count=MagicMock(return_value=0),

@@ -5,6 +5,7 @@ import type {
   NodeInventoryRecord,
   NodeKind,
   NodeRecord,
+  TaskStreamHealth,
 } from "../types";
 import { summarizeLocalNodeRuntime } from "./launcherSelectors";
 import { formatTimeLabel } from "./sessionSelectors";
@@ -47,6 +48,7 @@ export function normalizeInventoryRuntimeMetrics(
     ...node,
     channel_capacity: nextChannelCapacity,
     max_concurrency: nextMaxConcurrency,
+    task_stream: localNodeStatus.task_stream || node.task_stream,
   };
 }
 
@@ -109,4 +111,48 @@ export function summarizeRemoteNode(node: NodeInventoryRecord | NodeRecord) {
     node.last_error || node.status || "未上报状态",
     node.last_heartbeat_at ? formatTimeLabel(node.last_heartbeat_at, true) : "暂无心跳",
   ].join(" · ");
+}
+
+export function taskStreamModeLabel(connectionMode: TaskStreamHealth["connection_mode"]) {
+  if (connectionMode === "ws") return "WebSocket";
+  if (connectionMode === "degraded_http_polling") return "降级轮询";
+  return "已断开";
+}
+
+export function describeTaskStreamHealth(taskStream: TaskStreamHealth | null | undefined) {
+  if (!taskStream) {
+    return {
+      label: "链路未上报",
+      detail: "还没有任务流健康信息。",
+      tone: "queued" as const,
+    };
+  }
+  if (taskStream.upgrade_required) {
+    return {
+      label: "需要升级",
+      detail: `当前协议 ${taskStream.protocol_version || "unknown"} 已过旧，请升级到 task-stream-v2。`,
+      tone: "queued" as const,
+    };
+  }
+  if (taskStream.connection_mode === "ws") {
+    return {
+      label: "直推在线",
+      detail: `协议 ${taskStream.protocol_version || "task-stream-v2"}，最近事件 ${taskStream.last_event_at ? formatTimeLabel(taskStream.last_event_at, true) : "刚建立"}`,
+      tone: "human" as const,
+    };
+  }
+  if (taskStream.connection_mode === "degraded_http_polling") {
+    return {
+      label: "降级轮询",
+      detail: `已进入 HTTP polling 兜底，累计 ${taskStream.fallback_poll_count} 次 fallback。`,
+      tone: "queued" as const,
+    };
+  }
+  return {
+    label: "链路断开",
+    detail: taskStream.last_disconnect_at
+      ? `最近断流 ${formatTimeLabel(taskStream.last_disconnect_at, true)}，关闭码 ${taskStream.last_disconnect_code ?? "-"}。`
+      : "等待节点重新建立任务流连接。",
+    tone: "queued" as const,
+  };
 }

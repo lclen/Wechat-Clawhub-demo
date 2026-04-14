@@ -9,7 +9,12 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 
 from claw_node.config import NodeSettings
-from claw_node.worker import ChannelLeaseState, Worker
+from claw_node.worker import (
+    ChannelLeaseState,
+    TASK_STREAM_FALLBACK_FAILURE_THRESHOLD,
+    TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS,
+    Worker,
+)
 
 
 class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -515,7 +520,8 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         await worker._task_stream_loop()
 
         worker._start_task_assignment.assert_awaited_once()
-        websocket.send.assert_not_awaited()
+        sent_payloads = [json.loads(call.args[0]) for call in websocket.send.await_args_list]
+        self.assertTrue(all(payload.get("type") != "ready" for payload in sent_payloads))
 
     async def test_handle_task_submits_dify_conversation_id_in_metadata(self) -> None:
         settings = NodeSettings(
@@ -709,6 +715,81 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result)
         worker._gateway.pull_task.assert_awaited_once()
         self.assertEqual(sleep_calls, [1.5])
+
+    async def test_poll_once_supports_short_wait_override_for_fallback(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_PULL_WAIT_SECONDS=15,
+        )
+        worker = Worker(settings)
+        worker._gateway = MagicMock()
+        worker._gateway.pull_task = AsyncMock(return_value=None)
+
+        await worker._poll_once(wait_seconds=0)
+
+        worker._gateway.pull_task.assert_awaited_once_with(wait_seconds=0)
+
+    async def test_task_stream_disconnect_retries_before_entering_http_fallback(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        worker._poll_once = AsyncMock(return_value=True)
+
+        await worker._handle_task_stream_disconnect(
+            reason="gateway_restarting",
+            disconnect_code=1012,
+            event_result="closed",
+        )
+        should_continue = await worker._maybe_run_task_stream_fallback(
+            reason="connection_closed",
+            disconnect_code=1012,
+        )
+
+        self.assertTrue(should_continue)
+        worker._poll_once.assert_not_awaited()
+        task_stream = worker._diagnostics.export_runtime_state()["task_stream"]
+        self.assertEqual(task_stream["connection_mode"], "disconnected")
+        self.assertEqual(task_stream["reconnect_count"], 1)
+
+    async def test_task_stream_enters_short_wait_http_fallback_after_threshold(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        worker._poll_once = AsyncMock(return_value=True)
+        worker._task_stream_reconnect_failures = TASK_STREAM_FALLBACK_FAILURE_THRESHOLD - 1
+
+        await worker._handle_task_stream_disconnect(
+            reason="gateway_restarting",
+            disconnect_code=1012,
+            event_result="closed",
+        )
+        should_continue = await worker._maybe_run_task_stream_fallback(
+            reason="connection_closed",
+            disconnect_code=1012,
+        )
+
+        self.assertTrue(should_continue)
+        worker._poll_once.assert_awaited_once_with(wait_seconds=TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS)
+        task_stream = worker._diagnostics.export_runtime_state()["task_stream"]
+        self.assertEqual(task_stream["connection_mode"], "degraded_http_polling")
+        self.assertEqual(task_stream["fallback_poll_count"], 1)
 
     async def test_try_send_task_stream_event_race_condition_safe(self) -> None:
         """

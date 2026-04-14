@@ -4,33 +4,59 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 from app.models.dispatch import DispatchTask
+
+
+@dataclass
+class NodeStreamConnection:
+    websocket: WebSocket
+    protocol_version: str = ""
+    connected_at_monotonic: float = field(default_factory=time.monotonic)
+    last_event_at_monotonic: float | None = None
+
+
+@dataclass
+class NodeStreamReceiveResult:
+    kind: str
+    event: dict[str, Any] | None = None
+    metrics: dict[str, float | int | str] = field(default_factory=dict)
+    close_code: int | None = None
+    close_reason: str = ""
+    error: str = ""
 
 
 class NodeStreamBroker:
     """Manages WebSocket connections for node event streams."""
 
     def __init__(self) -> None:
-        self._connections: dict[str, WebSocket] = {}
+        self._connections: dict[str, NodeStreamConnection] = {}
         self._inflight_task_ids: dict[str, set[str]] = {}
 
-    async def register_connection(self, node_id: str, websocket: WebSocket) -> None:
+    async def register_connection(self, node_id: str, websocket: WebSocket, *, protocol_version: str = "") -> None:
         """Register a node's WebSocket connection."""
-        self._connections[node_id] = websocket
+        self._connections[node_id] = NodeStreamConnection(websocket=websocket, protocol_version=protocol_version.strip())
         self._inflight_task_ids.setdefault(node_id, set())
 
-    async def unregister_connection(self, node_id: str) -> None:
+    async def unregister_connection(self, node_id: str) -> NodeStreamConnection | None:
         """Unregister a node's WebSocket connection."""
-        self._connections.pop(node_id, None)
+        connection = self._connections.pop(node_id, None)
         self._inflight_task_ids.pop(node_id, None)
+        return connection
 
     def is_connected(self, node_id: str) -> bool:
         """Check if a node has an active WebSocket connection."""
         return node_id in self._connections
+
+    def protocol_version(self, node_id: str) -> str:
+        connection = self._connections.get(node_id)
+        if connection is None:
+            return ""
+        return connection.protocol_version
 
     def inflight_count(self, node_id: str) -> int:
         return len(self._inflight_task_ids.get(node_id, set()))
@@ -47,12 +73,12 @@ class NodeStreamBroker:
 
         Returns True if pushed successfully, False if node not connected.
         """
-        websocket = self._connections.get(node_id)
-        if not websocket:
+        connection = self._connections.get(node_id)
+        if not connection or connection.protocol_version != "task-stream-v2":
             return False
 
         try:
-            await websocket.send_json({
+            await connection.websocket.send_json({
                 "type": "task_assigned",
                 "task": task.model_dump(mode="json"),
             })
@@ -63,11 +89,11 @@ class NodeStreamBroker:
             await self.unregister_connection(node_id)
             return False
 
-    async def receive_event(self, websocket: WebSocket) -> tuple[dict[str, Any], dict[str, float | int | str]] | None:
+    async def receive_event(self, node_id: str, websocket: WebSocket) -> NodeStreamReceiveResult:
         """
         Receive an event from a node.
 
-        Returns the event dict plus basic receive timing, or None if connection closed.
+        Returns a structured receive result so callers can distinguish close/decode/transport failures.
         """
         try:
             read_started_at = time.perf_counter()
@@ -84,9 +110,26 @@ class NodeStreamBroker:
             event_type = event.get("type")
             if event_type is not None:
                 receive_metrics["event_type"] = str(event_type)
-            return event, receive_metrics
-        except Exception:
-            return None
+            connection = self._connections.get(node_id)
+            if connection is not None:
+                connection.last_event_at_monotonic = time.monotonic()
+            return NodeStreamReceiveResult(kind="event", event=event, metrics=receive_metrics)
+        except WebSocketDisconnect as exc:
+            return NodeStreamReceiveResult(
+                kind="closed",
+                close_code=getattr(exc, "code", None),
+                close_reason=str(getattr(exc, "reason", "") or ""),
+            )
+        except json.JSONDecodeError as exc:
+            return NodeStreamReceiveResult(
+                kind="invalid_json",
+                error=str(exc),
+            )
+        except Exception as exc:
+            return NodeStreamReceiveResult(
+                kind="receive_error",
+                error=str(exc),
+            )
 
     def get_connected_nodes(self) -> list[str]:
         """Get list of currently connected node IDs."""
