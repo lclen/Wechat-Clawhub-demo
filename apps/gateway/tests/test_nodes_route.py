@@ -3,7 +3,11 @@ from __future__ import annotations
 from datetime import UTC, datetime
 import unittest
 
-from app.api.routes.nodes import _summarize_task_stream_event, _task_stream_ready_wait_seconds
+from app.api.routes.nodes import (
+    _dispatch_task_queue_age_ms,
+    _summarize_task_stream_event,
+    _task_stream_ready_wait_seconds,
+)
 from app.models.node import NodeStatus
 from app.models.node import NodeRecord
 from app.services.node_inventory import build_node_inventory
@@ -165,6 +169,22 @@ class NodeTaskStreamEventSummaryTests(unittest.TestCase):
             _summarize_task_stream_event({"foo": "bar"}),
             "type=<missing> task_id=- session_id=- keys=foo",
         )
+
+
+class NodeTaskQueueAgeTests(unittest.TestCase):
+    def test_queue_age_is_non_negative_for_utc_timestamp(self) -> None:
+        age_ms = _dispatch_task_queue_age_ms(datetime.now(UTC))
+
+        self.assertIsNotNone(age_ms)
+        assert age_ms is not None
+        self.assertGreaterEqual(age_ms, 0)
+
+    def test_queue_age_accepts_naive_datetime(self) -> None:
+        age_ms = _dispatch_task_queue_age_ms(datetime.now().replace(microsecond=0))
+
+        self.assertIsNotNone(age_ms)
+        assert age_ms is not None
+        self.assertGreaterEqual(age_ms, 0)
 
 
 if __name__ == "__main__":

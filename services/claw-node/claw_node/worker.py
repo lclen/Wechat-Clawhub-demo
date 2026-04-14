@@ -62,6 +62,17 @@ class Worker:
         self._task_stream_websocket: WebSocketClientProtocol | None = None
         self._task_stream_send_lock = asyncio.Lock()
 
+    def _summarize_task_stream_event(self, event: dict[str, Any]) -> str:
+        event_type = str(event.get("type") or "<missing>")
+        task_id = str(event.get("task_id") or "-")
+        session_id = str(event.get("session_id") or "-")
+        context_version = str(event.get("context_version") or "-")
+        keys = ",".join(sorted(str(key) for key in event.keys()))
+        return (
+            f"type={event_type} task_id={task_id} session_id={session_id} "
+            f"context_version={context_version} keys={keys}"
+        )
+
     async def run(self) -> None:
         self._diagnostics.refresh_settings()
         self._diagnostics.set_state(
@@ -860,11 +871,12 @@ class Worker:
             "usage": usage or {},
         }
         logger.info(
-            "[dispatch] task_result_submit_started transport=task_stream task_id=%s session=%s context_version=%s chars=%s",
+            "[dispatch] task_result_submit_started transport=task_stream task_id=%s session=%s context_version=%s chars=%s has_ws=%s",
             task_id,
             session_id,
             context_version,
             len(content),
+            self._task_stream_websocket is not None,
         )
         send_started_at = time.perf_counter()
         if await self._try_send_task_stream_event(event):
@@ -967,10 +979,27 @@ class Worker:
 
         # 在锁内检查和发送，避免在检查后、发送前连接断开
         try:
+            send_started_at = time.perf_counter()
+            logger.info(
+                "[dispatch] task_stream_event_send_started %s websocket_connected=%s",
+                self._summarize_task_stream_event(event),
+                self._task_stream_websocket is not None,
+            )
             await self._send_task_stream_event(event)
+            logger.info(
+                "[dispatch] task_stream_event_send_finished %s send_ms=%.0f websocket_connected=%s",
+                self._summarize_task_stream_event(event),
+                (time.perf_counter() - send_started_at) * 1000,
+                self._task_stream_websocket is not None,
+            )
             return True
         except Exception as exc:
-            logger.warning("[worker] task stream event send failed, falling back to HTTP: %s", exc)
+            logger.warning(
+                "[dispatch] task_stream_event_send_failed %s websocket_connected=%s error=%s",
+                self._summarize_task_stream_event(event),
+                self._task_stream_websocket is not None,
+                exc,
+            )
             return False
 
     async def _send_task_stream_event(self, event: dict[str, Any]) -> None:
@@ -980,11 +1009,26 @@ class Worker:
         注意：此方法假设调用者已经检查了 task_stream_enabled。
         如果 WebSocket 未连接，会抛出 RuntimeError。
         """
+        lock_started_at = time.perf_counter()
         async with self._task_stream_send_lock:
+            lock_wait_ms = (time.perf_counter() - lock_started_at) * 1000
             websocket = self._task_stream_websocket
             if websocket is None:
                 raise RuntimeError("Task stream websocket is not connected")
+            logger.info(
+                "[dispatch] task_stream_event_send_locked %s lock_wait_ms=%.0f websocket_state=%s",
+                self._summarize_task_stream_event(event),
+                lock_wait_ms,
+                getattr(websocket, "state", None),
+            )
+            wire_started_at = time.perf_counter()
             await websocket.send(json.dumps(event))
+            logger.info(
+                "[dispatch] task_stream_event_send_wire_finished %s wire_send_ms=%.0f websocket_state=%s",
+                self._summarize_task_stream_event(event),
+                (time.perf_counter() - wire_started_at) * 1000,
+                getattr(websocket, "state", None),
+            )
 
     async def _receive_task_stream_assignment(self, websocket: WebSocketClientProtocol) -> dict[str, Any] | None:
         """

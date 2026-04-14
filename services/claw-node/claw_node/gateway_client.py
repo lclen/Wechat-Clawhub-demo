@@ -124,11 +124,26 @@ class GatewayClient:
             "content": content,
             "metadata": metadata or {},
         }
+        logger.info(
+            "[gateway-client] submit_result_started task_id=%s session=%s context_version=%s chars=%s gateway=%s",
+            task_id,
+            session_id,
+            context_version,
+            len(content),
+            self._settings.gateway_base_url,
+        )
         response = await client.post(
             f"/api/nodes/{self._settings.node_id}/task-result",
             json=payload,
         )
         response.raise_for_status()
+        logger.info(
+            "[gateway-client] submit_result_finished task_id=%s session=%s status=%s chars=%s",
+            task_id,
+            session_id,
+            response.status_code,
+            len(content),
+        )
         return response.json()
 
     async def submit_failure(
@@ -151,11 +166,25 @@ class GatewayClient:
             "error_message": error_message,
             "retryable": retryable,
         }
+        logger.info(
+            "[gateway-client] submit_failure_started task_id=%s session=%s context_version=%s retryable=%s gateway=%s",
+            task_id,
+            session_id,
+            context_version,
+            retryable,
+            self._settings.gateway_base_url,
+        )
         response = await client.post(
             f"/api/nodes/{self._settings.node_id}/task-failure",
             json=payload,
         )
         response.raise_for_status()
+        logger.info(
+            "[gateway-client] submit_failure_finished task_id=%s session=%s status=%s",
+            task_id,
+            session_id,
+            response.status_code,
+        )
         return response.json()
 
     async def submit_channel_released(

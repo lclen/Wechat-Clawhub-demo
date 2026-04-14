@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 import logging
 import time
 
@@ -51,6 +52,13 @@ def _summarize_task_stream_event(event: dict[str, object]) -> str:
     session_id = str(event.get("session_id") or "-")
     keys = ",".join(sorted(str(key) for key in event.keys()))
     return f"type={event_type} task_id={task_id} session_id={session_id} keys={keys}"
+
+
+def _dispatch_task_queue_age_ms(created_at: datetime | None) -> int | None:
+    if created_at is None:
+        return None
+    created = created_at if created_at.tzinfo is not None else created_at.replace(tzinfo=UTC)
+    return max(0, int((datetime.now(UTC) - created).total_seconds() * 1000))
 
 
 @router.get("", response_model=NodeListResponse)
@@ -267,6 +275,21 @@ async def pull_task(
     node_auth.verify_request(request, node_id)
     try:
         task = await dispatch_queue.pull_for_node(node_id, wait_seconds=wait_seconds)
+        if task is None:
+            logger.info(
+                "[dispatch] pull_task_empty source=http node=%s wait_seconds=%s",
+                node_id,
+                wait_seconds,
+            )
+            return PullTaskResponse(task=None)
+        logger.info(
+            "[dispatch] task_assigned source=http node=%s task_id=%s slot=%s wait_seconds=%s queue_age_ms=%s",
+            node_id,
+            task.task_id,
+            task.slot_id,
+            wait_seconds,
+            _dispatch_task_queue_age_ms(task.created_at),
+        )
         return PullTaskResponse(task=task)
     except DispatchQueueError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
@@ -345,22 +368,24 @@ async def stream_node_tasks(
                 )
                 task = await dispatch_queue.pull_for_node(node_id, wait_seconds=effective_wait_seconds)
                 if task is None:
-                    if effective_wait_seconds != wait_seconds:
-                        logger.info(
-                            "[dispatch] ready_noop source=ws node=%s inflight=%s effective_wait_seconds=%s",
-                            node_id,
-                            len(inflight_task_ids),
-                            effective_wait_seconds,
-                        )
+                    logger.info(
+                        "[dispatch] ready_noop source=ws node=%s inflight=%s default_wait_seconds=%s effective_wait_seconds=%s",
+                        node_id,
+                        len(inflight_task_ids),
+                        wait_seconds,
+                        effective_wait_seconds,
+                    )
                     await websocket.send_json({"type": "noop"})
                     continue
                 inflight_task_ids.add(task.task_id)
                 logger.info(
-                    "[dispatch] task_assigned source=ws node=%s task_id=%s inflight=%s effective_wait_seconds=%s",
+                    "[dispatch] task_assigned source=ws node=%s task_id=%s slot=%s inflight=%s effective_wait_seconds=%s queue_age_ms=%s",
                     node_id,
                     task.task_id,
+                    task.slot_id,
                     len(inflight_task_ids),
                     effective_wait_seconds,
+                    _dispatch_task_queue_age_ms(task.created_at),
                 )
                 await websocket.send_json({
                     "type": "task_assigned",
