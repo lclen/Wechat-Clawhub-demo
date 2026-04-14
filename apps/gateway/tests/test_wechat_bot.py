@@ -8,6 +8,7 @@ from app.access.wechat_bot import (
     WeChatSessionExpiredError,
     WECHAT_ILINK_APP_CLIENT_VERSION,
     WECHAT_OPENCLAW_COMPAT_VERSION,
+    _build_markdown_image_summary,
     _encode_wechat_media_aes_key,
     parse_markdown_segments,
 )
@@ -95,9 +96,16 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("辅助说明", segments[2].text)
         self.assertIn("https://example.com/readme.pdf", segments[2].text)
 
-    async def test_send_markdown_sends_plain_text_and_image_in_order(self) -> None:
+    def test_build_markdown_image_summary_collapses_text_segments(self) -> None:
+        segments = parse_markdown_segments("### 标题\n![接线图](https://example.com/a.jpg)\n尾部说明")
+
+        summary = _build_markdown_image_summary(segments)
+
+        self.assertEqual(summary, "标题\n\n尾部说明")
+
+    async def test_send_markdown_sends_summary_then_images(self) -> None:
         self.service._config.token = "token"
-        self.service.send_text = AsyncMock(side_effect=["text-1", "text-2"])  # type: ignore[method-assign]
+        self.service.send_text = AsyncMock(return_value="text-1")  # type: ignore[method-assign]
         self.service.send_image_url = AsyncMock(return_value="image-1")  # type: ignore[method-assign]
 
         client_ids = await self.service.send_markdown(
@@ -106,18 +114,21 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
             context_token="ctx-token",
         )
 
-        self.assertEqual(client_ids, ["text-1", "image-1", "text-2"])
-        self.service.send_text.assert_any_await(user_id="wechat-user", text="标题", context_token="ctx-token")
+        self.assertEqual(client_ids, ["text-1", "image-1"])
+        self.service.send_text.assert_awaited_once_with(
+            user_id="wechat-user",
+            text="标题\n\n尾部说明",
+            context_token="ctx-token",
+        )
         self.service.send_image_url.assert_awaited_once_with(
             user_id="wechat-user",
             image_url="https://example.com/a.jpg",
             context_token="ctx-token",
         )
-        self.service.send_text.assert_any_await(user_id="wechat-user", text="尾部说明", context_token="ctx-token")
 
     async def test_send_markdown_promotes_standalone_image_url_to_image_message(self) -> None:
         self.service._config.token = "token"
-        self.service.send_text = AsyncMock(side_effect=["text-1", "text-2"])  # type: ignore[method-assign]
+        self.service.send_text = AsyncMock(return_value="text-1")  # type: ignore[method-assign]
         self.service.send_image_url = AsyncMock(return_value="image-1")  # type: ignore[method-assign]
 
         client_ids = await self.service.send_markdown(
@@ -126,14 +137,17 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
             context_token="ctx-token",
         )
 
-        self.assertEqual(client_ids, ["text-1", "image-1", "text-2"])
-        self.service.send_text.assert_any_await(user_id="wechat-user", text="6511液晶屏接线图", context_token="ctx-token")
+        self.assertEqual(client_ids, ["text-1", "image-1"])
+        self.service.send_text.assert_awaited_once_with(
+            user_id="wechat-user",
+            text="6511液晶屏接线图\n尾部说明",
+            context_token="ctx-token",
+        )
         self.service.send_image_url.assert_awaited_once_with(
             user_id="wechat-user",
             image_url="https://example.com/a.jpg",
             context_token="ctx-token",
         )
-        self.service.send_text.assert_any_await(user_id="wechat-user", text="尾部说明", context_token="ctx-token")
 
     async def test_send_uploaded_media_matches_openakita_aes_shape(self) -> None:
         self.service._config.token = "token"

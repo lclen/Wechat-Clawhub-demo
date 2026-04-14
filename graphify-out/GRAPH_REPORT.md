@@ -5,8 +5,8 @@
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2198 nodes · 4066 edges · 308 communities detected
-- Extraction: 51% EXTRACTED · 49% INFERRED · 0% AMBIGUOUS · INFERRED: 1981 edges (avg confidence: 0.5)
+- 2210 nodes · 4093 edges · 308 communities detected
+- Extraction: 51% EXTRACTED · 49% INFERRED · 0% AMBIGUOUS · INFERRED: 1996 edges (avg confidence: 0.5)
 - Token cost: 0 input · 0 output
 
 ## God Nodes (most connected - your core abstractions)
@@ -14,8 +14,8 @@
 2. `RedisStore` - 71 edges
 3. `DispatchQueue` - 66 edges
 4. `ProcessManager` - 61 edges
-5. `WeChatBotService` - 59 edges
-6. `Worker` - 59 edges
+5. `Worker` - 61 edges
+6. `WeChatBotService` - 59 edges
 7. `Settings` - 58 edges
 8. `SessionManager` - 56 edges
 9. `DispatchQueueError` - 47 edges
@@ -37,59 +37,59 @@
 
 ### Community 0 - "Community 0"
 Cohesion: 0.03
-Nodes (76): Settings, ChannelReleasedRequest, DispatchTask, PullTaskRequest, PullTaskResponse, TaskFailureRequest, TaskResultRequest, NodeStreamBroker (+68 more)
+Nodes (83): Settings, ChannelReleasedRequest, DispatchTask, PullTaskRequest, PullTaskResponse, TaskFailureRequest, TaskResultRequest, GatewaySummaryResponse (+75 more)
 
 ### Community 1 - "Community 1"
 Cohesion: 0.02
-Nodes (43): loadSetupDraft(), loadUiStateCache(), saveUiStateCache(), stripNullableValues(), Position, buildLauncherStartPayload(), findLauncherComponent(), isExternalGatewayConflict() (+35 more)
+Nodes (32): BaseSettings, get_settings(), NodeSettings, DifyClient, Best-effort Dify client for the worker node., Best-effort Dify client for the worker node., Best-effort Dify client for the worker node., _DiscoveryProtocol (+24 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.02
-Nodes (137): appendPairingClientError(), _apply_local_node_model_config_in_background(), applyDispatchMode(), applyGatewaySummaryToState(), applyLauncherPolicyForRole(), applyLauncherStatusState(), applyOverview(), applyPreferredGatewayBaseUrlToWorker() (+129 more)
+Nodes (43): loadSetupDraft(), loadUiStateCache(), saveUiStateCache(), stripNullableValues(), Position, buildLauncherStartPayload(), findLauncherComponent(), isExternalGatewayConflict() (+35 more)
 
 ### Community 3 - "Community 3"
-Cohesion: 0.03
-Nodes (28): BaseSettings, get_settings(), NodeSettings, NodeDiagnosticEvent, NodeDiagnostics, DifyClient, Best-effort Dify client for the worker node., Best-effort Dify client for the worker node. (+20 more)
+Cohesion: 0.02
+Nodes (137): appendPairingClientError(), _apply_local_node_model_config_in_background(), applyDispatchMode(), applyGatewaySummaryToState(), applyLauncherPolicyForRole(), applyLauncherStatusState(), applyOverview(), applyPreferredGatewayBaseUrlToWorker() (+129 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.04
-Nodes (68): _LocalNodeInferenceSettings, BaseModel, apply_machine_role(), apply_start_request(), _builtin_model_config(), _builtin_model_status(), check_builtin_model(), ComponentState (+60 more)
+Cohesion: 0.03
+Nodes (69): _LocalNodeInferenceSettings, BaseModel, apply_machine_role(), apply_start_request(), _builtin_model_config(), _builtin_model_status(), check_builtin_model(), ComponentState (+61 more)
 
 ### Community 5 - "Community 5"
 Cohesion: 0.04
-Nodes (38): GatewaySummaryResponse, GatewaySummaryBuildError, GatewaySummaryService, Raised when the latest gateway summary truth cannot be assembled., GatewaySummaryStreamBroker, NodeDeleteResponse, NodeDiagnosticsEvent, NodeDiagnosticsRecord (+30 more)
+Nodes (64): binarySearch(), memoizedBinarySearch(), asArray(), build(), buildSourceMapTree(), addSection(), append(), getLine() (+56 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.04
-Nodes (64): binarySearch(), memoizedBinarySearch(), asArray(), build(), buildSourceMapTree(), addSection(), append(), getLine() (+56 more)
+Cohesion: 0.06
+Nodes (31): NodeDeleteResponse, NodeDiagnosticsEvent, NodeDiagnosticsRecord, NodeDiagnosticsResponse, NodeHeartbeatRequest, NodeInventoryRecord, NodeInventorySummary, NodeLatestTaskRecord (+23 more)
 
 ### Community 7 - "Community 7"
 Cohesion: 0.07
 Nodes (1): SetupService
 
 ### Community 8 - "Community 8"
-Cohesion: 0.05
-Nodes (5): 测试 _try_send_task_stream_event 在并发场景下的线程安全性。          场景：在检查 WebSocket 连接后、发送前, 测试多个协程同时尝试发送事件时的线程安全性。          场景：多个协程同时调用 _try_send_task_stream_event，, WorkerHeartbeatRecoveryTests, ChannelLeaseState, Worker
-
-### Community 9 - "Community 9"
 Cohesion: 0.03
 Nodes (58): ChildProcess, Certificate, Cipher, Decipher, DiffieHellman, ECDH, Hash, Hmac (+50 more)
 
-### Community 10 - "Community 10"
+### Community 9 - "Community 9"
 Cohesion: 0.06
-Nodes (19): RuntimeError, _aes_ecb_padded_size(), _emit_wechat_debug(), _encode_wechat_media_aes_key(), _encrypt_aes_ecb(), _extract_markdown_image_url(), _guess_extension(), _guess_remote_filename() (+11 more)
+Nodes (21): RuntimeError, _aes_ecb_padded_size(), _build_markdown_image_summary(), _emit_wechat_debug(), _encode_wechat_media_aes_key(), _encrypt_aes_ecb(), _extract_markdown_image_url(), _guess_extension() (+13 more)
 
-### Community 11 - "Community 11"
+### Community 10 - "Community 10"
 Cohesion: 0.08
 Nodes (3): ProcessManager, LocalNodeChannelAssessmentConfigTests, LocalNodeChannelAssessmentTests
 
-### Community 12 - "Community 12"
+### Community 11 - "Community 11"
 Cohesion: 0.09
 Nodes (2): DispatchQueue, DispatchQueueSlotTests
 
-### Community 13 - "Community 13"
+### Community 12 - "Community 12"
 Cohesion: 0.06
 Nodes (6): build_console_config(), build_gateway_config(), build_worker_config(), FakeAsyncClient, FakeResponse, SetupServiceTests
+
+### Community 13 - "Community 13"
+Cohesion: 0.16
+Nodes (2): NodeDiagnosticEvent, NodeDiagnostics
 
 ### Community 14 - "Community 14"
 Cohesion: 0.12
@@ -116,12 +116,12 @@ Cohesion: 0.11
 Nodes (0): 
 
 ### Community 20 - "Community 20"
-Cohesion: 0.12
+Cohesion: 0.11
 Nodes (1): WeChatBotServiceTests
 
 ### Community 21 - "Community 21"
 Cohesion: 0.15
-Nodes (3): disconnect_node(), get_node_diagnostics(), stream_node_diagnostics()
+Nodes (5): disconnect_node(), get_node_diagnostics(), stream_node_diagnostics(), stream_node_tasks(), _task_stream_ready_wait_seconds()
 
 ### Community 22 - "Community 22"
 Cohesion: 0.29
@@ -137,27 +137,27 @@ Nodes (8): AutoImportProviderProject, ConfiguredProject, ExternalProject, Inferr
 
 ### Community 25 - "Community 25"
 Cohesion: 0.22
-Nodes (1): LocalNodeModelConfigTests
-
-### Community 26 - "Community 26"
-Cohesion: 0.22
 Nodes (1): WorkerModelEnvMigrationTests
 
-### Community 27 - "Community 27"
+### Community 26 - "Community 26"
 Cohesion: 0.39
 Nodes (8): claim_session(), get_session(), get_session_messages(), list_sessions(), release_session(), stream_session_messages(), stream_session_overview(), switch_session_node()
 
-### Community 28 - "Community 28"
+### Community 27 - "Community 27"
 Cohesion: 0.22
 Nodes (1): ChannelAssessmentTests
 
-### Community 29 - "Community 29"
+### Community 28 - "Community 28"
 Cohesion: 0.5
 Nodes (6): cast(), get(), pop(), put(), remove(), SetArray
 
-### Community 30 - "Community 30"
+### Community 29 - "Community 29"
 Cohesion: 0.25
 Nodes (7): PerformanceEntry, PerformanceMark, PerformanceMeasure, PerformanceNodeTiming, PerformanceObserver, PerformanceObserverEntryList, PerformanceResourceTiming
+
+### Community 30 - "Community 30"
+Cohesion: 0.29
+Nodes (1): GatewaySummaryStreamBroker
 
 ### Community 31 - "Community 31"
 Cohesion: 0.39
@@ -1750,12 +1750,12 @@ Nodes (0):
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `_LocalNodeInferenceSettings` connect `Community 4` to `Community 3`, `Community 2`, `Community 11`?**
-  _High betweenness centrality (0.151) - this node is a cross-community bridge._
-- **Why does `Settings` connect `Community 0` to `Community 3`, `Community 4`, `Community 5`, `Community 7`, `Community 10`, `Community 12`, `Community 13`, `Community 18`, `Community 20`?**
-  _High betweenness centrality (0.134) - this node is a cross-community bridge._
-- **Why does `NodeSettings` connect `Community 3` to `Community 8`, `Community 4`, `Community 28`, `Community 31`?**
-  _High betweenness centrality (0.086) - this node is a cross-community bridge._
+- **Why does `_LocalNodeInferenceSettings` connect `Community 4` to `Community 1`, `Community 10`, `Community 3`, `Community 13`?**
+  _High betweenness centrality (0.152) - this node is a cross-community bridge._
+- **Why does `Settings` connect `Community 0` to `Community 1`, `Community 4`, `Community 6`, `Community 7`, `Community 9`, `Community 11`, `Community 12`, `Community 18`, `Community 20`?**
+  _High betweenness centrality (0.136) - this node is a cross-community bridge._
+- **Why does `NodeSettings` connect `Community 1` to `Community 27`, `Community 4`, `Community 13`, `Community 31`?**
+  _High betweenness centrality (0.087) - this node is a cross-community bridge._
 - **Are the 24 inferred relationships involving `SetupService` (e.g. with `Remove node from Redis active set only, keeping pairing token intact.     The n` and `GatewaySummaryBuildError`) actually correct?**
   _`SetupService` has 24 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 41 inferred relationships involving `RedisStore` (e.g. with `OutboundMarkdownSegment` and `WeChatSessionExpiredError`) actually correct?**

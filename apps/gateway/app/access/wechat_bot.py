@@ -238,6 +238,27 @@ def parse_markdown_segments(content: str) -> list[OutboundMarkdownSegment]:
     return [segment for segment in segments if segment.text.strip() or segment.url]
 
 
+def _normalize_outbound_plaintext(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    normalized_lines: list[str] = []
+    previous_blank = False
+    for line in lines:
+        if not line:
+            if previous_blank:
+                continue
+            normalized_lines.append("")
+            previous_blank = True
+            continue
+        normalized_lines.append(line)
+        previous_blank = False
+    return "\n".join(normalized_lines).strip()
+
+
+def _build_markdown_image_summary(segments: list[OutboundMarkdownSegment]) -> str:
+    text_parts = [segment.text for segment in segments if segment.kind == "text" and segment.text.strip()]
+    return _normalize_outbound_plaintext(_markdown_to_plaintext("".join(text_parts)))
+
+
 class WeChatSessionExpiredError(RuntimeError):
     """Raised when the upstream WeChat bot session has expired."""
 
@@ -435,32 +456,27 @@ class WeChatBotService:
             return [client_id] if client_id else []
 
         client_ids: list[str] = []
-        pending_text_parts: list[str] = []
-        for segment_index, segment in enumerate(segments, start=1):
-            if segment.kind == "text":
-                pending_text_parts.append(segment.text)
-                continue
-            plain_text = _markdown_to_plaintext("".join(pending_text_parts))
-            pending_text_parts = []
-            if plain_text:
-                _emit_wechat_debug(
-                    "wechat-bot: send_markdown text_chunk_start user_id=%s segment_index=%d text_len=%d",
-                    user_id,
-                    segment_index,
-                    len(plain_text),
-                )
-                text_started_at = time.perf_counter()
-                text_client_id = await self.send_text(user_id=user_id, text=plain_text, context_token=context_token)
-                logger.info(
-                    "wechat-bot: send_markdown text_chunk_finished user_id=%s segment_index=%d text_len=%d send_ms=%.0f client_id=%s",
-                    user_id,
-                    segment_index,
-                    len(plain_text),
-                    (time.perf_counter() - text_started_at) * 1000,
-                    text_client_id,
-                )
-                if text_client_id:
-                    client_ids.append(text_client_id)
+        summary_text = _build_markdown_image_summary(segments)
+        if summary_text:
+            _emit_wechat_debug(
+                "wechat-bot: send_markdown summary_text_start user_id=%s text_len=%d image_count=%d",
+                user_id,
+                len(summary_text),
+                len(image_segments),
+            )
+            summary_started_at = time.perf_counter()
+            summary_client_id = await self.send_text(user_id=user_id, text=summary_text, context_token=context_token)
+            logger.info(
+                "wechat-bot: send_markdown summary_text_finished user_id=%s text_len=%d send_ms=%.0f client_id=%s",
+                user_id,
+                len(summary_text),
+                (time.perf_counter() - summary_started_at) * 1000,
+                summary_client_id,
+            )
+            if summary_client_id:
+                client_ids.append(summary_client_id)
+
+        for segment_index, segment in enumerate(image_segments, start=1):
             try:
                 _emit_wechat_debug(
                     "wechat-bot: send_markdown image_chunk_start user_id=%s segment_index=%d image_url=%s alt=%s",
@@ -512,31 +528,6 @@ class WeChatBotService:
                     )
                     if fallback_client_id:
                         client_ids.append(fallback_client_id)
-
-        trailing_plain_text = _markdown_to_plaintext("".join(pending_text_parts))
-        if trailing_plain_text:
-            _emit_wechat_debug(
-                "wechat-bot: send_markdown trailing_text_start user_id=%s segment_index=%d text_len=%d",
-                user_id,
-                len(segments),
-                len(trailing_plain_text),
-            )
-            trailing_started_at = time.perf_counter()
-            trailing_client_id = await self.send_text(
-                user_id=user_id,
-                text=trailing_plain_text,
-                context_token=context_token,
-            )
-            logger.info(
-                "wechat-bot: send_markdown trailing_text_finished user_id=%s segment_index=%d text_len=%d send_ms=%.0f client_id=%s",
-                user_id,
-                len(segments),
-                len(trailing_plain_text),
-                (time.perf_counter() - trailing_started_at) * 1000,
-                trailing_client_id,
-            )
-            if trailing_client_id:
-                client_ids.append(trailing_client_id)
         logger.info(
             "wechat-bot: send_markdown success user_id=%s segment_count=%d client_count=%d total_ms=%.0f",
             user_id,
