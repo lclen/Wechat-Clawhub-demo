@@ -364,7 +364,8 @@ class WeChatBotService:
             raise RuntimeError("WeChat token is not configured")
         if not text.strip():
             return ""
-        await self._rate_limit_wait(user_id)
+        started_at = time.perf_counter()
+        rate_limit_ms = await self._rate_limit_wait(user_id)
         ctx = self._context_tokens.get(user_id) or context_token or ""
         client_id = f"wechat-claw-hub-{uuid.uuid4().hex[:12]}"
         payload = {
@@ -386,11 +387,20 @@ class WeChatBotService:
                 f"WeChat sendmessage failed: ret={ret} errcode={errcode} errmsg={response.get('errmsg', '')}"
             )
         self._sent_messages += 1
+        logger.info(
+            "wechat-bot: send_text success user_id=%s text_len=%d rate_limit_ms=%.0f total_ms=%.0f client_id=%s",
+            user_id,
+            len(text),
+            rate_limit_ms,
+            (time.perf_counter() - started_at) * 1000,
+            client_id,
+        )
         return client_id
 
     async def send_markdown(self, *, user_id: str, content: str, context_token: str | None = None) -> list[str]:
         if not self._config.token:
             raise RuntimeError("WeChat token is not configured")
+        started_at = time.perf_counter()
         segments = parse_markdown_segments(content)
         _emit_wechat_debug(
             "wechat-bot: send_markdown user_id=%s segment_count=%d image_count=%d",
@@ -466,11 +476,19 @@ class WeChatBotService:
             )
             if trailing_client_id:
                 client_ids.append(trailing_client_id)
+        logger.info(
+            "wechat-bot: send_markdown success user_id=%s segment_count=%d client_count=%d total_ms=%.0f",
+            user_id,
+            len(segments),
+            len(client_ids),
+            (time.perf_counter() - started_at) * 1000,
+        )
         return client_ids
 
     async def send_image_url(self, *, user_id: str, image_url: str, context_token: str | None = None) -> str:
         if not self._config.token:
             raise RuntimeError("WeChat token is not configured")
+        started_at = time.perf_counter()
         ctx = self._context_tokens.get(user_id) or context_token or ""
         _emit_wechat_debug("wechat-bot: send_image_url start user_id=%s image_url=%s", user_id, image_url)
         image_bytes, content_type = await self._download_remote_asset(image_url)
@@ -504,6 +522,14 @@ class WeChatBotService:
             "wechat-bot: send_image_url success user_id=%s image_url=%s client_id=%s routed_as=%s",
             user_id,
             image_url,
+            client_id,
+            "image" if content_type.startswith("image/") else ("video" if content_type.startswith("video/") else "file"),
+        )
+        logger.info(
+            "wechat-bot: send_image_url success user_id=%s image_url=%s total_ms=%.0f client_id=%s routed_as=%s",
+            user_id,
+            image_url,
+            (time.perf_counter() - started_at) * 1000,
             client_id,
             "image" if content_type.startswith("image/") else ("video" if content_type.startswith("video/") else "file"),
         )
@@ -1148,10 +1174,13 @@ class WeChatBotService:
         self._seen_msg_ids[message_id] = now
         return False
 
-    async def _rate_limit_wait(self, user_id: str) -> None:
+    async def _rate_limit_wait(self, user_id: str) -> float:
         now = time.time()
         last = self._last_send_ts.get(user_id, 0.0)
         gap = now - last
+        waited = 0.0
         if gap < SEND_MIN_INTERVAL_SECONDS:
-            await asyncio.sleep(SEND_MIN_INTERVAL_SECONDS - gap)
+            waited = SEND_MIN_INTERVAL_SECONDS - gap
+            await asyncio.sleep(waited)
         self._last_send_ts[user_id] = time.time()
+        return waited * 1000

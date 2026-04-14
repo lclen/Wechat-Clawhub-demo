@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from typing import TYPE_CHECKING
 
 from app.models.session import SessionRecord
@@ -7,6 +9,8 @@ from app.services.transcript_writer import TranscriptWriter
 
 if TYPE_CHECKING:
     from app.access.wechat_bot import WeChatBotService
+
+logger = logging.getLogger(__name__)
 
 
 class OutgoingDispatcher:
@@ -41,11 +45,19 @@ class OutgoingDispatcher:
     async def deliver_bot_reply(self, session: SessionRecord, content: str) -> None:
         if session.channel != "wechat":
             return
+        started_at = time.perf_counter()
         try:
             await self._wechat_bot.send_markdown(
                 user_id=session.user_id,
                 content=content,
                 context_token=session.reply_context_token,
+            )
+            logger.info(
+                "[dispatch] outgoing_reply_sent session=%s channel=%s chars=%s send_ms=%.0f",
+                session.session_id,
+                session.channel,
+                len(content),
+                (time.perf_counter() - started_at) * 1000,
             )
         except Exception as exc:
             self._transcript_writer.append_event(
@@ -54,6 +66,14 @@ class OutgoingDispatcher:
                 actor_type="system",
                 actor_id="gateway",
                 payload={"error": str(exc)},
+            )
+            logger.exception(
+                "[dispatch] outgoing_reply_failed session=%s channel=%s chars=%s send_ms=%.0f error=%s",
+                session.session_id,
+                session.channel,
+                len(content),
+                (time.perf_counter() - started_at) * 1000,
+                exc,
             )
         finally:
             await self.clear_processing_indicator(session)

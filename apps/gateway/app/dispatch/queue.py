@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 import logging
+import time
 from uuid import uuid4
 
 from redis.exceptions import RedisError
@@ -207,11 +208,13 @@ class DispatchQueue:
         return task
 
     async def submit_result(self, payload: TaskResultRequest) -> SessionRecord:
+        started_at = time.perf_counter()
         task = await self._require_task(payload.task_id)
         await self._ensure_inflight(payload.task_id, payload.node_id)
         session = await self._session_manager.get_session(task.session_id)
         if payload.context_version != task.context_version:
             raise DispatchQueueError("Task result context version mismatch")
+        append_started_at = time.perf_counter()
         session = await self._session_manager.append_bot_message(
             session_id=task.session_id,
             content=payload.content,
@@ -219,7 +222,10 @@ class DispatchQueue:
             node_id=payload.node_id,
             metadata={k: str(v) for k, v in (payload.metadata or {}).items()},
         )
+        append_ms = (time.perf_counter() - append_started_at) * 1000
+        deliver_started_at = time.perf_counter()
         await self._outgoing_dispatcher.deliver_bot_reply(session, payload.content)
+        deliver_ms = (time.perf_counter() - deliver_started_at) * 1000
         self._transcript_writer.append_event(
             session_id=task.session_id,
             event_type="dispatch_completed",
@@ -234,12 +240,15 @@ class DispatchQueue:
             },
         )
         logger.info(
-            "[dispatch] completed task_id=%s session=%s node=%s slot=%s context_version=%s",
+            "[dispatch] completed task_id=%s session=%s node=%s slot=%s context_version=%s append_ms=%.0f deliver_ms=%.0f total_ms=%.0f",
             payload.task_id,
             task.session_id,
             payload.node_id,
             task.slot_id,
             payload.context_version,
+            append_ms,
+            deliver_ms,
+            (time.perf_counter() - started_at) * 1000,
         )
         await self._cleanup_task(task)
         return session
