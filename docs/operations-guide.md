@@ -1,6 +1,6 @@
 # 运维操作手册
 
-> **Status**: Active | **Last Updated**: 2026-04-07 | **Purpose**: 日常启动、排障、重置操作的快速参考
+> **Status**: Active | **Last Updated**: 2026-04-14 | **Purpose**: 日常启动、排障、重置操作的快速参考
 
 ## Table of Contents
 
@@ -191,6 +191,56 @@ $pids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinu
 - `2026-04-07 21:55:36` `cdn_upload success ... has_download_param=true`
 - `2026-04-07 21:55:37` `send_uploaded_media payload ... aes_key=...(44)`
 - `2026-04-07 21:55:37` `send_uploaded_media success ... mime=image/jpeg`
+
+### 微信里只看到 Markdown 文件链接，文件没有渲染成可发送文件
+
+**现象**：
+
+- 微信客户端里看到原始 Markdown 或一大段文本链接
+- 文件名存在，但没有作为微信文件消息出现
+- 典型场景是 `* **[说明书.pdf](https://...)**` 这类回复
+
+**本次已确认的根因模型**：
+
+1. 旧版 gateway 只会把图片链接识别成媒体消息，普通文件链接会在摘要阶段被降级成纯文本。
+2. 代码已升级但 gateway 进程未重启时，也会继续跑旧逻辑，表现仍然和未修复前一致。
+
+**当前正确行为**：
+
+- Markdown 文件链接会被识别成 `file` 片段
+- 独立一行的远程文件 URL 也会被识别成文件消息
+- gateway 会走统一的 `send_asset_url -> send_uploaded_media` 链路，把 PDF / 文档作为微信文件消息发送
+
+**排查顺序**：
+
+1. 先确认运行中的 gateway 是否已经加载新代码。
+2. 查看 `logs/gateway.log`，发送文件类回复后应出现：
+   - `wechat-bot: send_markdown ... file_count=...`
+   - `wechat-bot: send_asset_url start ... asset_url=...`
+   - `wechat-bot: send_uploaded_media success ... mime=application/pdf`
+3. 如果日志里仍然只有旧格式：
+   - `wechat-bot: send_markdown ... segment_count=1 image_count=0`
+   - 且完全没有 `file_count` / `send_asset_url`
+   说明当前 gateway 进程还在跑旧代码，需要重启 gateway。
+4. 如果已经出现 `send_asset_url start`，但没有 `send_uploaded_media success`，再继续检查：
+   - 远程文件 URL 是否可下载
+   - `getuploadurl` 是否成功
+   - 微信 `sendmessage` 返回体是否报错
+
+**建议验收方式**：
+
+1. 重启 gateway。
+2. 重新发送一条只包含 PDF/说明书链接的测试问题。
+3. 观察微信是否出现真正的文件消息，而不是长文本链接。
+4. 同步查看 `logs/gateway.log`，确认已命中新日志关键字：
+   - `file_count`
+   - `send_asset_url`
+   - `send_uploaded_media success`
+
+**本次修复涉及代码**：
+
+- `apps/gateway/app/access/wechat_bot.py`
+- `apps/gateway/tests/test_wechat_bot.py`
 
 ---
 

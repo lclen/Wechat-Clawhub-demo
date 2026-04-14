@@ -1,6 +1,68 @@
 # Changelog
 
-> **Status**: Active | **Last Updated**: 2026-04-08 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+> **Status**: Active | **Last Updated**: 2026-04-14 | **Purpose**: 记录每次重要修复、功能变更和架构调整
+
+---
+
+## 2026-04-14 — 微信 Markdown 文件链接渲染与发送修复
+
+### 背景
+
+在会话联调里发现，图片 URL 已经能被识别并上传成微信图片消息，但 PDF / 说明书这类普通文件链接仍然会直接留在 Markdown 文本里。
+
+表面现象是：
+
+- 微信里能看到“说明书”“下载链接”等文字
+- 但看不到真正的微信文件消息
+- 某些情况下甚至会直接看到原始 Markdown 链接
+
+### 根因
+
+问题分成两层：
+
+1. `apps/gateway/app/access/wechat_bot.py` 旧逻辑只把图片识别成媒体片段，普通 Markdown 链接会在 `_markdown_to_plaintext()` 阶段被去掉 URL，只保留链接文字。
+2. 修复代码已经提交后，如果运行中的 gateway 进程没有重启，线上日志仍会继续表现为旧逻辑，容易误判成“修复无效”。
+
+### 本次调整
+
+- `apps/gateway/app/access/wechat_bot.py`
+  - `parse_markdown_segments()` 从“只识别图片”扩展为同时识别：
+    - Markdown 图片链接
+    - Markdown 普通文件链接
+    - 独立一行的远程 URL（自动区分 image / file）
+  - 新增统一的 `send_asset_url()`，让图片、视频、文件都走统一远程资源上传发送链路
+  - `send_markdown()` 新增 `file_count` 日志，并把文件片段纳入 `asset_chunk_start/finished` 发送流程
+  - 保留 `send_image_url()` 作为兼容包装，内部转到 `send_asset_url()`
+
+- `apps/gateway/tests/test_wechat_bot.py`
+  - 新增 Markdown 文件链接解析测试
+  - 新增文件链接转微信文件消息测试
+  - 更新原有图片测试，统一改为验证 `send_asset_url()` 路径
+
+### 运行态验收信号
+
+修复生效后，`logs/gateway.log` 中应出现：
+
+- `wechat-bot: send_markdown ... file_count=...`
+- `wechat-bot: send_asset_url start ... asset_url=...`
+- `wechat-bot: send_uploaded_media success ... mime=application/pdf`
+
+如果仍然只看到旧格式：
+
+- `wechat-bot: send_markdown ... segment_count=1 image_count=0`
+
+且完全没有 `file_count` / `send_asset_url`，说明当前运行中的 gateway 还没有重启到新版本。
+
+### 测试覆盖
+
+- `PYTHONPATH=. uv run pytest tests/test_wechat_bot.py`
+  - 17 个测试全部通过
+
+### 收益
+
+- 说明书、PDF、接线文档这类远程链接现在可以真正以微信文件消息发送
+- 图片与文件统一走远程资源上传链路，后续继续做媒体发送优化时不需要再分两套协议
+- 运行态是否生效可以通过 `file_count` / `send_asset_url` 日志快速确认，避免再次误判
 
 ---
 
