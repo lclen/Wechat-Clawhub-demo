@@ -108,14 +108,14 @@ class ChannelAssessmentTests(unittest.IsolatedAsyncioTestCase):
         fake_client.close.assert_awaited_once()
 
     def test_resolve_round_steps_respects_requested_max_rounds(self) -> None:
-        self.assertEqual(_resolve_round_steps(1, current_channel_capacity=4, max_rounds=1), [1, 12])
-        self.assertEqual(_resolve_round_steps(1, current_channel_capacity=4, max_rounds=3), [1, 2, 3, 12])
-        self.assertIn(64, _resolve_round_steps(8, current_channel_capacity=16, max_rounds=999))
+        self.assertEqual(_resolve_round_steps(1, current_channel_capacity=4, max_rounds=1), [1])
+        self.assertEqual(_resolve_round_steps(1, current_channel_capacity=4, max_rounds=3), [1, 2, 3])
+        self.assertIn(64, _resolve_round_steps(8, current_channel_capacity=16, max_rounds=21))
 
-    def test_resolve_round_steps_can_extend_beyond_small_current_concurrency(self) -> None:
+    def test_resolve_round_steps_uses_requested_round_count_without_capacity_cap(self) -> None:
         self.assertEqual(
             _resolve_round_steps(1, current_channel_capacity=12, max_rounds=12),
-            [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 24],
+            [1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18],
         )
 
     def test_latency_growth_limit_is_slightly_relaxed(self) -> None:

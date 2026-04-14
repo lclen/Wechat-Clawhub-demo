@@ -292,12 +292,7 @@ def _resolve_round_steps(
     candidate_steps = list(_ROUND_STEPS)
     while len(candidate_steps) < configured_rounds:
         candidate_steps.append(candidate_steps[-1] + 8)
-    candidate_steps = candidate_steps[:configured_rounds]
-    upper_bound = max(current_max_concurrency * 8, current_channel_capacity * 2, 12)
-    resolved = [value for value in candidate_steps if value <= upper_bound]
-    if upper_bound not in resolved:
-        resolved.append(upper_bound)
-    return sorted({max(1, value) for value in resolved})
+    return [max(1, value) for value in candidate_steps[:configured_rounds]]
 
 
 def _latency_growth_limit_ms(baseline_latency_ms: int | None) -> int:

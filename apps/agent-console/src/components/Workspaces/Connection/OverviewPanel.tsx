@@ -259,6 +259,16 @@ export function OverviewPanel({
 
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
             <MetricCard
+              label="当前通道"
+              value={String(assessment?.current_channel_capacity ?? "-")}
+              tone="accent"
+            />
+            <MetricCard
+              label="当前并发"
+              value={String(assessment?.current_max_concurrency ?? "-")}
+              tone="accent"
+            />
+            <MetricCard
               label="峰值建议"
               value={canApplyRecommendation ? `${assessment?.recommended_channel_capacity}/${assessment?.recommended_max_concurrency}` : "-"}
               tone="healthy"
@@ -267,6 +277,19 @@ export function OverviewPanel({
               label="平衡方案"
               value={balancedRecommendationAvailable ? `${assessment?.balanced_channel_capacity}/${assessment?.balanced_max_concurrency}` : "-"}
               tone="accent"
+            />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+            <MetricCard
+              label="最近执行"
+              value={latestAssessmentTime ? formatAssessmentTimestamp(latestAssessmentTime) : "-"}
+              tone="accent"
+            />
+            <MetricCard
+              label="当前摘要"
+              value={assessment?.summary || assessmentStartHint || "-"}
+              tone="warning"
             />
           </div>
 

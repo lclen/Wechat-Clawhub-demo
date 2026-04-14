@@ -4,6 +4,12 @@ import { NodeModelConfigPanel } from "./NodeModelConfigPanel";
 import { OverviewPanel } from "./OverviewPanel";
 import { WeChatConfigCard } from "./WeChatConfigCard";
 import { hasText, safeTrim } from "../../../stringUtils";
+import {
+  MetricCard,
+  SectionHeader,
+  SignalBadge,
+  SurfaceCard,
+} from "../../shared/ConsolePrimitives";
 import type {
   ConnectionHeroCardData,
   ConnectionPrepItem,
@@ -385,6 +391,219 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 </div>
               </section>
 
+              <SurfaceCard className="command-surface connection-assessment-surface">
+                <SectionHeader
+                  kicker="压测工具"
+                  title="通道容量建议"
+                  actions={
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={props.onRefreshLocalNodeStatus}
+                      disabled={props.busyKey !== null}
+                      style={{ height: 26, fontSize: 11 }}
+                    >
+                      刷新
+                    </button>
+                  }
+                />
+                {(() => {
+                  const assessment = props.localNodeStatus?.channel_assessment;
+                  const assessmentStatus = assessment?.status || "idle";
+                  const localNodeRunning = props.localNodeStatus?.state === "running";
+                  const configuredMaxRounds = Math.max(1, Math.min(999, Number(props.assessmentMaxRounds) || 1));
+                  const canStartAssessment = Boolean(assessment?.can_start ?? true) && assessmentStatus !== "running";
+                  const canApplyRecommendation =
+                    assessmentStatus === "completed" &&
+                    assessment?.recommended_channel_capacity !== null &&
+                    assessment?.recommended_max_concurrency !== null;
+                  const balancedRecommendationAvailable =
+                    assessmentStatus === "completed" &&
+                    assessment?.balanced_channel_capacity !== null &&
+                    assessment?.balanced_max_concurrency !== null;
+                  const latestAssessmentTime = assessment?.finished_at || assessment?.started_at || null;
+                  const recentRounds = assessment?.rounds?.slice(-2) ?? [];
+                  return (
+                    <div className="connection-assessment-sidebar-shell" style={{ marginTop: 12 }}>
+                      <div
+                        style={{
+                          backgroundColor: "rgba(0,0,0,0.03)",
+                          padding: 12,
+                          borderRadius: 8,
+                          border: "1px solid var(--line)",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span style={{ fontSize: 12, opacity: 0.6 }}>评估状态</span>
+                          <SignalBadge
+                            tone={
+                              assessmentStatus === "completed"
+                                ? "good"
+                                : assessmentStatus === "running"
+                                ? "info"
+                                : "neutral"
+                            }
+                          >
+                            {assessmentStatus === "running" ? "进行中" : assessmentStatus === "completed" ? "已完成" : "未开始"}
+                          </SignalBadge>
+                        </div>
+                        <div style={{ fontSize: 13, fontWeight: 600, marginTop: 4 }}>
+                          {assessmentStatus === "running"
+                            ? assessment?.stage
+                            : assessment?.start_blocking_reason || "待执行压测"}
+                        </div>
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+                        <MetricCard
+                          label="当前通道"
+                          value={String(assessment?.current_channel_capacity ?? "-")}
+                          tone="accent"
+                        />
+                        <MetricCard
+                          label="当前并发"
+                          value={String(assessment?.current_max_concurrency ?? "-")}
+                          tone="accent"
+                        />
+                        <MetricCard
+                          label="峰值建议"
+                          value={
+                            canApplyRecommendation
+                              ? `${assessment?.recommended_channel_capacity}/${assessment?.recommended_max_concurrency}`
+                              : "-"
+                          }
+                          tone="healthy"
+                        />
+                        <MetricCard
+                          label="平衡方案"
+                          value={
+                            balancedRecommendationAvailable
+                              ? `${assessment?.balanced_channel_capacity}/${assessment?.balanced_max_concurrency}`
+                              : "-"
+                          }
+                          tone="accent"
+                        />
+                      </div>
+
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 6 }}>压测轮数</div>
+                        <select
+                          value={configuredMaxRounds}
+                          onChange={(event) => props.onAssessmentMaxRoundsChange(Number(event.target.value) || 1)}
+                          disabled={props.busyKey !== null || assessmentStatus === "running"}
+                          style={{ width: "100%" }}
+                        >
+                          {[5, 10, 20, 30, 50, 100].map((value) => (
+                            <option key={`worker-assessment-rounds-${value}`} value={value}>
+                              {value} 轮
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
+                        <MetricCard
+                          label="最近执行"
+                          value={latestAssessmentTime ? formatAssessmentTimestamp(latestAssessmentTime) : "-"}
+                          tone="accent"
+                        />
+                        <MetricCard
+                          label="当前摘要"
+                          value={assessment?.summary || assessment?.start_blocking_reason || "待执行压测"}
+                          tone="warning"
+                        />
+                      </div>
+
+                      <div className="assessment-controls" style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={props.onStartLocalNodeService}
+                            disabled={props.busyKey !== null || props.busyKey === "local-node-channel-assessment-start" || localNodeRunning}
+                            style={{ flex: 1 }}
+                          >
+                            启动
+                          </button>
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={props.onStopLocalNodeService}
+                            disabled={props.busyKey !== null || props.busyKey === "local-node-channel-assessment-start" || !localNodeRunning}
+                            style={{ flex: 1 }}
+                          >
+                            停止
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={props.onStartLocalNodeChannelAssessment}
+                          disabled={props.busyKey !== null || props.busyKey === "local-node-channel-assessment-start" || !canStartAssessment}
+                          style={{ width: "100%" }}
+                        >
+                          {assessmentStatus === "running" ? "正在评估..." : "开始压力测试"}
+                        </button>
+                      </div>
+
+                      {canApplyRecommendation ? (
+                        <div style={{ marginTop: 16, borderTop: "1px solid var(--line)", paddingTop: 16 }}>
+                          <select
+                            value={props.assessmentApplyStrategy}
+                            onChange={(event) => props.onAssessmentApplyStrategyChange(event.target.value as "balanced" | "peak")}
+                            disabled={props.busyKey !== null || props.busyKey === "local-node-channel-assessment-apply"}
+                            style={{ width: "100%", marginBottom: 8 }}
+                          >
+                            <option value="balanced">方案：均衡稳定</option>
+                            <option value="peak">方案：极限容量</option>
+                          </select>
+                          <button
+                            type="button"
+                            className="connection-assessment-apply"
+                            onClick={props.onApplyLocalNodeChannelAssessment}
+                            disabled={props.busyKey !== null || props.busyKey === "local-node-channel-assessment-apply"}
+                            style={{ width: "100%" }}
+                          >
+                            {props.busyKey === "local-node-channel-assessment-apply" ? "应用中..." : "应用评估建议"}
+                          </button>
+                        </div>
+                      ) : null}
+
+                      {recentRounds.length ? (
+                        <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 6 }}>
+                          <span className="section-kicker">最近两轮压测</span>
+                          {recentRounds.map((round) => {
+                            const appearance = getAssessmentRoundAppearance(round);
+                            return (
+                              <div
+                                key={`worker-round-${round.round_index}`}
+                                style={{
+                                  padding: "8px 12px",
+                                  backgroundColor: "rgba(0,0,0,0.02)",
+                                  borderRadius: 6,
+                                  border: "1px solid var(--line)",
+                                  fontSize: 12,
+                                }}
+                              >
+                                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                                  <strong>第 {round.round_index} 轮</strong>
+                                  <span style={{ opacity: 0.6 }}>{round.max_concurrency} 并发 / {round.channel_capacity} 通道</span>
+                                </div>
+                                <div style={{ marginTop: 4, display: "flex", gap: 6, alignItems: "center" }}>
+                                  <SignalBadge tone={appearance.tone} style={{ fontSize: 10, padding: "1px 4px" }}>
+                                    {appearance.flagLabel}
+                                  </SignalBadge>
+                                  <span style={{ opacity: 0.7 }}>{round.summary}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })()}
+              </SurfaceCard>
+
               <section className="surface worker-node-install-card">
                 <div className="section-head compact-head">
                   <div>
@@ -512,4 +731,28 @@ function formatTimeLabel(value: string, withSeconds = false) {
         minute: "2-digit",
         second: withSeconds ? "2-digit" : undefined,
       });
+}
+
+function formatAssessmentTimestamp(value: string) {
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(timestamp);
+}
+
+function getAssessmentRoundAppearance(
+  round: NonNullable<LocalNodeStatusResponse["channel_assessment"]>["rounds"][number]
+): {
+  tone: "good" | "warn" | "info" | "neutral";
+  flagLabel: string;
+} {
+  if (round.stable) return { tone: "good", flagLabel: "稳定" };
+  if (round.timeout_count > 0) return { tone: "warn", flagLabel: "超时" };
+  if (round.failure_count > 0) return { tone: "warn", flagLabel: "失败" };
+  if (round.stop_reason.includes("延迟")) return { tone: "info", flagLabel: "延迟" };
+  return { tone: "warn", flagLabel: "终止" };
 }

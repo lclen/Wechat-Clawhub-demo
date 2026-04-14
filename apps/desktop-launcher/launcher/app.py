@@ -503,6 +503,7 @@ def create_app() -> FastAPI:
             config_path = install_dir / "config" / "node.env"
             diagnostics_path = install_dir / "diagnostics" / "node-status.json"
             apply_state_path = _local_node_apply_state_path(install_dir)
+            assessment_state_path = _local_node_channel_assessment_state_path(install_dir)
             gateway_env_path = app.state.repo_root / "apps" / "gateway" / ".env"
             diagnostics: dict[str, object] = {}
             if diagnostics_path.exists():
@@ -516,9 +517,14 @@ def create_app() -> FastAPI:
                 node_kind=node_kind,
             )
             env_values = _read_env_file(config_path)
+            persisted_assessment = _read_local_node_channel_assessment_state(
+                assessment_state_path,
+                current_channel_capacity=_safe_int(env_values.get("CLAW_CHANNEL_CAPACITY", ""), 12),
+                current_max_concurrency=_safe_int(env_values.get("CLAW_MAX_CONCURRENCY", ""), 1),
+            )
             model_settings = _read_local_node_model_config(config_path)
             channel_assessment = _build_local_node_channel_assessment_result(
-                diagnostics.get("channel_assessment"),
+                diagnostics.get("channel_assessment") if isinstance(diagnostics.get("channel_assessment"), dict) else persisted_assessment.model_dump(mode="json"),
                 current_channel_capacity=_safe_int(env_values.get("CLAW_CHANNEL_CAPACITY", ""), 12),
                 current_max_concurrency=_safe_int(env_values.get("CLAW_MAX_CONCURRENCY", ""), 1),
             )
@@ -769,6 +775,10 @@ def create_app() -> FastAPI:
 
             diagnostics = NodeDiagnostics(_load_local_node_settings(config_path, diagnostics_dir))
             diagnostics.update_channel_assessment(blocking_result.model_dump(mode="json"), emit_event=True)
+            _write_local_node_channel_assessment_state(
+                _local_node_channel_assessment_state_path(install_dir),
+                blocking_result,
+            )
             invalidate_cached_response("local_node_status_cache")
             return blocking_result
 
@@ -797,6 +807,32 @@ def create_app() -> FastAPI:
                 "last_error": "",
             },
             emit_event=True,
+        )
+        _write_local_node_channel_assessment_state(
+            _local_node_channel_assessment_state_path(install_dir),
+            _build_local_node_channel_assessment_result(
+                {
+                    "status": "running",
+                    "started_at": datetime.now(UTC).isoformat(),
+                    "finished_at": None,
+                    "current_channel_capacity": int(settings.channel_capacity),
+                    "current_max_concurrency": int(settings.max_concurrency),
+                    "recommended_channel_capacity": None,
+                    "recommended_max_concurrency": None,
+                    "summary": "通道评估任务已创建。",
+                    "rounds": [],
+                    "risk_level": "unknown",
+                    "can_start": False,
+                    "start_blocking_reason": "通道评估执行中",
+                    "blocking_reason": "",
+                    "stage": "等待压测开始",
+                    "active_session_count": 0,
+                    "active_task_count": 0,
+                    "last_error": "",
+                },
+                current_channel_capacity=int(settings.channel_capacity),
+                current_max_concurrency=int(settings.max_concurrency),
+            ),
         )
         app.state.local_node_channel_assessment_task = asyncio.create_task(
             _run_local_node_channel_assessment_task(
@@ -855,6 +891,23 @@ def create_app() -> FastAPI:
                 "stage": "建议已应用，等待服务重启",
             },
             emit_event=True,
+        )
+        _write_local_node_channel_assessment_state(
+            _local_node_channel_assessment_state_path(install_dir),
+            _build_local_node_channel_assessment_result(
+                {
+                    **assessment.model_dump(mode="json"),
+                    "current_channel_capacity": target_channel_capacity,
+                    "current_max_concurrency": target_max_concurrency,
+                    "summary": (
+                        f"已应用{_channel_assessment_strategy_label(payload.strategy)}：通道数 {target_channel_capacity}，"
+                        f"最大并发 {target_max_concurrency}。"
+                    ),
+                    "stage": "建议已应用，等待服务重启",
+                },
+                current_channel_capacity=target_channel_capacity,
+                current_max_concurrency=target_max_concurrency,
+            ),
         )
         invalidate_cached_response("local_node_status_cache")
         status = await restart_local_node_service()
@@ -1295,6 +1348,10 @@ def _local_node_apply_state_path(install_dir: Path) -> Path:
     return install_dir / "diagnostics" / "config-apply.json"
 
 
+def _local_node_channel_assessment_state_path(install_dir: Path) -> Path:
+    return install_dir / "diagnostics" / "channel-assessment.json"
+
+
 def _read_local_node_apply_state(path: Path) -> dict[str, str]:
     if not path.exists():
         return {
@@ -1315,6 +1372,35 @@ def _read_local_node_apply_state(path: Path) -> dict[str, str]:
         "last_apply_error": str(payload.get("last_apply_error", "") or ""),
         "last_apply_at": str(payload.get("last_apply_at", "") or ""),
     }
+
+
+def _read_local_node_channel_assessment_state(
+    path: Path,
+    *,
+    current_channel_capacity: int,
+    current_max_concurrency: int,
+):
+    if not path.exists():
+        return _build_local_node_channel_assessment_result(
+            None,
+            current_channel_capacity=current_channel_capacity,
+            current_max_concurrency=current_max_concurrency,
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = None
+    return _build_local_node_channel_assessment_result(
+        payload,
+        current_channel_capacity=current_channel_capacity,
+        current_max_concurrency=current_max_concurrency,
+    )
+
+
+def _write_local_node_channel_assessment_state(path: Path, payload) -> None:
+    data = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _write_local_node_apply_state(
@@ -1833,9 +1919,18 @@ async def _run_local_node_channel_assessment_task(
 
     settings = _load_local_node_settings(config_path, diagnostics_dir)
     diagnostics = NodeDiagnostics(settings)
+    assessment_state_path = _local_node_channel_assessment_state_path(config_path.parent.parent)
 
     async def handle_progress(payload: dict[str, object]) -> None:
         diagnostics.update_channel_assessment(dict(payload))
+        _write_local_node_channel_assessment_state(
+            assessment_state_path,
+            _build_local_node_channel_assessment_result(
+                dict(payload),
+                current_channel_capacity=int(settings.channel_capacity),
+                current_max_concurrency=int(settings.max_concurrency),
+            ),
+        )
 
     try:
         result = await run_channel_assessment(
@@ -1844,8 +1939,16 @@ async def _run_local_node_channel_assessment_task(
             progress_callback=handle_progress,
         )
         diagnostics.update_channel_assessment(result, emit_event=True)
+        _write_local_node_channel_assessment_state(
+            assessment_state_path,
+            _build_local_node_channel_assessment_result(
+                result,
+                current_channel_capacity=int(settings.channel_capacity),
+                current_max_concurrency=int(settings.max_concurrency),
+            ),
+        )
     except Exception as exc:
-        diagnostics.update_channel_assessment(
+        failed_result = _build_local_node_channel_assessment_result(
             {
                 "status": "failed",
                 "started_at": datetime.now(UTC).isoformat(),
@@ -1865,8 +1968,11 @@ async def _run_local_node_channel_assessment_task(
                 "active_task_count": 0,
                 "last_error": str(exc),
             },
-            emit_event=True,
+            current_channel_capacity=int(settings.channel_capacity),
+            current_max_concurrency=int(settings.max_concurrency),
         )
+        diagnostics.update_channel_assessment(failed_result.model_dump(mode="json"), emit_event=True)
+        _write_local_node_channel_assessment_state(assessment_state_path, failed_result)
         raise
 
 
