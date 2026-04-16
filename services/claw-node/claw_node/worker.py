@@ -68,6 +68,7 @@ class Worker:
         self._task_stream_send_lock = asyncio.Lock()
         self._task_stream_reconnect_failures = 0
         self._task_stream_degraded = False
+        self._fallback_polling_task: asyncio.Task | None = None
 
     def _summarize_task_stream_event(self, event: dict[str, Any]) -> str:
         event_type = str(event.get("type") or "<missing>")
@@ -273,6 +274,7 @@ class Worker:
                     self._task_stream_reconnect_failures = 0
                     recovered_from_degraded = self._task_stream_degraded
                     self._task_stream_degraded = False
+                    await self._stop_fallback_polling()
                     self._diagnostics.update_task_stream(
                         {
                             "protocol_version": TASK_STREAM_PROTOCOL_VERSION,
@@ -514,6 +516,7 @@ class Worker:
             for task in (
                 self._heartbeat_task,
                 self._polling_task,
+                self._fallback_polling_task,
                 self._channel_maintenance_task,
                 self._register_retry_task,
                 self._diagnostics_flush_task,
@@ -527,10 +530,30 @@ class Worker:
                 await task
         self._heartbeat_task = None
         self._polling_task = None
+        self._fallback_polling_task = None
         self._channel_maintenance_task = None
         self._register_retry_task = None
         self._diagnostics_flush_task = None
         self._task_stream_websocket = None
+
+    async def _ensure_fallback_polling_started(self) -> None:
+        task = self._fallback_polling_task
+        if task is not None and not task.done():
+            return
+        self._fallback_polling_task = asyncio.create_task(
+            self._poll_loop(),
+            name="task-stream-fallback-poll-loop",
+        )
+
+    async def _stop_fallback_polling(self) -> None:
+        task = self._fallback_polling_task
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        self._fallback_polling_task = None
 
     async def _handle_pair_request(self, payload: dict[str, str]) -> tuple[int, dict[str, object]]:
         trace_id = payload.get("pairing_trace_id", "").strip()
@@ -1209,7 +1232,8 @@ class Worker:
             TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS,
             self._task_stream_reconnect_failures,
         )
-        return await self._poll_once(wait_seconds=TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS)
+        await self._ensure_fallback_polling_started()
+        return True
 
     async def _flush_pending_diagnostics_events(self) -> None:
         if not self._settings.task_stream_enabled:

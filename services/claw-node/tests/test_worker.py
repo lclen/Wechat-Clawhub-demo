@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 import unittest
@@ -772,7 +773,7 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
             CLAW_OPENAI_MODEL="test-model",
         )
         worker = Worker(settings)
-        worker._poll_once = AsyncMock(return_value=True)
+        worker._poll_loop = AsyncMock(return_value=None)
         worker._task_stream_reconnect_failures = TASK_STREAM_FALLBACK_FAILURE_THRESHOLD - 1
 
         await worker._handle_task_stream_disconnect(
@@ -786,10 +787,64 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertTrue(should_continue)
-        worker._poll_once.assert_awaited_once_with(wait_seconds=TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS)
+        await asyncio.sleep(0)
+        worker._poll_loop.assert_awaited_once_with()
+        self.assertIsNotNone(worker._fallback_polling_task)
         task_stream = worker._diagnostics.export_runtime_state()["task_stream"]
         self.assertEqual(task_stream["connection_mode"], "degraded_http_polling")
         self.assertEqual(task_stream["fallback_poll_count"], 1)
+        await worker._stop_fallback_polling()
+
+    async def test_successful_task_stream_connect_stops_fallback_polling(self) -> None:
+        class _TaskStreamConnection:
+            def __init__(self, websocket: AsyncMock) -> None:
+                self._websocket = websocket
+
+            async def __aenter__(self) -> AsyncMock:
+                return self._websocket
+
+            async def __aexit__(self, exc_type, exc, tb) -> bool:
+                return False
+
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_TASK_STREAM_ENABLED="true",
+        )
+        worker = Worker(settings)
+        worker._task_stream_degraded = True
+        worker._fallback_polling_task = asyncio.create_task(asyncio.sleep(60))
+        websocket = AsyncMock()
+        websocket.recv = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "type": "task_assigned",
+                    "task": {
+                        "task_id": "task-1",
+                        "session_id": "session-1",
+                        "context_version": 2,
+                        "user_id": "user-1",
+                        "message": {"content": "hi"},
+                    },
+                }
+            )
+        )
+        worker._gateway.task_stream_connection = MagicMock(return_value=_TaskStreamConnection(websocket))
+
+        async def stop_after_start(task: dict[str, object], *, source: str) -> None:
+            self.assertEqual(source, "ws")
+            worker._shutdown.set()
+
+        worker._start_task_assignment = AsyncMock(side_effect=stop_after_start)  # type: ignore[method-assign]
+
+        await worker._task_stream_loop()
+
+        self.assertIsNone(worker._fallback_polling_task)
+        self.assertFalse(worker._task_stream_degraded)
 
     async def test_try_send_task_stream_event_race_condition_safe(self) -> None:
         """
