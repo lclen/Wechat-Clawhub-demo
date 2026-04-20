@@ -204,12 +204,12 @@ class ProcessManager:
             )
             raise RuntimeError("当前机器还没有完成工作节点安装，请先在快速配置中执行一次节点安装。")
         if not service_installed:
-            raise RuntimeError("本机节点服务未安装，请使用“重装当前机器节点”。")
+            raise RuntimeError("本机节点服务未安装，请使用“重装并升级当前机器节点”。")
         if service_installed and not requires_repair:
             self._start_existing_local_node_service(profile, layout)
             self._statuses["local-node"] = self.local_node_service_status(profile, layout)
             return
-        raise RuntimeError(repair_reason or "当前本机节点需要修复，请使用“重装当前机器节点”。")
+        raise RuntimeError(repair_reason or "当前本机节点需要修复，请使用“重装并升级当前机器节点”。")
 
     def restart_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         self._stop_local_node_service(profile, layout)

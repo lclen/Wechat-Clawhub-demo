@@ -1,11 +1,14 @@
-import { ConnectionHeroCard, InfoRow, PrepStrip, ToggleSecretInput } from "./ConnectionUi";
+import { useRef } from "react";
+import { ConnectionHeroCard, PrepStrip, ToggleSecretInput } from "./ConnectionUi";
 import { NodeInventoryPanel } from "./NodeInventoryPanel";
 import { NodeModelConfigPanel } from "./NodeModelConfigPanel";
 import { OverviewPanel } from "./OverviewPanel";
 import { WeChatConfigCard } from "./WeChatConfigCard";
 import { hasText, safeTrim } from "../../../stringUtils";
+import type { ConnectionConsolePresentation } from "../../../roleCapabilities";
 import {
   MetricCard,
+  InfoList,
   SectionHeader,
   SignalBadge,
   SurfaceCard,
@@ -101,6 +104,7 @@ type ConnectionWorkspaceProps = {
     canManageWeChat: boolean;
     canManageNodes: boolean;
   };
+  connectionConsolePresentation: ConnectionConsolePresentation;
   currentNodeLanIp: string;
   currentGatewayBaseUrl: string;
   setupCompletedRoles: Set<SetupRole>;
@@ -182,6 +186,16 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
   const showLocalNodePanel = props.roleSections.showLocalNodePanel;
   const showNodeOnboarding = props.roleActions.canManageNodes;
   const showGatewayControls = props.roleActions.canManageGateway;
+  const localNodeConsoleRef = useRef<HTMLDivElement | null>(null);
+  const localConsoleHint = showLocalNodePanel
+    ? {
+        label: props.connectionConsolePresentation.recommendedActionLabel,
+        detail: props.connectionConsolePresentation.recommendedActionDetail,
+        onFocus: () => {
+          localNodeConsoleRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+        },
+      }
+    : null;
 
   return (
     <section className="workspace-frame connection-workspace">
@@ -231,30 +245,35 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
               ) : null}
 
               {showLocalNodePanel ? (
-                <NodeModelConfigPanel
-                  launcherAvailable={props.launcherAvailable}
-                  busyKey={props.busyKey}
-                  dirty={props.localNodeModelDirty}
-                  status={props.localNodeStatus}
-                  runtimeSummary={props.localNodeRuntimeSummary}
-                  gatewayControl={{
-                    managed: props.launcherGatewayManaged,
-                    state: props.launcherGatewayState,
-                    onRestart: props.onRestartGatewayService,
-                    disabled: props.busyKey !== null || !props.launcherAvailable || !props.launcherGatewayManaged || !showGatewayControls,
-                    busy: props.busyKey === "launcher-gateway-restart",
-                  }}
-                  eventPreview=""
-                  draft={props.localNodeModelDraft}
-                  onChange={props.onUpdateLocalNodeModelDraft}
-                  onRefresh={props.onRefreshLocalNodeDiagnostics}
-                  onStart={props.onStartLocalNodeService}
-                  onStop={props.onStopLocalNodeService}
-                  onRestart={props.onRestartLocalNodeService}
-                  onSave={props.onSaveLocalNodeModelConfig}
-                  onExport={props.onExportLocalNodeDiagnostics}
-                  onRunConversationTest={props.onRunLocalNodeConversationTest}
-                />
+                <div ref={localNodeConsoleRef}>
+                  <NodeModelConfigPanel
+                    launcherAvailable={props.launcherAvailable}
+                    busyKey={props.busyKey}
+                    dirty={props.localNodeModelDirty}
+                    status={props.localNodeStatus}
+                    runtimeSummary={props.localNodeRuntimeSummary}
+                    consolePresentation={props.connectionConsolePresentation}
+                    gatewayControl={{
+                      managed: props.launcherGatewayManaged,
+                      state: props.launcherGatewayState,
+                      onRestart: props.onRestartGatewayService,
+                      disabled: props.busyKey !== null || !props.launcherAvailable || !props.launcherGatewayManaged || !showGatewayControls,
+                      busy: props.busyKey === "launcher-gateway-restart",
+                    }}
+                    eventPreview=""
+                    draft={props.localNodeModelDraft}
+                    onChange={props.onUpdateLocalNodeModelDraft}
+                    onRefresh={props.onRefreshLocalNodeDiagnostics}
+                    onStart={props.onStartLocalNodeService}
+                    onStop={props.onStopLocalNodeService}
+                    onRestart={props.onRestartLocalNodeService}
+                    onSave={props.onSaveLocalNodeModelConfig}
+                    onExport={props.onExportLocalNodeDiagnostics}
+                    onRepair={props.onRunWorkerSetup}
+                    onReset={props.onResetLocalNodeCredentials}
+                    onRunConversationTest={props.onRunLocalNodeConversationTest}
+                  />
+                </div>
               ) : null}
             </div>
 
@@ -339,6 +358,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   prepItems={props.connectionPrepItems}
                   signalCards={props.connectionSignalCards}
                   canManageGateway={showGatewayControls}
+                  localConsoleHint={localConsoleHint}
                   modelCheckText={props.modelCheckText}
                   lastError={props.wechatLastError}
                   dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无远程节点。" : null}
@@ -351,12 +371,8 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   onRefreshChannelAssessment={props.onRefreshLocalNodeStatus}
                   onAssessmentMaxRoundsChange={props.onAssessmentMaxRoundsChange}
                   onAssessmentApplyStrategyChange={props.onAssessmentApplyStrategyChange}
-                  onStartLocalNodeService={props.onStartLocalNodeService}
-                  onStopLocalNodeService={props.onStopLocalNodeService}
                   onStartChannelAssessment={props.onStartLocalNodeChannelAssessment}
                   onApplyChannelAssessment={props.onApplyLocalNodeChannelAssessment}
-                  startLocalNodeLabel={props.busyKey === "local-node-start" ? "启动中..." : "启动本机节点"}
-                  stopLocalNodeLabel={props.busyKey === "local-node-stop" ? "停止中..." : "停止本机节点"}
                   applyChannelAssessmentLabel={props.busyKey === "local-node-channel-assessment-apply" ? "应用中..." : "应用评估建议"}
                   runModelCheckLabel={props.busyKey === "model-check" ? "检测中..." : "检测模型"}
                   toggleDispatchLabel={props.busyKey === "dispatch-mode-toggle" ? "切换中..." : props.gatewaySetupDispatchModeEnabled ? "关闭分发模式" : "开启分发模式"}
@@ -382,36 +398,38 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
 
           <div className="connection-dashboard-grid worker-connection-grid">
             <div className="connection-main-column">
-              <NodeModelConfigPanel
-                launcherAvailable={props.launcherAvailable}
-                busyKey={props.busyKey}
-                dirty={props.localNodeModelDirty}
-                status={props.localNodeStatus}
-                runtimeSummary={props.localNodeRuntimeSummary}
-                gatewayControl={null}
-                eventPreview=""
-                draft={props.localNodeModelDraft}
-                onChange={props.onUpdateLocalNodeModelDraft}
-                onRefresh={props.onRefreshLocalNodeDiagnostics}
-                onStart={props.onStartLocalNodeService}
-                onStop={props.onStopLocalNodeService}
-                onRestart={props.onRestartLocalNodeService}
-                onSave={props.onSaveLocalNodeModelConfig}
-                onExport={props.onExportLocalNodeDiagnostics}
-                onReset={props.onResetLocalNodeCredentials}
-                onRepair={props.onRunWorkerSetup}
-                onRunConversationTest={props.onRunLocalNodeConversationTest}
-              />
+              <div ref={localNodeConsoleRef}>
+                <NodeModelConfigPanel
+                  launcherAvailable={props.launcherAvailable}
+                  busyKey={props.busyKey}
+                  dirty={props.localNodeModelDirty}
+                  status={props.localNodeStatus}
+                  runtimeSummary={props.localNodeRuntimeSummary}
+                  consolePresentation={props.connectionConsolePresentation}
+                  gatewayControl={null}
+                  eventPreview=""
+                  draft={props.localNodeModelDraft}
+                  onChange={props.onUpdateLocalNodeModelDraft}
+                  onRefresh={props.onRefreshLocalNodeDiagnostics}
+                  onStart={props.onStartLocalNodeService}
+                  onStop={props.onStopLocalNodeService}
+                  onRestart={props.onRestartLocalNodeService}
+                  onSave={props.onSaveLocalNodeModelConfig}
+                  onExport={props.onExportLocalNodeDiagnostics}
+                  onReset={props.onResetLocalNodeCredentials}
+                  onRepair={props.onRunWorkerSetup}
+                  onRunConversationTest={props.onRunLocalNodeConversationTest}
+                />
+              </div>
             </div>
 
             <div className="connection-sidebar-column worker-sidebar-column">
               <section className="surface worker-node-summary-card">
-                <div className="section-head compact-head">
-                  <div>
-                    <div className="section-kicker">本机链路</div>
-                    <h3>{props.heroTitle}</h3>
-                  </div>
-                </div>
+                <SectionHeader
+                  kicker="本机链路"
+                  title={props.heroTitle}
+                  description="把当前机器的发现地址、网关连接和节点身份收在同一块，切换或排障时不需要再来回找信息。"
+                />
                 <div className="worker-wizard-identity worker-node-address-card">
                   <div className="worker-wizard-identity-ip">
                     {props.workerGatewayConnection.remoteNode?.lan_ip || String(props.localNodeStatus?.diagnostics?.lan_ip || props.currentNodeLanIp || "检测中…")}
@@ -419,6 +437,20 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   <div className="worker-node-address-meta">
                     发现端口 {props.workerSetup.discovery_port} · 当前机器节点地址
                   </div>
+                </div>
+                <div className="worker-node-summary-metrics">
+                  <MetricCard
+                    label="连接状态"
+                    value={props.workerGatewayConnection.label}
+                    detail={props.localNodeStatus?.service_status || props.localNodeStatus?.state || "待检测"}
+                    tone={props.workerGatewayConnection.state === "gateway_reachable_node_connected" ? "healthy" : "warning"}
+                  />
+                  <MetricCard
+                    label="节点 ID"
+                    value={props.workerSetup.node_id || "未填写"}
+                    detail={props.localNodeStatus?.node_kind === "local" ? "网关内置节点" : "远端工作节点"}
+                    tone="accent"
+                  />
                 </div>
                 <div className="prep-strip-list worker-node-prep-list">
                   <PrepStrip label="节点配置" detail={props.setupCompletedRoles.has("worker_node") ? "当前机器节点已完成配置" : "尚未完成节点配置"} tone={props.setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
@@ -430,6 +462,16 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                     tone={props.workerGatewayConnection.state === "gateway_reachable_node_connected" || resolveTokenDisplayState(props.workerSetup.node_token).status === "paired" ? "good" : "warn"}
                   />
                 </div>
+                <InfoList
+                  className="worker-node-summary-info"
+                  items={[
+                    { label: "连接详情", value: props.workerGatewayConnection.detail, multiline: true },
+                    { label: "配对密钥", value: hasText(props.workerSetup.pairing_key) ? "已填写，可在安装修复区显示或修改" : "未填写", multiline: true },
+                    ...(props.workerGatewayConnection.remoteNode
+                      ? [{ label: "网关侧节点记录", value: summarizeRemoteNode(props.workerGatewayConnection.remoteNode), multiline: true }]
+                      : []),
+                  ]}
+                />
               </section>
 
               <SurfaceCard className="command-surface connection-assessment-surface">
@@ -463,6 +505,13 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                     assessment?.balanced_channel_capacity !== null &&
                     assessment?.balanced_max_concurrency !== null;
                   const latestAssessmentTime = assessment?.finished_at || assessment?.started_at || null;
+                  const latestFailureRound =
+                    assessment?.rounds ? [...assessment.rounds].reverse().find((round) => !round.stable) ?? null : null;
+                  const assessmentFailureDetail =
+                    latestFailureRound?.first_error ||
+                    latestFailureRound?.failure_details?.[0] ||
+                    assessment?.last_error ||
+                    "";
                   const recentRounds = assessment?.rounds?.slice(-2) ?? [];
                   return (
                     <div className="connection-assessment-sidebar-shell" style={{ marginTop: 12 }}>
@@ -516,30 +565,32 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                           tone="healthy"
                         />
                         <MetricCard
-                          label="平衡方案"
+                          label="稳定轮次"
                           value={
                             balancedRecommendationAvailable
                               ? `${assessment?.balanced_channel_capacity}/${assessment?.balanced_max_concurrency}`
                               : "-"
                           }
+                          detail="优先选择平均延迟 <= 5000ms 的最后稳定轮次"
                           tone="accent"
                         />
                       </div>
 
                       <div style={{ marginTop: 12 }}>
-                        <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 6 }}>压测轮数</div>
-                        <select
+                        <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 6 }}>最大轮数</div>
+                        <input
+                          type="number"
+                          min={1}
+                          max={999}
+                          step={1}
                           value={configuredMaxRounds}
                           onChange={(event) => props.onAssessmentMaxRoundsChange(Number(event.target.value) || 1)}
                           disabled={props.busyKey !== null || assessmentStatus === "running"}
                           style={{ width: "100%" }}
-                        >
-                          {[5, 10, 20, 30, 50, 100].map((value) => (
-                            <option key={`worker-assessment-rounds-${value}`} value={value}>
-                              {value} 轮
-                            </option>
-                          ))}
-                        </select>
+                        />
+                        <div style={{ marginTop: 6, fontSize: 11, opacity: 0.6 }}>
+                          当前支持 1 - 999 轮，命中失败、超时或延迟阈值时会自动提前停止。
+                        </div>
                       </div>
 
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
@@ -550,7 +601,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                         />
                         <MetricCard
                           label="当前摘要"
-                          value={assessment?.summary || assessment?.start_blocking_reason || "待执行压测"}
+                          value={assessmentFailureDetail || assessment?.summary || assessment?.start_blocking_reason || "待执行压测"}
                           tone="warning"
                         />
                       </div>
@@ -635,6 +686,11 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                                   </SignalBadge>
                                   <span style={{ opacity: 0.7 }}>{round.summary}</span>
                                 </div>
+                                {round.first_error ? (
+                                  <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-secondary, rgba(15, 23, 42, 0.72))" }}>
+                                    {round.first_error}
+                                  </div>
+                                ) : null}
                               </div>
                             );
                           })}
@@ -646,12 +702,11 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
               </SurfaceCard>
 
               <section className="surface worker-node-install-card">
-                <div className="section-head compact-head">
-                  <div>
-                    <div className="section-kicker">节点安装</div>
-                    <h3>安装或重装当前机器节点</h3>
-                  </div>
-                </div>
+                <SectionHeader
+                  kicker="安装修复"
+                  title="安装或重装并升级当前机器节点"
+                  description="这一块只负责安装层和配对入口，不和上面的运行控制混用。"
+                />
                 <div className="connection-form-grid worker-node-install-grid">
                   <label><span>节点 ID</span><input value={props.workerSetup.node_id} onChange={(event) => props.onUpdateWorkerSetup("node_id", event.target.value)} /></label>
                   <label><span>目标网关地址</span><input value={props.workerSetup.gateway_base_url} onChange={(event) => props.onUpdateWorkerSetup("gateway_base_url", event.target.value)} placeholder="http://192.168.0.18:8300" /></label>
@@ -682,32 +737,11 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 </details>
                 <div className="inline-actions worker-node-install-actions">
                   <button type="button" onClick={props.onRunWorkerSetup} disabled={props.busyKey !== null}>
-                    {props.busyKey === "setup-worker" ? "安装中..." : "安装当前机器节点"}
+                    {props.busyKey === "setup-worker" ? "重装升级中..." : "重装并升级当前机器节点"}
                   </button>
                   <button type="button" className="ghost-button" onClick={props.onProbeWorkerGateway} disabled={props.busyKey !== null}>
                     {props.busyKey === "setup-gateway-probe" ? "检测中..." : "检测目标网关"}
                   </button>
-                </div>
-              </section>
-
-              <section className="surface node-role-surface worker-node-role-card">
-                <div className="section-head compact-head">
-                  <div>
-                    <div className="section-kicker">节点说明</div>
-                    <h3>{props.heroDescription}</h3>
-                  </div>
-                </div>
-                <div className="inline-tip">
-                  当前角色只管理本机节点。
-                </div>
-                <div className="info-stack">
-                  <InfoRow label="节点身份" value="远端工作节点（当前机器）" multiline />
-                  <InfoRow label="目标网关地址" value={props.workerSetup.gateway_base_url || "未填写"} multiline />
-                  <InfoRow label="网关连接状态" value={props.workerGatewayConnection.label} multiline />
-                  <InfoRow label="连接详情" value={props.workerGatewayConnection.detail} multiline />
-                  <InfoRow label="节点 ID" value={props.workerSetup.node_id || "未填写"} multiline />
-                  <InfoRow label="配对密钥" value={hasText(props.workerSetup.pairing_key) ? "已填写，可在上方显示/修改" : "未填写"} multiline />
-                  {props.workerGatewayConnection.remoteNode ? <InfoRow label="网关侧节点记录" value={summarizeRemoteNode(props.workerGatewayConnection.remoteNode)} multiline /> : null}
                 </div>
               </section>
             </div>

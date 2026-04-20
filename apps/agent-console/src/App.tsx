@@ -34,6 +34,7 @@ import { clearQuickSetupCache, loadSetupDraft, loadSummaryStateCache, loadUiStat
 import { syncNodeState } from "./consoleStateSync";
 import {
   buildRoleCapabilities,
+  connectionConsolePresentation,
   resolveVisibleWorkspaces,
   roleVariantDescription,
   roleVariantLabel,
@@ -373,6 +374,10 @@ export function App() {
   );
   const connectionWorkspacePresentation = useMemo(
     () => workspacePresentation(roleCapabilities, "connection"),
+    [roleCapabilities],
+  );
+  const connectionConsoleView = useMemo(
+    () => connectionConsolePresentation(roleCapabilities),
     [roleCapabilities],
   );
   const sessionWorkspacePresentation = useMemo(
@@ -768,6 +773,7 @@ export function App() {
     scrollMessagesToBottom,
     handleMessageStreamScroll,
     fetchSessionMessages,
+    isIncrementalSessionMessagesEmpty,
     getSessionMessageCache,
     syncSessionMessageCache,
     applySessionMessageEntry,
@@ -832,6 +838,7 @@ export function App() {
     getSessionMessageCache,
     applySessionMessageEntry,
     fetchSessionMessages,
+    isIncrementalSessionMessagesEmpty,
     syncSessionMessageCache,
     scrollMessagesToBottom,
     setSessions,
@@ -2004,6 +2011,7 @@ export function App() {
               canManageWeChat: roleCapabilities.actions.canManageWeChat,
               canManageNodes: roleCapabilities.actions.canManageNodes,
             }}
+            connectionConsolePresentation={connectionConsoleView}
             currentNodeLanIp={currentNodeLanIp}
             currentGatewayBaseUrl={currentGatewayBaseUrl}
             setupCompletedRoles={setupCompletedRoles}

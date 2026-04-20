@@ -95,3 +95,50 @@ export function getChannelReleaseHint(session: SessionRecord | null, now: number
 export function roleLabel(role: MessageRecord["role"]) {
   return role === "user" ? "微信用户" : role === "bot" ? "Agent 回复" : role === "human" ? "人工坐席" : "系统事件";
 }
+
+function parseDurationMs(metadata: MessageRecord["metadata"]) {
+  const msKeys = ["total_ms", "latency_ms", "model_latency_ms", "inference_ms", "submit_ms"];
+  for (const key of msKeys) {
+    const rawValue = metadata[key];
+    const value = Number(rawValue);
+    if (Number.isFinite(value) && value > 0) return value;
+  }
+
+  const latencySeconds = Number(metadata.latency);
+  if (Number.isFinite(latencySeconds) && latencySeconds > 0) {
+    return latencySeconds * 1000;
+  }
+
+  return null;
+}
+
+function formatDurationLabel(durationMs: number) {
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 10000) return `${(durationMs / 1000).toFixed(1)}s`;
+  if (durationMs < 60000) return `${Math.round(durationMs / 1000)}s`;
+  const minutes = Math.floor(durationMs / 60000);
+  const seconds = Math.round((durationMs % 60000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+export function getReplyDurationLabel(messages: MessageRecord[], index: number) {
+  const message = messages[index];
+  if (!message || (message.role !== "bot" && message.role !== "human")) return "";
+
+  const explicitDuration = parseDurationMs(message.metadata);
+  if (explicitDuration !== null) {
+    return `耗时 ${formatDurationLabel(explicitDuration)}`;
+  }
+
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const previousMessage = messages[cursor];
+    if (previousMessage.role !== "user") continue;
+    const durationMs = new Date(message.created_at).getTime() - new Date(previousMessage.created_at).getTime();
+    if (Number.isFinite(durationMs) && durationMs > 0 && durationMs < 30 * 60 * 1000) {
+      return `响应 ${formatDurationLabel(durationMs)}`;
+    }
+    break;
+  }
+
+  return "";
+}

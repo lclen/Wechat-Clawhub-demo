@@ -32,7 +32,7 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def test_get_updates_raises_session_expired_for_errcode_minus_14(self) -> None:
-        self.service._api_post = AsyncMock(return_value={"ret": None, "errcode": -14, "errmsg": "session timeout"})  # type: ignore[method-assign]
+        self.service._poll_post = AsyncMock(return_value={"ret": None, "errcode": -14, "errmsg": "session timeout"})  # type: ignore[method-assign]
 
         with self.assertRaises(WeChatSessionExpiredError):
             await self.service._get_updates()
@@ -286,7 +286,7 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         client.is_closed = False
         client.post = AsyncMock(side_effect=[response, thumb_response])
-        self.service._http = client
+        self.service._asset_http = client
 
         uploaded = await self.service._cdn_upload_bytes(
             image_bytes=b"fake-image",
@@ -309,7 +309,7 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         client.is_closed = False
         client.post = AsyncMock(return_value=response)
-        self.service._http = client
+        self.service._asset_http = client
 
         uploaded = await self.service._cdn_upload_bytes(
             image_bytes=b"fake-image",
@@ -330,7 +330,7 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         client = AsyncMock()
         client.is_closed = False
         client.post = AsyncMock(return_value=response)
-        self.service._http = client
+        self.service._api_http = client
 
         await self.service._api_post("ilink/bot/sendmessage", {"msg": {"to_user_id": "wechat-user"}}, timeout_s=5.0)
 

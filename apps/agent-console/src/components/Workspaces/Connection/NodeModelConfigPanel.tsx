@@ -5,6 +5,7 @@ import type {
   LocalNodeStatusResponse,
 } from "../../../types";
 import { hasText } from "../../../stringUtils";
+import type { ConnectionConsolePresentation } from "../../../roleCapabilities";
 import { SnippetBlock, ToggleSecretInput } from "./ConnectionUi";
 import {
   CommandBar,
@@ -20,6 +21,7 @@ type NodeModelConfigPanelProps = {
   dirty: boolean;
   status: LocalNodeStatusResponse | null;
   runtimeSummary: { label: string; detail: string };
+  consolePresentation: ConnectionConsolePresentation;
   gatewayControl?: {
     managed: boolean;
     state: string;
@@ -52,6 +54,7 @@ export function NodeModelConfigPanel({
   dirty,
   status,
   runtimeSummary,
+  consolePresentation,
   gatewayControl,
   eventPreview,
   draft,
@@ -89,11 +92,9 @@ export function NodeModelConfigPanel({
       ? "保存中..."
       : applyBusy
       ? "正在重启节点..."
-      : applyJustSucceeded
+      : applyJustSucceeded && dirty
       ? "已应用"
-      : dirty
-      ? "保存并应用"
-      : "重新应用配置";
+      : "保存并应用";
 
   const applyStateLabel =
     applyState === "saving"
@@ -157,25 +158,28 @@ export function NodeModelConfigPanel({
   const canStartService = !serviceRunning && !repairRequired && hasModelConfig;
   const canRestartService = serviceRunning && !repairRequired;
   const canStopService = serviceRunning;
+  const canSaveConfig = dirty && !applyBusy && busyKey === null;
+  const canReapplyConfig = !dirty && !applyBusy && busyKey === null;
   const environmentTone = repairRequired || venvStatus === "broken" ? "warn" : hasModelConfig ? "good" : "neutral";
   const environmentTitle = repairRequired
     ? "当前环境需要修复"
     : venvStatus === "broken"
       ? "Python 环境损坏"
-      : !hasModelConfig
+    : !hasModelConfig
         ? "先补齐模型配置"
         : serviceRunning
           ? "当前可直接管理服务"
           : "当前可直接启动节点";
   const environmentDetail = repairRequired
-    ? repairReason || "当前安装层或运行配置不一致，请使用“重装当前机器节点”。"
+    ? repairReason || "当前安装层或运行配置不一致，请使用“重装并升级当前机器节点”。"
     : venvStatus === "broken"
-      ? "本机节点 `.venv` 不完整，建议直接重装当前机器节点。"
+      ? "本机节点 `.venv` 不完整，建议直接重装并升级当前机器节点。"
       : !hasModelConfig
         ? "当前服务不会自动修复模型配置，请先保存并应用后再启动节点。"
         : serviceRunning
           ? "服务已安装且配置完整，可直接停止、重启或重新应用配置。"
           : "服务已安装且配置完整，可直接启动节点。";
+  const consoleGroups = consolePresentation.groups;
 
   return (
     <SurfaceCard className="node-console-shell" tone="accent">
@@ -183,40 +187,7 @@ export function NodeModelConfigPanel({
         <SectionHeader
           kicker="节点控制台"
           title="本机内置节点与推理后端"
-          description="配置会直接写入 node.env。密钥采用显式管理模式（保留/替换/清空），确保凭据安全且确定。"
-          actions={
-            <div className="inline-actions">
-              {gatewayControl ? (
-                <button
-                  type="button"
-                  className="ghost-button"
-                  onClick={gatewayControl.onRestart}
-                  disabled={gatewayControl.disabled}
-                >
-                  {gatewayControl.busy ? "网关重启中..." : "重启网关"}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={onRefresh}
-                disabled={busyKey !== null}
-              >
-                刷新状态
-              </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={onRestart}
-                disabled={busyKey !== null || applyBusy}
-              >
-                {busyKey === "local-node-restart" || applyBusy ? "重启中..." : "重启节点"}
-              </button>
-              <button type="button" onClick={onSave} disabled={busyKey !== null || applyBusy}>
-                {saveButtonLabel}
-              </button>
-            </div>
-          }
+          description="所有本机相关动作都收在这一块完成。上面看状态，下面做启停、应用、修复和恢复。"
         />
         {gatewayControl ? (
           <div className="connection-host-inline-meta" style={{ marginTop: -8, marginBottom: 12 }}>
@@ -259,48 +230,79 @@ export function NodeModelConfigPanel({
 
       <section className="node-console-section node-console-section-actions">
         <div className="node-console-action-grid">
-          <CommandBar
-            label="运行控制"
-            detail="仅控制服务启停，不修改安装。"
-            className="node-console-action-bar"
-          >
-            <div className="inline-actions">
-              <button type="button" onClick={onStart} disabled={!onStart || busyKey !== null || !canStartService}>
-                {busyKey === "local-node-start" ? "启动中..." : "启动节点"}
-              </button>
-              <button type="button" className="ghost-button" onClick={onStop} disabled={!onStop || busyKey !== null || !canStopService}>
-                {busyKey === "local-node-stop" ? "停止中..." : "停止节点"}
-              </button>
-              <button type="button" className="ghost-button" onClick={onRestart} disabled={busyKey !== null || !canRestartService}>
-                {busyKey === "local-node-restart" || applyBusy ? "重启中..." : "重启节点"}
-              </button>
-            </div>
-          </CommandBar>
-
-          <CommandBar
-            label="配置应用"
-            detail="按当前保存配置重新生效，不重建安装层。"
-            className="node-console-action-bar"
-          >
-            <div className="inline-actions">
-              <button type="button" onClick={onSave} disabled={busyKey !== null || applyBusy}>
-                {saveButtonLabel}
-              </button>
-              <button type="button" className="ghost-button" onClick={onRefresh} disabled={busyKey !== null}>
-                刷新状态
-              </button>
-            </div>
-          </CommandBar>
-
-          {onRepair ? (
+          {consoleGroups.hostGateway.visible && gatewayControl ? (
             <CommandBar
-              label="安装修复"
-              detail="重建 `.venv`、依赖和服务定义，用于修复安装层。"
+              label={consoleGroups.hostGateway.label}
+              detail={consoleGroups.hostGateway.detail}
+              className="node-console-action-bar node-console-action-bar-host"
+            >
+              <div className="inline-actions">
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={gatewayControl.onRestart}
+                  disabled={gatewayControl.disabled}
+                >
+                  {gatewayControl.busy ? "网关重启中..." : "重启网关"}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onRefresh}
+                  disabled={busyKey !== null}
+                >
+                  刷新节点状态
+                </button>
+              </div>
+            </CommandBar>
+          ) : null}
+
+          {consoleGroups.nodeRuntime.visible ? (
+            <CommandBar
+              label={consoleGroups.nodeRuntime.label}
+              detail={consoleGroups.nodeRuntime.detail}
+              className="node-console-action-bar"
+            >
+              <div className="inline-actions">
+                <button type="button" onClick={onStart} disabled={!onStart || busyKey !== null || !canStartService}>
+                  {busyKey === "local-node-start" ? "启动中..." : "启动节点"}
+                </button>
+                <button type="button" className="ghost-button" onClick={onStop} disabled={!onStop || busyKey !== null || !canStopService}>
+                  {busyKey === "local-node-stop" ? "停止中..." : "停止节点"}
+                </button>
+                <button type="button" className="ghost-button" onClick={onRestart} disabled={busyKey !== null || !canRestartService}>
+                  {busyKey === "local-node-restart" || applyBusy ? "重启中..." : "重启节点"}
+                </button>
+              </div>
+            </CommandBar>
+          ) : null}
+
+          {consoleGroups.configApply.visible ? (
+            <CommandBar
+              label={consoleGroups.configApply.label}
+              detail={consoleGroups.configApply.detail}
+              className="node-console-action-bar"
+            >
+              <div className="inline-actions">
+                <button type="button" onClick={onSave} disabled={!canSaveConfig}>
+                  {saveButtonLabel}
+                </button>
+                <button type="button" className="ghost-button" onClick={onSave} disabled={!canReapplyConfig}>
+                  重新应用配置
+                </button>
+              </div>
+            </CommandBar>
+          ) : null}
+
+          {consoleGroups.installRepair.visible && onRepair ? (
+            <CommandBar
+              label={consoleGroups.installRepair.label}
+              detail={consoleGroups.installRepair.detail}
               className="node-console-action-bar"
             >
               <div className="inline-actions">
                 <button type="button" className="ghost-button" onClick={onRepair} disabled={busyKey !== null}>
-                  {busyKey === "setup-worker" ? "重装中..." : "重装当前机器节点"}
+                  {busyKey === "setup-worker" ? "重装升级中..." : "重装并升级当前机器节点"}
                 </button>
                 <button type="button" className="ghost-button" onClick={onExport} disabled={busyKey !== null}>
                   {busyKey === "local-node-export" ? "导出中..." : "导出诊断包"}
@@ -309,10 +311,10 @@ export function NodeModelConfigPanel({
             </CommandBar>
           ) : null}
 
-          {onReset ? (
+          {consoleGroups.dangerRecovery.visible && onReset ? (
             <CommandBar
-              label="高风险恢复"
-              detail="清空节点身份与注册信息，不替代重装。"
+              label={consoleGroups.dangerRecovery.label}
+              detail={consoleGroups.dangerRecovery.detail}
               className="node-console-action-bar node-console-action-bar-danger"
             >
               <div className="inline-actions">
@@ -592,16 +594,6 @@ export function NodeModelConfigPanel({
         <SectionHeader
           kicker="运行时诊断"
           title="底层详情"
-          actions={
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={onExport}
-              disabled={busyKey !== null}
-            >
-              {busyKey === "local-node-export" ? "导出中..." : "导出诊断包"}
-            </button>
-          }
         />
         <InfoList
           items={[

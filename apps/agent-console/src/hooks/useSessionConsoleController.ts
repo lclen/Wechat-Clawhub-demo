@@ -114,6 +114,12 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     return Math.max(0, basis - detail.messages.length);
   }, []);
 
+  const isIncrementalSessionMessagesEmpty = useCallback(
+    (detail: SessionMessagesResponse, previousCursor: number) =>
+      !detail.replace_messages && detail.messages.length === 0 && detail.next_cursor <= previousCursor,
+    [],
+  );
+
   const fetchSessionMessages = useCallback(async (
     sessionId: string,
     fetchOptions?: { remoteGateway?: string | null; afterCount?: number; beforeCount?: number; limit?: number; fallbackToFull?: boolean },
@@ -332,6 +338,7 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     scrollMessagesToBottom,
     handleMessageStreamScroll,
     fetchSessionMessages,
+    isIncrementalSessionMessagesEmpty,
     getSessionMessageCache,
     syncSessionMessageCache,
     applySessionMessageEntry,

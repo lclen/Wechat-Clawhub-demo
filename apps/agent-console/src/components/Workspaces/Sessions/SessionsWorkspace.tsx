@@ -10,6 +10,7 @@ import {
   formatTimeLabel,
   formatWechatIdentity,
   getSessionBadgeLabel,
+  getReplyDurationLabel,
   roleLabel,
   sessionBadgeTone,
   sessionPreview,
@@ -102,7 +103,6 @@ export function SessionsWorkspace({
 }: SessionsWorkspaceProps) {
   const selectedSessionMetrics = selectedSession
     ? [
-        { label: "上下文版本", value: `v${selectedSession.context_version}` },
         { label: "最后调度", value: formatTimeLabel(selectedSession.last_dispatch_at || selectedSession.updated_at, true) },
         { label: "消息总量", value: `${selectedSession.message_count}` },
       ]
@@ -117,13 +117,6 @@ export function SessionsWorkspace({
 
   return (
     <section className="session-workspace-shell">
-      <div className="workspace-heading workspace-heading-command">
-        <div>
-          <div className="section-kicker">Session Command</div>
-          <h2>{title}</h2>
-        </div>
-        {description ? <div className="workspace-caption">{description}</div> : null}
-      </div>
       <section className={`surface session-console-topbar ${effectiveRole === "console_only" && sessionsLoaded && systemStatus === null ? "is-warning" : ""}`}>
         <div className="session-console-topbar-copy">
           <div className="session-console-topbar-head">
@@ -230,17 +223,26 @@ export function SessionsWorkspace({
             <section className="surface transcript-surface">
 
               <div ref={messagesRef as RefObject<HTMLDivElement>} className="message-stream" onScroll={onMessageScroll}>
-                {!selectedSession ? <EmptyState title="选择一个会话后" detail="这里会显示完整聊天内容。" /> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载聊天内容…</div> : !messages.length ? <EmptyState title="当前会话还没有消息" /> : messages.map((message, index) => (
-                  <div key={message.message_id}>
-                    {showDateDivider(messages, index) ? <div className="date-divider">{formatDayLabel(message.created_at)}</div> : null}
-                    <div className={`message-row message-row-${message.role === "user" ? "user" : "assistant"}`}>
-                      <div className={`message-bubble message-bubble-${message.role}`}>
-                        <div className="message-role-line"><span className="message-role">{roleLabel(message.role)}</span>{message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}<span>{formatTimeLabel(message.created_at, true)}</span></div>
-                        <div className="message-content"><MessageContent content={message.content} /></div>
+                {!selectedSession ? <EmptyState title="选择一个会话后" detail="这里会显示完整聊天内容。" /> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载聊天内容…</div> : !messages.length ? <EmptyState title="当前会话还没有消息" /> : messages.map((message, index) => {
+                  const replyDurationLabel = getReplyDurationLabel(messages, index);
+                  const rowTone = message.role === "user" ? "user" : message.role === "system" ? "system" : "assistant";
+                  return (
+                    <div key={message.message_id}>
+                      {showDateDivider(messages, index) ? <div className="date-divider">{formatDayLabel(message.created_at)}</div> : null}
+                      <div className={`message-row message-row-${rowTone}`}>
+                        <div className={`message-bubble message-bubble-${message.role}`}>
+                          <div className="message-role-line">
+                            <span className="message-role">{roleLabel(message.role)}</span>
+                            {message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}
+                            {replyDurationLabel ? <span className="message-reply-duration">{replyDurationLabel}</span> : null}
+                            <span>{formatTimeLabel(message.created_at, true)}</span>
+                          </div>
+                          <div className="message-content"><MessageContent content={message.content} /></div>
+                        </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {typingState && selectedSession ? <div className="message-row message-row-assistant"><div className="message-bubble message-bubble-typing"><div className="typing-line"><span className="typing-dots" aria-hidden="true"><span /><span /><span /></span><span>{typingState}</span></div></div></div> : null}
               </div>
             </section>
@@ -265,12 +267,11 @@ export function SessionsWorkspace({
                   模型自动记录的会话记忆会在这里展示，不占用主聊天工作区宽度。
                 </div>
                 <div className="context-summary">
-                  {selectedSession?.context_summary || "当前还没有摘要，首版先依赖会话上下文版本与最近消息维持跨节点一致性。"}
+                  {selectedSession?.context_summary || "当前还没有摘要，先通过最近消息与当前绑定状态帮助你判断会话运行态。"}
                 </div>
                 <div className="memory-meta-block">
                   <InfoRow label="当前用户" value={selectedSession ? formatWechatIdentity(selectedSession.user_id) : "未选中会话"} multiline />
                   <InfoRow label="会话 ID" value={selectedSession?.session_id || "-"} multiline />
-                  <InfoRow label="上下文版本" value={selectedSession ? `v${selectedSession.context_version}` : "-"} />
                   <InfoRow label="当前节点" value={selectedSession?.assigned_node_id || "未绑定"} />
                   <InfoRow label="当前槽位" value={selectedSession?.assigned_slot_id || "未占用"} />
                   <InfoRow label="路由模式" value={selectedSession ? (selectedSession.routing_mode === "manual" ? "手动绑定" : "自动分配") : "-"} />

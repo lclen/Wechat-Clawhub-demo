@@ -42,6 +42,20 @@ WECHAT_OPENCLAW_COMPAT_VERSION = os.environ.get("WECHAT_OPENCLAW_COMPAT_VERSION"
 DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000
 DEFAULT_API_TIMEOUT_MS = 15_000
 DEFAULT_CONFIG_TIMEOUT_MS = 10_000
+DEFAULT_POLL_CONNECT_TIMEOUT_S = 10.0
+DEFAULT_POLL_READ_TIMEOUT_S = 45.0
+DEFAULT_API_CONNECT_TIMEOUT_S = 10.0
+DEFAULT_API_READ_TIMEOUT_S = 45.0
+DEFAULT_ASSET_CONNECT_TIMEOUT_S = 10.0
+DEFAULT_ASSET_READ_TIMEOUT_S = 45.0
+DEFAULT_WRITE_TIMEOUT_S = 15.0
+DEFAULT_POOL_TIMEOUT_S = 15.0
+DEFAULT_POLL_MAX_CONNECTIONS = 2
+DEFAULT_POLL_MAX_KEEPALIVE_CONNECTIONS = 1
+DEFAULT_API_MAX_CONNECTIONS = 20
+DEFAULT_API_MAX_KEEPALIVE_CONNECTIONS = 10
+DEFAULT_ASSET_MAX_CONNECTIONS = 10
+DEFAULT_ASSET_MAX_KEEPALIVE_CONNECTIONS = 5
 WECHAT_ILINK_APP_ID = os.environ.get("WECHAT_ILINK_APP_ID", "bot")
 CONFIG_CACHE_TTL_S = 86_400
 CONFIG_CACHE_INITIAL_RETRY_S = 2.0
@@ -312,7 +326,9 @@ class WeChatBotService:
             token=settings.wechat_token or "",
             base_url=settings.wechat_base_url or DEFAULT_WECHAT_BASE_URL,
         )
-        self._http: httpx.AsyncClient | None = None
+        self._poll_http: httpx.AsyncClient | None = None
+        self._api_http: httpx.AsyncClient | None = None
+        self._asset_http: httpx.AsyncClient | None = None
         self._poll_task: asyncio.Task | None = None
         self._get_updates_buf = ""
         self._seen_msg_ids: OrderedDict[int, float] = OrderedDict()
@@ -321,6 +337,7 @@ class WeChatBotService:
         self._typing_ticket_cache: dict[str, TypingTicketEntry] = {}
         self._typing_tasks: dict[str, asyncio.Task[None]] = {}
         self._typing_start_time: dict[str, float] = {}
+        self._poll_request_lock = asyncio.Lock()
         self._running = False
         self._received_messages = 0
         self._sent_messages = 0
@@ -389,8 +406,9 @@ class WeChatBotService:
     async def start_polling(self) -> None:
         if self._running or not self._config.token:
             return
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+        self._ensure_poll_http()
+        self._ensure_api_http()
+        self._ensure_asset_http()
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop(), name="wechat-poll-loop")
 
@@ -411,9 +429,7 @@ class WeChatBotService:
             except asyncio.CancelledError:
                 pass
         self._poll_task = None
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
-        self._http = None
+        await self._close_http_clients()
 
     async def send_text(self, *, user_id: str, text: str, context_token: str | None = None) -> str:
         if not self._config.token:
@@ -739,13 +755,11 @@ class WeChatBotService:
                 self._last_error = str(exc)
                 logger.exception("wechat-bot: poll loop error: %s", exc)
                 await asyncio.sleep(2)
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
-        self._http = None
+        await self._close_http_clients()
         logger.info("wechat-bot: poll loop ended")
 
     async def _get_updates(self) -> dict[str, Any]:
-        response = await self._api_post(
+        response = await self._poll_post(
             "ilink/bot/getupdates",
             {"get_updates_buf": self._get_updates_buf or ""},
             timeout_s=self._next_poll_timeout_ms / 1000 + 5,
@@ -866,11 +880,10 @@ class WeChatBotService:
         return ""
 
     async def _api_post(self, endpoint: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+        client = self._ensure_api_http()
         request_body = dict(body)
         request_body.setdefault("base_info", {"channel_version": WECHAT_OPENCLAW_COMPAT_VERSION})
-        response = await self._http.post(
+        response = await client.post(
             f"{self._config.base_url}/{endpoint}",
             headers=self._build_headers(),
             json=request_body,
@@ -879,11 +892,37 @@ class WeChatBotService:
         response.raise_for_status()
         return response.json()
 
+    async def _poll_post(self, endpoint: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
+        async with self._poll_request_lock:
+            client = self._ensure_poll_http()
+            request_body = dict(body)
+            request_body.setdefault("base_info", {"channel_version": WECHAT_OPENCLAW_COMPAT_VERSION})
+            try:
+                response = await client.post(
+                    f"{self._config.base_url}/{endpoint}",
+                    headers=self._build_headers(),
+                    json=request_body,
+                    timeout=timeout_s,
+                )
+                response.raise_for_status()
+                return response.json()
+            except httpx.PoolTimeout:
+                logger.warning(
+                    "wechat-bot: poll client pool timeout, recycling client and retrying next loop"
+                )
+                await self._reset_poll_http_client()
+                raise
+
+    async def _reset_poll_http_client(self) -> None:
+        client = self._poll_http
+        self._poll_http = None
+        if client is not None and not client.is_closed:
+            await client.aclose()
+
     async def _download_remote_asset(self, image_url: str) -> tuple[bytes, str]:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+        client = self._ensure_asset_http()
         _emit_wechat_debug("wechat-bot: remote_image_download start image_url=%s", image_url)
-        response = await self._http.get(image_url, timeout=30.0, follow_redirects=True)
+        response = await client.get(image_url, timeout=30.0, follow_redirects=True)
         response.raise_for_status()
         content_type = response.headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
         _emit_wechat_debug(
@@ -894,6 +933,65 @@ class WeChatBotService:
             content_type,
         )
         return response.content, content_type
+
+    def _build_http_timeout(self, *, connect: float, read: float) -> httpx.Timeout:
+        return httpx.Timeout(connect=connect, read=read, write=DEFAULT_WRITE_TIMEOUT_S, pool=DEFAULT_POOL_TIMEOUT_S)
+
+    def _build_http_limits(self, *, max_connections: int, max_keepalive_connections: int) -> httpx.Limits:
+        return httpx.Limits(
+            max_connections=max_connections,
+            max_keepalive_connections=max_keepalive_connections,
+        )
+
+    def _ensure_poll_http(self) -> httpx.AsyncClient:
+        if self._poll_http is None or self._poll_http.is_closed:
+            self._poll_http = httpx.AsyncClient(
+                timeout=self._build_http_timeout(
+                    connect=DEFAULT_POLL_CONNECT_TIMEOUT_S,
+                    read=DEFAULT_POLL_READ_TIMEOUT_S,
+                ),
+                limits=self._build_http_limits(
+                    max_connections=DEFAULT_POLL_MAX_CONNECTIONS,
+                    max_keepalive_connections=DEFAULT_POLL_MAX_KEEPALIVE_CONNECTIONS,
+                ),
+            )
+        return self._poll_http
+
+    def _ensure_api_http(self) -> httpx.AsyncClient:
+        if self._api_http is None or self._api_http.is_closed:
+            self._api_http = httpx.AsyncClient(
+                timeout=self._build_http_timeout(
+                    connect=DEFAULT_API_CONNECT_TIMEOUT_S,
+                    read=DEFAULT_API_READ_TIMEOUT_S,
+                ),
+                limits=self._build_http_limits(
+                    max_connections=DEFAULT_API_MAX_CONNECTIONS,
+                    max_keepalive_connections=DEFAULT_API_MAX_KEEPALIVE_CONNECTIONS,
+                ),
+            )
+        return self._api_http
+
+    def _ensure_asset_http(self) -> httpx.AsyncClient:
+        if self._asset_http is None or self._asset_http.is_closed:
+            self._asset_http = httpx.AsyncClient(
+                timeout=self._build_http_timeout(
+                    connect=DEFAULT_ASSET_CONNECT_TIMEOUT_S,
+                    read=DEFAULT_ASSET_READ_TIMEOUT_S,
+                ),
+                limits=self._build_http_limits(
+                    max_connections=DEFAULT_ASSET_MAX_CONNECTIONS,
+                    max_keepalive_connections=DEFAULT_ASSET_MAX_KEEPALIVE_CONNECTIONS,
+                ),
+            )
+        return self._asset_http
+
+    async def _close_http_clients(self) -> None:
+        for client in (self._poll_http, self._api_http, self._asset_http):
+            if client is not None and not client.is_closed:
+                await client.aclose()
+        self._poll_http = None
+        self._api_http = None
+        self._asset_http = None
 
     async def _cdn_upload_bytes(
         self,
@@ -965,8 +1063,7 @@ class WeChatBotService:
         thumb_download_param = ""
         for attempt in range(1, UPLOAD_MAX_RETRIES + 1):
             try:
-                if self._http is None or self._http.is_closed:
-                    self._http = httpx.AsyncClient(timeout=httpx.Timeout(connect=10.0, read=45.0, write=15.0, pool=15.0))
+                client = self._ensure_asset_http()
                 _emit_wechat_debug(
                     "wechat-bot: cdn_upload attempt=%d source_url=%s method=POST target=%s ciphertext_bytes=%d",
                     attempt,
@@ -974,7 +1071,7 @@ class WeChatBotService:
                     cdn_url,
                     len(ciphertext),
                 )
-                response = await self._http.post(cdn_url, content=ciphertext, headers=headers, timeout=30.0)
+                response = await client.post(cdn_url, content=ciphertext, headers=headers, timeout=30.0)
                 response.raise_for_status()
                 download_param = response.headers.get("x-encrypted-param", "").strip()
                 if not download_param:
@@ -993,7 +1090,7 @@ class WeChatBotService:
                         thumb_cdn_url,
                         len(thumb_ciphertext),
                     )
-                    thumb_response = await self._http.post(
+                    thumb_response = await client.post(
                         thumb_cdn_url,
                         content=thumb_ciphertext,
                         headers={

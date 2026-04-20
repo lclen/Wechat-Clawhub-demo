@@ -138,6 +138,38 @@ class LocalNodeChannelAssessmentTests(unittest.IsolatedAsyncioTestCase):
         run_assessment.assert_awaited_once()
         self.assertEqual(run_assessment.await_args.kwargs["max_rounds"], 17)
 
+    async def test_build_channel_assessment_result_preserves_failure_details(self) -> None:
+        result = _build_local_node_channel_assessment_result(
+            {
+                "status": "failed",
+                "summary": "failed",
+                "rounds": [
+                    {
+                        "round_index": 1,
+                        "max_concurrency": 1,
+                        "channel_capacity": 2,
+                        "request_count": 1,
+                        "success_count": 0,
+                        "failure_count": 1,
+                        "timeout_count": 0,
+                        "success_rate": 0.0,
+                        "average_latency_ms": 0,
+                        "max_latency_ms": 0,
+                        "stable": False,
+                        "stop_reason": "出现 1 次失败（HTTP 502 Bad Gateway）",
+                        "summary": "0/1 成功",
+                        "first_error": "HTTP 502 Bad Gateway",
+                        "failure_details": ["HTTP 502 Bad Gateway"],
+                    }
+                ],
+            },
+            current_channel_capacity=12,
+            current_max_concurrency=3,
+        )
+
+        self.assertEqual(result.rounds[0].first_error, "HTTP 502 Bad Gateway")
+        self.assertEqual(result.rounds[0].failure_details, ["HTTP 502 Bad Gateway"])
+
 
 class LocalNodeChannelAssessmentConfigTests(unittest.TestCase):
     def test_update_local_node_capacity_config_writes_both_values(self) -> None:

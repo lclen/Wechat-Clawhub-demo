@@ -46,6 +46,26 @@ export type WorkspacePresentation = {
   primaryActionLabel?: string;
 };
 
+export type ConnectionConsoleGroupKey =
+  | "hostGateway"
+  | "nodeRuntime"
+  | "configApply"
+  | "installRepair"
+  | "dangerRecovery";
+
+export type ConnectionConsoleGroupPresentation = {
+  visible: boolean;
+  label: string;
+  detail: string;
+  emphasis?: "default" | "danger";
+};
+
+export type ConnectionConsolePresentation = {
+  recommendedActionLabel: string;
+  recommendedActionDetail: string;
+  groups: Record<ConnectionConsoleGroupKey, ConnectionConsoleGroupPresentation>;
+};
+
 const FULL_WORKSPACE_SET: Record<WorkspaceTab, RoleWorkspaceCapability> = {
   quick_setup: { visible: true, priority: 10 },
   sessions: { visible: true, priority: 20 },
@@ -313,6 +333,17 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
     };
   }
 
+  if (workspace === "sessions" && capabilities.variant === "worker") {
+    return {
+      label: "会话控制台",
+      kicker: "Node Session",
+      description: "",
+      heroTitle: "会话轨与详情工作台",
+      heroDescription: "",
+      primaryActionLabel: "查看会话",
+    };
+  }
+
   if (workspace === "connection" && capabilities.variant === "console") {
     return {
       label: "接入概览",
@@ -336,6 +367,52 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
   }
 
   return base[workspace];
+}
+
+export function connectionConsolePresentation(
+  capabilities: RoleCapabilities,
+): ConnectionConsolePresentation {
+  const isGateway = capabilities.variant === "gateway";
+  const isWorker = capabilities.variant === "worker";
+
+  return {
+    recommendedActionLabel: isGateway ? "前往下方节点控制台" : "在控制台内完成本机操作",
+    recommendedActionDetail: isGateway
+      ? "运行控制、配置应用、安装修复和高风险恢复都收在同一块，不再分散在概览侧栏。"
+      : "本机节点的启停、应用配置和修复动作都在同一控制台里完成，排障时不必来回切换。",
+    groups: {
+      hostGateway: {
+        visible: capabilities.actions.canManageGateway,
+        label: "主机 / 网关控制",
+        detail: isGateway
+          ? "管理当前机器上的主网关与节点状态刷新，不触碰节点安装层。"
+          : "当前角色只观察主机状态，不直接管理网关。",
+      },
+      nodeRuntime: {
+        visible: capabilities.actions.canManageLocalNode,
+        label: "节点运行控制",
+        detail: "仅控制服务启停，不修改安装、不重建环境。",
+      },
+      configApply: {
+        visible: capabilities.actions.canManageLocalNode,
+        label: "配置应用",
+        detail: "将当前保存配置重新生效；保存与重应用都在这组内完成。",
+      },
+      installRepair: {
+        visible: capabilities.actions.canManageLocalNode,
+        label: "安装修复",
+        detail: isWorker
+          ? "用于重建 `.venv`、依赖和服务定义，修复当前机器节点安装层。"
+          : "用于修复网关内置节点的安装层与运行环境，不替代普通重启。",
+      },
+      dangerRecovery: {
+        visible: capabilities.actions.canManageLocalNode,
+        label: "高风险恢复",
+        detail: "清空节点身份与注册信息，不替代重装或升级。",
+        emphasis: "danger",
+      },
+    },
+  };
 }
 
 export function workspacePrimaryActionLabel(capabilities: RoleCapabilities, workspace: WorkspaceTab): string | undefined {

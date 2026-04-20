@@ -280,6 +280,8 @@ class LocalNodeChannelAssessmentRound(BaseModel):
     stable: bool = False
     stop_reason: str = ""
     summary: str = ""
+    first_error: str = ""
+    failure_details: list[str] = Field(default_factory=list)
 
 
 class LocalNodeChannelAssessmentResult(BaseModel):

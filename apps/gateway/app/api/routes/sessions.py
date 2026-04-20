@@ -88,6 +88,7 @@ async def stream_session_overview(
     websocket: WebSocket,
 ) -> None:
     await websocket.accept()
+    logger.info("session_overview_ws connected client=%s", getattr(websocket.client, "host", "unknown"))
 
     try:
         store: RedisStore = websocket.app.state.redis_store
@@ -114,7 +115,7 @@ async def stream_session_overview(
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        pass
+        logger.info("session_overview_ws disconnected client=%s", getattr(websocket.client, "host", "unknown"))
     except SessionManagerError:
         await websocket.close(code=4503, reason="session_unavailable")
     finally:
@@ -210,6 +211,11 @@ async def stream_session_messages(
     session_id: str,
 ) -> None:
     await websocket.accept()
+    logger.info(
+        "session_detail_ws connected session_id=%s client=%s",
+        session_id,
+        getattr(websocket.client, "host", "unknown"),
+    )
 
     try:
         store: RedisStore = websocket.app.state.redis_store
@@ -252,7 +258,11 @@ async def stream_session_messages(
     except SessionNotFoundError:
         await websocket.close(code=4404, reason="session_not_found")
     except WebSocketDisconnect:
-        pass
+        logger.info(
+            "session_detail_ws disconnected session_id=%s client=%s",
+            session_id,
+            getattr(websocket.client, "host", "unknown"),
+        )
     except SessionManagerError:
         await websocket.close(code=4503, reason="session_unavailable")
     finally:

@@ -22,21 +22,24 @@ class GatewayClient:
     def __init__(self, settings: NodeSettings) -> None:
         self._settings = settings
         self._identity = build_node_identity(settings)
-        self._client: httpx.AsyncClient | None = None
-        self._ensure_client()
+        self._api_client: httpx.AsyncClient | None = None
+        self._pull_client: httpx.AsyncClient | None = None
+        self._ensure_clients()
 
     async def close(self) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-            self._client = None
+        for client in (self._api_client, self._pull_client):
+            if client is not None:
+                await client.aclose()
+        self._api_client = None
+        self._pull_client = None
 
     async def reconfigure(self) -> None:
         await self.close()
         self._identity = build_node_identity(self._settings)
-        self._ensure_client()
+        self._ensure_clients()
 
     async def register(self) -> dict[str, Any]:
-        client = self._get_client()
+        client = self._get_api_client()
         payload = {
             "node_id": self._settings.node_id,
             "base_url": self._identity.base_url,
@@ -62,7 +65,7 @@ class GatewayClient:
         return response.json()
 
     async def heartbeat(self, current_load: int, last_error: str | None = None) -> dict[str, Any]:
-        client = self._get_client()
+        client = self._get_api_client()
         payload = {
             "current_load": current_load,
             "status": "healthy" if current_load < self._settings.max_concurrency else "busy",
@@ -87,7 +90,7 @@ class GatewayClient:
         return self._identity
 
     async def pull_task(self, *, wait_seconds: int | None = None) -> dict[str, Any] | None:
-        client = self._get_client()
+        client = self._get_pull_client()
         response = await client.post(
             f"/api/nodes/{self._settings.node_id}/pull-task",
             params={"wait_seconds": self._settings.pull_wait_seconds if wait_seconds is None else wait_seconds},
@@ -98,7 +101,7 @@ class GatewayClient:
         return data.get("task")
 
     async def list_sessions(self) -> list[dict[str, Any]]:
-        client = self._get_client()
+        client = self._get_api_client()
         response = await client.get("/api/sessions")
         response.raise_for_status()
         data = response.json()
@@ -116,7 +119,7 @@ class GatewayClient:
         content: str,
         metadata: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        client = self._get_client()
+        client = self._get_api_client()
         payload = {
             "task_id": task_id,
             "session_id": session_id,
@@ -157,7 +160,7 @@ class GatewayClient:
         error_message: str,
         retryable: bool = False,
     ) -> dict[str, Any]:
-        client = self._get_client()
+        client = self._get_api_client()
         payload = {
             "task_id": task_id,
             "session_id": session_id,
@@ -197,7 +200,7 @@ class GatewayClient:
         last_active_at: str | None = None,
         released_at: str | None = None,
     ) -> dict[str, Any]:
-        client = self._get_client()
+        client = self._get_api_client()
         payload = {
             "session_id": session_id,
             "node_id": self._settings.node_id,
@@ -227,24 +230,40 @@ class GatewayClient:
             **connect_kwargs,
         )
 
-    def _ensure_client(self) -> None:
+    def _ensure_clients(self) -> None:
         if not self._settings.gateway_base_url.strip():
-            self._client = None
+            self._api_client = None
+            self._pull_client = None
             return
         if not self._settings.node_token.strip() and not self._settings.local_direct_auth:
-            self._client = None
+            self._api_client = None
+            self._pull_client = None
             return
         headers = self._build_gateway_headers()
-        self._client = httpx.AsyncClient(
-            base_url=self._settings.gateway_base_url.rstrip("/"),
+        common_kwargs = {
+            "base_url": self._settings.gateway_base_url.rstrip("/"),
+            "headers": headers,
+        }
+        self._api_client = httpx.AsyncClient(
+            **common_kwargs,
             timeout=httpx.Timeout(30.0),
-            headers=headers,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
+        )
+        self._pull_client = httpx.AsyncClient(
+            **common_kwargs,
+            timeout=httpx.Timeout(connect=10.0, read=max(30.0, float(self._settings.pull_wait_seconds) + 10.0), write=15.0, pool=15.0),
+            limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
         )
 
-    def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None:
+    def _get_api_client(self) -> httpx.AsyncClient:
+        if self._api_client is None:
             raise RuntimeError("Gateway client is not configured yet; pair this node first.")
-        return self._client
+        return self._api_client
+
+    def _get_pull_client(self) -> httpx.AsyncClient:
+        if self._pull_client is None:
+            raise RuntimeError("Gateway client is not configured yet; pair this node first.")
+        return self._pull_client
 
     def _mask_token(self, token: str | None) -> str:
         if token is None:

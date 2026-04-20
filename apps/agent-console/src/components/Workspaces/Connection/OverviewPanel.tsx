@@ -22,6 +22,11 @@ type OverviewPanelProps = {
   prepItems: ConnectionPrepItem[];
   signalCards: ConnectionSignalCardData[];
   canManageGateway: boolean;
+  localConsoleHint?: {
+    label: string;
+    detail: string;
+    onFocus: () => void;
+  } | null;
   modelCheckText?: string | null;
   lastError?: string | null;
   dispatchWarning?: string | null;
@@ -34,12 +39,8 @@ type OverviewPanelProps = {
   onRefreshChannelAssessment: () => void;
   onAssessmentMaxRoundsChange: (value: number) => void;
   onAssessmentApplyStrategyChange: (value: "balanced" | "peak") => void;
-  onStartLocalNodeService: () => void;
-  onStopLocalNodeService: () => void;
   onStartChannelAssessment: () => void;
   onApplyChannelAssessment: () => void;
-  startLocalNodeLabel: string;
-  stopLocalNodeLabel: string;
   applyChannelAssessmentLabel: string;
   runModelCheckLabel: string;
   toggleDispatchLabel: string;
@@ -53,6 +54,7 @@ export function OverviewPanel({
   prepItems,
   signalCards,
   canManageGateway,
+  localConsoleHint,
   modelCheckText,
   lastError,
   dispatchWarning,
@@ -65,12 +67,8 @@ export function OverviewPanel({
   onRefreshChannelAssessment,
   onAssessmentMaxRoundsChange,
   onAssessmentApplyStrategyChange,
-  onStartLocalNodeService,
-  onStopLocalNodeService,
   onStartChannelAssessment,
   onApplyChannelAssessment,
-  startLocalNodeLabel,
-  stopLocalNodeLabel,
   applyChannelAssessmentLabel,
   runModelCheckLabel,
   toggleDispatchLabel,
@@ -87,7 +85,6 @@ export function OverviewPanel({
 
   const assessment = localNodeStatus?.channel_assessment;
   const assessmentStatus = assessment?.status || "idle";
-  const localNodeRunning = localNodeStatus?.state === "running";
   const taskStream = localNodeStatus?.task_stream;
 
   const configuredMaxRounds = Math.max(
@@ -109,6 +106,11 @@ export function OverviewPanel({
   const latestFailureRound = assessment?.rounds
     ? [...assessment.rounds].reverse().find((round) => !round.stable) ?? null
     : null;
+  const assessmentFailureDetail =
+    latestFailureRound?.first_error ||
+    latestFailureRound?.failure_details?.[0] ||
+    assessment?.last_error ||
+    "";
 
   const appliedPlanValue =
     assessmentApplyStrategy === "balanced" && balancedRecommendationAvailable
@@ -172,7 +174,7 @@ export function OverviewPanel({
 
       {/* 2. 主控制面 */}
       <SurfaceCard className="command-surface connection-ops-surface" tone="strong">
-        <SectionHeader kicker="控制面" title="网关调度动作" />
+        <SectionHeader kicker="运行摘要" title="网关调度与建议动作" />
         <div className="connection-ops-grid" style={{ gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 12 }}>
           {signalCards.map((card) => (
             <MetricCard
@@ -202,6 +204,18 @@ export function OverviewPanel({
             <SignalBadge tone="neutral">只读</SignalBadge>
           )}
         </CommandBar>
+        {localConsoleHint ? (
+          <CommandBar
+            label={localConsoleHint.label}
+            detail={localConsoleHint.detail}
+            className="connection-overview-hint-bar"
+            style={{ marginTop: 12 }}
+          >
+            <button type="button" className="ghost-button" onClick={localConsoleHint.onFocus}>
+              定位到节点控制台
+            </button>
+          </CommandBar>
+        ) : null}
         {supplementalItems.length ? (
           <InfoList items={supplementalItems} style={{ marginTop: 12, borderTop: "1px solid var(--line)", paddingTop: 12 }} />
         ) : null}
@@ -324,32 +338,29 @@ export function OverviewPanel({
             />
             <MetricCard
               label="当前摘要"
-              value={assessment?.summary || assessmentStartHint || "-"}
+              value={assessmentFailureDetail || assessment?.summary || assessmentStartHint || "-"}
               tone="warning"
             />
           </div>
 
-          <div className="assessment-controls" style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={onStartLocalNodeService}
-                disabled={busy || assessmentBusy || !canManageGateway || localNodeRunning}
-                style={{ flex: 1 }}
-              >
-                启动
-              </button>
-              <button
-                type="button"
-                className="ghost-button"
-                onClick={onStopLocalNodeService}
-                disabled={busy || assessmentBusy || !canManageGateway || !localNodeRunning}
-                style={{ flex: 1 }}
-              >
-                停止
-              </button>
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 6 }}>最大轮数</div>
+            <input
+              type="number"
+              min={1}
+              max={MAX_CHANNEL_ASSESSMENT_ROUNDS}
+              step={1}
+              value={configuredMaxRounds}
+              onChange={(event) => onAssessmentMaxRoundsChange(Number(event.target.value) || 1)}
+              disabled={busy || assessmentBusy || !canManageGateway}
+              style={{ width: "100%" }}
+            />
+            <div style={{ marginTop: 6, fontSize: 11, opacity: 0.6 }}>
+              当前支持 1 - {MAX_CHANNEL_ASSESSMENT_ROUNDS} 轮，达到失败、超时或延迟阈值时会提前停止。
             </div>
+          </div>
+
+          <div className="assessment-controls" style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 8 }}>
             <button
               type="button"
               onClick={onStartChannelAssessment}
@@ -420,6 +431,11 @@ export function OverviewPanel({
                         </SignalBadge>
                         <span style={{ opacity: 0.5 }}>{round.summary}</span>
                       </div>
+                      {round.first_error ? (
+                        <div style={{ marginTop: 6, fontSize: 11, color: "var(--text-secondary, rgba(15, 23, 42, 0.72))" }}>
+                          {round.first_error}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })}

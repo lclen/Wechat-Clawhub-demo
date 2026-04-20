@@ -712,7 +712,7 @@ def create_app() -> FastAPI:
             status = await local_node_status()
             return LocalNodeActionResponse(detail="本机节点已经处于运行状态。", status=status)
         if repair_reason:
-            raise HTTPException(status_code=409, detail=f"当前本机节点需要修复：{repair_reason} 请使用“重装当前机器节点”。")
+            raise HTTPException(status_code=409, detail=f"当前本机节点需要修复：{repair_reason} 请使用“重装并升级当前机器节点”。")
         if not _local_node_has_model_config(model_settings):
             raise HTTPException(status_code=409, detail="当前节点配置尚未完整，请先保存并应用模型配置后再启动。")
 

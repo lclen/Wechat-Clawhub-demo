@@ -33,7 +33,7 @@ class GatewayClientPullTaskTests(unittest.IsolatedAsyncioTestCase):
         )
         client = GatewayClient(settings)
         await client.close()
-        client._client = httpx.AsyncClient(  # type: ignore[assignment]
+        client._pull_client = httpx.AsyncClient(  # type: ignore[assignment]
             base_url=settings.gateway_base_url.rstrip("/"),
             headers={"X-Node-Token": settings.node_token},
             transport=httpx.MockTransport(handler),
