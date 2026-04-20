@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from app.access.wechat_bot import WeChatBotService
 
 logger = logging.getLogger(__name__)
+uvicorn_logger = logging.getLogger("uvicorn.error")
 
 
 class OutgoingDispatcher:
@@ -59,6 +60,13 @@ class OutgoingDispatcher:
                 len(content),
                 (time.perf_counter() - started_at) * 1000,
             )
+            uvicorn_logger.warning(
+                "[dispatch] outgoing_reply_sent session=%s channel=%s chars=%s send_ms=%.0f",
+                session.session_id,
+                session.channel,
+                len(content),
+                (time.perf_counter() - started_at) * 1000,
+            )
         except Exception as exc:
             self._transcript_writer.append_event(
                 session_id=session.session_id,
@@ -68,6 +76,14 @@ class OutgoingDispatcher:
                 payload={"error": str(exc)},
             )
             logger.exception(
+                "[dispatch] outgoing_reply_failed session=%s channel=%s chars=%s send_ms=%.0f error=%s",
+                session.session_id,
+                session.channel,
+                len(content),
+                (time.perf_counter() - started_at) * 1000,
+                exc,
+            )
+            uvicorn_logger.warning(
                 "[dispatch] outgoing_reply_failed session=%s channel=%s chars=%s send_ms=%.0f error=%s",
                 session.session_id,
                 session.channel,

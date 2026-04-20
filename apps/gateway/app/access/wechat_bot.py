@@ -451,23 +451,48 @@ class WeChatBotService:
                 "context_token": ctx or None,
             }
         }
-        response = await self._api_post("ilink/bot/sendmessage", payload, timeout_s=DEFAULT_API_TIMEOUT_MS / 1000)
-        ret = response.get("ret")
-        errcode = response.get("errcode")
-        if ret not in (None, 0) or errcode not in (None, 0):
-            raise RuntimeError(
-                f"WeChat sendmessage failed: ret={ret} errcode={errcode} errmsg={response.get('errmsg', '')}"
-            )
-        self._sent_messages += 1
-        logger.info(
-            "wechat-bot: send_text success user_id=%s text_len=%d rate_limit_ms=%.0f total_ms=%.0f client_id=%s",
+        _emit_wechat_debug(
+            "wechat-bot: send_text start user_id=%s text_len=%d preview=%s client_id=%s",
             user_id,
             len(text),
-            rate_limit_ms,
-            (time.perf_counter() - started_at) * 1000,
+            self._preview_text(text),
             client_id,
         )
-        return client_id
+        try:
+            response = await self._api_post("ilink/bot/sendmessage", payload, timeout_s=DEFAULT_API_TIMEOUT_MS / 1000)
+            self._ensure_api_ok(response, action="sendmessage")
+            self._sent_messages += 1
+            self._last_error = None
+            _emit_wechat_debug(
+                "wechat-bot: send_text success user_id=%s text_len=%d rate_limit_ms=%.0f total_ms=%.0f client_id=%s",
+                user_id,
+                len(text),
+                rate_limit_ms,
+                (time.perf_counter() - started_at) * 1000,
+                client_id,
+            )
+            logger.info(
+                "wechat-bot: send_text success user_id=%s text_len=%d rate_limit_ms=%.0f total_ms=%.0f client_id=%s",
+                user_id,
+                len(text),
+                rate_limit_ms,
+                (time.perf_counter() - started_at) * 1000,
+                client_id,
+            )
+            return client_id
+        except Exception as exc:
+            self._last_error = (
+                f"WeChat send_text failed for {user_id}: {type(exc).__name__}: {exc}"
+            )[:2000]
+            _emit_wechat_debug(
+                "wechat-bot: send_text failed user_id=%s text_len=%d preview=%s client_id=%s error=%s",
+                user_id,
+                len(text),
+                self._preview_text(text),
+                client_id,
+                exc,
+            )
+            raise
 
     async def send_markdown(self, *, user_id: str, content: str, context_token: str | None = None) -> list[str]:
         if not self._config.token:
@@ -573,6 +598,7 @@ class WeChatBotService:
             len(client_ids),
             (time.perf_counter() - started_at) * 1000,
         )
+        self._last_error = None
         return client_ids
 
     async def send_asset_url(self, *, user_id: str, asset_url: str, context_token: str | None = None) -> str:
@@ -883,14 +909,34 @@ class WeChatBotService:
         client = self._ensure_api_http()
         request_body = dict(body)
         request_body.setdefault("base_info", {"channel_version": WECHAT_OPENCLAW_COMPAT_VERSION})
-        response = await client.post(
-            f"{self._config.base_url}/{endpoint}",
-            headers=self._build_headers(),
-            json=request_body,
-            timeout=timeout_s,
-        )
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = await client.post(
+                f"{self._config.base_url}/{endpoint}",
+                headers=self._build_headers(),
+                json=request_body,
+                timeout=timeout_s,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPError as exc:
+            response = getattr(exc, "response", None)
+            if response is not None:
+                body_preview = response.text[:300].replace("\r", " ").replace("\n", " ")
+                _emit_wechat_debug(
+                    "wechat-bot: api_post status_error endpoint=%s status=%s body=%s",
+                    endpoint,
+                    response.status_code,
+                    body_preview,
+                )
+                raise RuntimeError(
+                    f"WeChat {endpoint} HTTP {response.status_code}: {body_preview}"
+                ) from exc
+            _emit_wechat_debug(
+                "wechat-bot: api_post http_error endpoint=%s error=%s",
+                endpoint,
+                exc,
+            )
+            raise RuntimeError(f"WeChat {endpoint} request failed: {exc}") from exc
 
     async def _poll_post(self, endpoint: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
         async with self._poll_request_lock:

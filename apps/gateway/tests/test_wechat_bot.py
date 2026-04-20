@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import AsyncMock, Mock
 
+import httpx
+
 from app.access.wechat_bot import (
     WeChatBotService,
     WeChatSessionExpiredError,
@@ -178,6 +180,45 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
             asset_url="https://example.com/files/manual.pdf",
             context_token="ctx-token",
         )
+
+    async def test_send_text_sets_last_error_on_send_failure(self) -> None:
+        self.service._config.token = "token"
+        self.service._api_post = AsyncMock(side_effect=RuntimeError("send down"))  # type: ignore[method-assign]
+
+        with self.assertRaises(RuntimeError):
+            await self.service.send_text(user_id="wechat-user", text="你好")
+
+        self.assertIn("WeChat send_text failed for wechat-user", self.service._last_error or "")
+        self.assertIn("send down", self.service._last_error or "")
+
+    async def test_send_text_clears_last_error_after_success(self) -> None:
+        self.service._config.token = "token"
+        self.service._last_error = "old error"
+        self.service._api_post = AsyncMock(return_value={"ret": 0, "errcode": 0})  # type: ignore[method-assign]
+
+        client_id = await self.service.send_text(user_id="wechat-user", text="你好")
+
+        self.assertTrue(client_id.startswith("wechat-claw-hub-"))
+        self.assertIsNone(self.service._last_error)
+
+    async def test_api_post_wraps_http_status_error_with_body_preview(self) -> None:
+        self.service._config.token = "token"
+        request = httpx.Request("POST", "https://example.com/ilink/bot/sendmessage")
+        response = httpx.Response(403, request=request, text="forbidden payload")
+
+        class FakeClient:
+            is_closed = False
+
+            async def post(self, *args, **kwargs):
+                raise httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+        self.service._api_http = FakeClient()
+
+        with self.assertRaises(RuntimeError) as ctx:
+            await self.service._api_post("ilink/bot/sendmessage", {"msg": {}}, timeout_s=1.0)
+
+        self.assertIn("HTTP 403", str(ctx.exception))
+        self.assertIn("forbidden payload", str(ctx.exception))
 
     async def test_send_uploaded_media_matches_openakita_aes_shape(self) -> None:
         self.service._config.token = "token"
