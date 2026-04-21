@@ -18243,8 +18243,8 @@
       "source_file": "D:\\wechat-claw-hub\\apps\\gateway\\tests\\test_inbound_aggregation.py",
       "source_location": "L152",
       "weight": 1.0,
-      "_src": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
-      "_tgt": "uselaunchercontroller_sleep",
+      "_src": "uselaunchercontroller_sleep",
+      "_tgt": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
       "source": "uselaunchercontroller_sleep",
       "target": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path"
     },
@@ -42854,11 +42854,11 @@
       "source_file": "D:\\wechat-claw-hub\\apps\\gateway\\tests\\test_inbound_aggregation.py",
       "source_location": "L9",
       "weight": 0.8,
-      "_src": "test_inbound_aggregation_inboundaggregationservicetests",
-      "_tgt": "queue_dispatchqueueerror",
+      "_src": "queue_dispatchqueueerror",
+      "_tgt": "test_inbound_aggregation_inboundaggregationservicetests",
+      "confidence_score": 0.5,
       "source": "queue_dispatchqueueerror",
-      "target": "test_inbound_aggregation_inboundaggregationservicetests",
-      "confidence_score": 0.5
+      "target": "test_inbound_aggregation_inboundaggregationservicetests"
     },
     {
       "relation": "uses",
@@ -42879,8 +42879,8 @@
       "source_file": "D:\\wechat-claw-hub\\apps\\gateway\\tests\\test_inbound_aggregation.py",
       "source_location": "L148",
       "weight": 1.0,
-      "_src": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
-      "_tgt": "queue_dispatchqueueerror",
+      "_src": "queue_dispatchqueueerror",
+      "_tgt": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
       "source": "queue_dispatchqueueerror",
       "target": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path"
     },
@@ -44595,8 +44595,8 @@
       "source_file": "D:\\wechat-claw-hub\\apps\\gateway\\app\\services\\inbound_aggregation.py",
       "source_location": "L225",
       "weight": 1.0,
-      "_src": "inbound_aggregation_inboundaggregationservice_dispatch_batch_after_quiet_window",
-      "_tgt": "queue_dispatchqueue_handle_inbound_dispatch_failure",
+      "_src": "queue_dispatchqueue_handle_inbound_dispatch_failure",
+      "_tgt": "inbound_aggregation_inboundaggregationservice_dispatch_batch_after_quiet_window",
       "source": "queue_dispatchqueue_handle_inbound_dispatch_failure",
       "target": "inbound_aggregation_inboundaggregationservice_dispatch_batch_after_quiet_window"
     },
@@ -50835,8 +50835,8 @@
       "source_file": "D:\\wechat-claw-hub\\apps\\gateway\\tests\\test_inbound_aggregation.py",
       "source_location": "L144",
       "weight": 1.0,
-      "_src": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
-      "_tgt": "session_inboundmessagerequest",
+      "_src": "session_inboundmessagerequest",
+      "_tgt": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
       "source": "session_inboundmessagerequest",
       "target": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path"
     },
@@ -53835,8 +53835,8 @@
       "source_file": "D:\\wechat-claw-hub\\apps\\gateway\\tests\\test_inbound_aggregation.py",
       "source_location": "L151",
       "weight": 1.0,
-      "_src": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
-      "_tgt": "inbound_aggregation_inboundaggregationservice_ingest_text_message",
+      "_src": "inbound_aggregation_inboundaggregationservice_ingest_text_message",
+      "_tgt": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path",
       "source": "inbound_aggregation_inboundaggregationservice_ingest_text_message",
       "target": "test_inbound_aggregation_inboundaggregationservicetests_test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path"
     },

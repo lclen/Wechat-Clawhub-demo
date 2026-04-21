@@ -1,7 +1,7 @@
 # Graph Report - D:\wechat-claw-hub  (2026-04-21)
 
 ## Corpus Check
-- 189 files · ~568,318 words
+- 189 files · ~569,178 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -444,12 +444,12 @@ Nodes (0):
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `RedisStore` connect `Community 0` to `Community 2`, `Community 3`, `Community 4`, `Community 5`, `Community 7`, `Community 9`?**
-  _High betweenness centrality (0.068) - this node is a cross-community bridge._
-- **Why does `syncSessionMessageCache()` connect `Community 1` to `Community 0`, `Community 2`?**
-  _High betweenness centrality (0.067) - this node is a cross-community bridge._
+- **Why does `SetupService` connect `Community 3` to `Community 0`, `Community 2`, `Community 5`, `Community 8`, `Community 9`, `Community 10`?**
+  _High betweenness centrality (0.095) - this node is a cross-community bridge._
 - **Why does `Settings` connect `Community 5` to `Community 0`, `Community 2`, `Community 3`, `Community 8`, `Community 9`, `Community 14`?**
-  _High betweenness centrality (0.061) - this node is a cross-community bridge._
+  _High betweenness centrality (0.066) - this node is a cross-community bridge._
+- **Why does `syncSessionMessageCache()` connect `Community 1` to `Community 0`, `Community 2`?**
+  _High betweenness centrality (0.062) - this node is a cross-community bridge._
 - **Are the 29 inferred relationships involving `SetupService` (e.g. with `Remove node from Redis active set only, keeping pairing token intact.     The n` and `GatewaySummaryBuildError`) actually correct?**
   _`SetupService` has 29 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 45 inferred relationships involving `Worker` (e.g. with `NodeSettings` and `NodeDiagnostics`) actually correct?**

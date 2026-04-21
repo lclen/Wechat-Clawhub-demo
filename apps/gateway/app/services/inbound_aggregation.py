@@ -207,7 +207,7 @@ class InboundAggregationService:
                 current_session = await self._session_manager.get_session(session_id)
                 delivered = await self._outgoing_dispatcher.send_progress_notice(
                     current_session,
-                    "真正思考中....",
+                    "正在思考中....",
                 )
                 if delivered:
                     self._record_event(

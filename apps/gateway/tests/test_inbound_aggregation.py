@@ -80,7 +80,7 @@ class InboundAggregationServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.dispatch_queue.enqueue_for_inbound.await_args.kwargs["query_text"], "第一段")
         self.assertEqual(self.dispatch_queue.enqueue_for_inbound.await_args.kwargs["source_message_ids"], ["msg-1"])
         self.assertEqual(self.dispatch_queue.enqueue_for_inbound.await_args.kwargs["aggregation_batch_id"], result.batch_id)
-        self.outgoing_dispatcher.send_progress_notice.assert_awaited_once_with(session, "真正思考中....")
+        self.outgoing_dispatcher.send_progress_notice.assert_awaited_once_with(session, "正在思考中....")
         self.outgoing_dispatcher.start_processing_indicator.assert_awaited_once_with(session)
 
     async def test_superseded_batch_reuses_previous_segments_for_new_dispatch(self) -> None:
