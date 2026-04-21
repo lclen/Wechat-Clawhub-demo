@@ -9,6 +9,21 @@ from launcher.process_manager import ProcessManager
 
 
 class ProcessManagerLocalNodeStartTests(unittest.TestCase):
+    def test_reinstall_local_node_uses_managed_reinstall_path(self) -> None:
+        manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
+        profile = LauncherProfile(workdir="D:/wechat-claw-hub")
+        layout = LauncherWorkdirLayout(root="D:/wechat-claw-hub")
+
+        manager._install_or_restart_local_node = Mock()  # type: ignore[method-assign]
+        running_status = LauncherComponentStatus(name="local-node", state=ComponentState.RUNNING, detail="已运行")
+        manager.local_node_service_status = Mock(return_value=running_status)  # type: ignore[method-assign]
+
+        manager.reinstall_local_node(profile, layout)
+
+        manager._install_or_restart_local_node.assert_called_once_with(profile, layout)
+        manager.local_node_service_status.assert_called_once_with(profile, layout)
+        self.assertEqual(manager._statuses["local-node"], running_status)
+
     def test_start_local_node_reuses_existing_service_when_no_repair_needed(self) -> None:
         manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
         profile = LauncherProfile(workdir="D:/wechat-claw-hub")

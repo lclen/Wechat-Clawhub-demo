@@ -215,6 +215,10 @@ class ProcessManager:
         self._stop_local_node_service(profile, layout)
         self.start_local_node(profile, layout)
 
+    def reinstall_local_node(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
+        self._install_or_restart_local_node(profile, layout)
+        self._statuses["local-node"] = self.local_node_service_status(profile, layout)
+
     def local_node_service_repair_reason(
         self,
         profile: LauncherProfile,

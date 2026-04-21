@@ -751,6 +751,42 @@ def create_app() -> FastAPI:
         status = await local_node_status()
         return LocalNodeActionResponse(detail="本机节点服务已执行重装/重启。", status=status)
 
+    @app.post("/local/node/service/reinstall", response_model=LocalNodeActionResponse)
+    async def reinstall_local_node_service() -> LocalNodeActionResponse:
+        profile = app.state.profile
+        layout = build_layout(profile)
+        ensure_layout(layout)
+        install_dir = app.state.manager.local_node_runtime_install_dir(profile, layout)  # type: ignore[attr-defined]
+        apply_state_path = _local_node_apply_state_path(install_dir)
+
+        current_assessment_task = getattr(app.state, "local_node_channel_assessment_task", None)
+        if current_assessment_task is not None and not current_assessment_task.done():
+            raise HTTPException(status_code=409, detail="当前通道评估仍在执行中，请等待完成后再重装本机节点。")
+
+        _write_local_node_apply_state(apply_state_path, config_apply_state="restarting")
+        try:
+            await asyncio.to_thread(app.state.manager.reinstall_local_node, profile, layout)
+        except PermissionError as exc:
+            _write_local_node_apply_state(
+                apply_state_path,
+                config_apply_state="failed",
+                last_apply_error=str(exc),
+            )
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except Exception as exc:
+            _write_local_node_apply_state(
+                apply_state_path,
+                config_apply_state="failed",
+                last_apply_error=str(exc),
+            )
+            raise HTTPException(status_code=500, detail=f"重装并升级本机节点失败：{exc}") from exc
+
+        _write_local_node_apply_state(apply_state_path, config_apply_state="applied")
+        invalidate_cached_response("bootstrap_status_cache")
+        invalidate_cached_response("local_node_status_cache")
+        status = await local_node_status()
+        return LocalNodeActionResponse(detail="已重装并升级当前机器节点。", status=status)
+
     @app.post("/local/node/channel-assessment/start", response_model=LocalNodeChannelAssessmentResult)
     async def start_local_node_channel_assessment(
         payload: LocalNodeChannelAssessmentStartRequest,

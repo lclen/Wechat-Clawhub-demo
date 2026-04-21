@@ -156,6 +156,7 @@ type ConnectionWorkspaceProps = {
   onUpdateWorkerSetup: <K extends keyof WorkerNodeSetupConfig>(key: K, value: WorkerNodeSetupConfig[K]) => void;
   onToggleWorkerPairingKeyVisible: () => void;
   onRunWorkerSetup: () => void;
+  onRepairCurrentMachineNode: () => void;
   onProbeWorkerGateway: () => void;
   onUpdateManualPair: <K extends keyof ManualPairDraft>(key: K, value: ManualPairDraft[K]) => void;
   onManualPairNode: () => void;
@@ -269,7 +270,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                     onRestart={props.onRestartLocalNodeService}
                     onSave={props.onSaveLocalNodeModelConfig}
                     onExport={props.onExportLocalNodeDiagnostics}
-                    onRepair={props.onRunWorkerSetup}
+                    onRepair={props.onRepairCurrentMachineNode}
                     onReset={props.onResetLocalNodeCredentials}
                     onRunConversationTest={props.onRunLocalNodeConversationTest}
                   />

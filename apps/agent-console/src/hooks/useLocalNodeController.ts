@@ -230,6 +230,21 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     }
   }, [refreshLocalNodeDiagnostics, requestJson, setLocalNodeStatus, setNotice, withBusy]);
 
+  const reinstallLocalNodeService = useCallback(async () => {
+    try {
+      const result = await withBusy(
+        "local-node-reinstall",
+        () => requestJson<LocalNodeActionResponse>("/local/node/service/reinstall", { method: "POST" }),
+      );
+      setLocalNodeStatus(result.status);
+      await refreshLauncherStatusRef.current();
+      await refreshLocalNodeDiagnostics();
+      setNotice(result.detail || "已重装并升级当前机器节点。");
+    } catch (error) {
+      setNotice(`重装并升级当前机器节点失败：${(error as Error).message}`);
+    }
+  }, [refreshLocalNodeDiagnostics, requestJson, setLocalNodeStatus, setNotice, withBusy]);
+
   const startLocalNodeService = useCallback(async () => {
     try {
       const result = await withBusy(
@@ -370,6 +385,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     saveLocalNodeModelConfig,
     startLocalNodeService,
     restartLocalNodeService,
+    reinstallLocalNodeService,
     stopLocalNodeService,
     exportLocalNodeDiagnostics,
     resetLocalNodeCredentials,

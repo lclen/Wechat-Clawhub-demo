@@ -485,6 +485,7 @@ export function App() {
     saveLocalNodeModelConfig,
     startLocalNodeService,
     restartLocalNodeService,
+    reinstallLocalNodeService,
     stopLocalNodeService,
     exportLocalNodeDiagnostics,
     resetLocalNodeCredentials,
@@ -721,6 +722,13 @@ export function App() {
       workerGatewayAutoProbeKeyRef.current = "";
     },
   });
+  const repairCurrentMachineNode = useCallback(() => {
+    if (currentRoleIsWorker) {
+      void runWorkerSetup({ showResultScreen: false });
+      return;
+    }
+    void reinstallLocalNodeService();
+  }, [currentRoleIsWorker, reinstallLocalNodeService, runWorkerSetup]);
   const refreshAllConnectionStatus = useCallback(async () => {
     try {
       await withBusy("connection-refresh-all", async () => {
@@ -2063,6 +2071,7 @@ export function App() {
             onUpdateWorkerSetup={updateWorkerSetup}
             onToggleWorkerPairingKeyVisible={toggleWorkerPairingKeyVisible}
             onRunWorkerSetup={() => void runWorkerSetup({ showResultScreen: false })}
+            onRepairCurrentMachineNode={repairCurrentMachineNode}
             onProbeWorkerGateway={() => void probeWorkerGateway({ reason: "manual" })}
             onUpdateManualPair={updateManualPair}
             onManualPairNode={() => void manualPairNode()}

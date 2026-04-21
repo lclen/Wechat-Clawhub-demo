@@ -302,7 +302,7 @@ export function NodeModelConfigPanel({
             >
               <div className="inline-actions">
                 <button type="button" className="ghost-button" onClick={onRepair} disabled={busyKey !== null}>
-                  {busyKey === "setup-worker" ? "重装升级中..." : "重装并升级当前机器节点"}
+                  {busyKey === "setup-worker" || busyKey === "local-node-reinstall" ? "重装升级中..." : "重装并升级当前机器节点"}
                 </button>
                 <button type="button" className="ghost-button" onClick={onExport} disabled={busyKey !== null}>
                   {busyKey === "local-node-export" ? "导出中..." : "导出诊断包"}
