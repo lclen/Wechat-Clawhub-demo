@@ -126,6 +126,9 @@ class RedisStore:
     async def lpop(self, key: str) -> str | None:
         return await self._client.lpop(key)
 
+    async def lrem(self, key: str, count: int, value: str) -> int:
+        return await self._client.lrem(key, count, value)
+
     async def blpop(self, key: str, timeout_seconds: int) -> tuple[str, str] | None:
         if timeout_seconds <= 0:
             return await self._client.blpop(key, timeout=timeout_seconds)

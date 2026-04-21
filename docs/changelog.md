@@ -4,6 +4,115 @@
 
 ---
 
+## 2026-04-21 — 入站文本防抖聚合与“真正思考中”接收态上线
+
+### 背景
+
+在真实微信对话里，用户经常把一轮问题拆成多段连续发送，例如：
+
+- 第一条先发“你好”
+- 第二条补发“帮我看看这个型号”
+- 第三条再补一句“顺便给我接线图”
+
+旧链路会把每一段都直接送进：
+
+- `ingest_inbound_message`
+- `enqueue_for_inbound`
+
+结果就是：
+
+- 一轮真实提问可能被派成多次任务
+- 微信侧 typing 提示会在消息刚入站时过早亮起
+- 如果处理过程中用户补发内容，旧任务结果还有机会晚到并继续出站，污染当前轮会话
+
+### 本次调整
+
+- `apps/gateway/app/services/inbound_aggregation.py`
+  - 新增统一入站聚合层 `InboundAggregationService`
+  - 微信与 `/api/messages/inbound` 文本入口统一先经过聚合层
+  - 默认静默窗口 `3s`
+  - 原始用户分段继续正常落库
+  - 真正派发时只把合并后的 `query_text` 送进任务模型
+
+- `apps/gateway/app/models/session.py`
+  - `InboundMessageResponse` 增加：
+    - `batch_id`
+    - `batch_state`
+
+- `apps/gateway/app/models/dispatch.py`
+  - `DispatchTask` 增加：
+    - `query_text`
+    - `source_message_ids`
+    - `aggregation_batch_id`
+    - `supersedes_task_id`
+
+- `apps/gateway/app/dispatch/queue.py`
+  - 增加 active task supersede 能力
+  - 增加 cancel tombstone 与 stale result/failure drop 判定
+  - 旧任务晚到时不再继续追加 bot message 或发往微信
+
+- `apps/gateway/app/services/outgoing_dispatcher.py`
+  - 新增只用于微信进度提示的能力：
+    - `send_progress_notice()`
+    - `start_processing_indicator()`
+  - `真正思考中....` 只在 dispatch accepted 后发送
+
+- `apps/gateway/app/access/wechat_bot.py`
+  - 微信文本入站改为走聚合层
+  - 不再在消息刚入站时立刻启动 typing loop
+
+- `services/claw-node/claw_node/worker.py`
+- `services/claw-node/claw_node/dify_client.py`
+  - `task-stream-v2` 下支持 `cancel_task`
+  - worker 收到取消后会中止本地 task coroutine
+  - 若 Dify 已拿到远端 `task_id`，会 best-effort 调用 stop
+
+### 当前行为
+
+- 首条文本进入后先进入 `collecting`
+- `3s` 内补发文本会并入同一批次，并重置计时
+- 派发成功后，微信才收到 `真正思考中....`
+- 若处理中补发文本：
+  - 旧批次被标记 superseded
+  - 微信收到 `已收到补充，正在按最新内容重新思考…`
+  - 新批次会继承旧批次已收集的文本段，而不是只保留最后一段
+- 会话观察台继续显示真实原始分段
+- 模型 prompt 中当前轮用户输入只出现一次合并后的版本
+
+### 当前边界
+
+- 只对纯文本做防抖聚合
+- 图片 / 文件 / 语音仍走现有链路，不参与文本 batch
+- HTTP polling 降级节点当前只保证：
+  - 旧结果不再下发
+  - 新批次会重开
+- 实时中断仍以 `task-stream-v2` 在线节点为最佳路径
+
+### 测试覆盖
+
+- `apps/gateway/tests/test_wechat_bot.py`
+- `apps/gateway/tests/test_dispatch_queue.py`
+- `apps/gateway/tests/test_inbound_aggregation.py`
+- `services/claw-node/tests/test_worker.py`
+- `services/claw-node/tests/test_gateway_client.py`
+- `apps/agent-console` 构建通过
+
+### 运行态验收信号
+
+应重点观察：
+
+- `inbound_batch_collecting`
+- `inbound_batch_dispatched`
+- `wechat_progress_notice_sent`
+- `inbound_batch_superseded`
+- `wechat_restart_notice_sent`
+- `stale_result_dropped`
+- `stale_failure_dropped`
+
+如果用户把一句话拆成三段发送，且三段间隔都小于 `3s`，当前应只看到一轮正式任务派发。
+
+---
+
 ## 2026-04-14 — 节点-网关任务流长延迟修复与协议收口
 
 ### 背景

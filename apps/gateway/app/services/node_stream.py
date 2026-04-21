@@ -89,6 +89,34 @@ class NodeStreamBroker:
             await self.unregister_connection(node_id)
             return False
 
+    async def cancel_task(
+        self,
+        node_id: str,
+        *,
+        task_id: str,
+        session_id: str,
+        aggregation_batch_id: str,
+        reason: str,
+    ) -> bool:
+        connection = self._connections.get(node_id)
+        if not connection or connection.protocol_version != "task-stream-v2":
+            return False
+
+        try:
+            await connection.websocket.send_json(
+                {
+                    "type": "cancel_task",
+                    "task_id": task_id,
+                    "session_id": session_id,
+                    "aggregation_batch_id": aggregation_batch_id,
+                    "reason": reason,
+                }
+            )
+            return True
+        except Exception:
+            await self.unregister_connection(node_id)
+            return False
+
     async def receive_event(self, node_id: str, websocket: WebSocket) -> NodeStreamReceiveResult:
         """
         Receive an event from a node.

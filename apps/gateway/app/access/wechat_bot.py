@@ -31,6 +31,7 @@ from app.services.transcript_writer import TranscriptWriter
 
 if TYPE_CHECKING:
     from app.dispatch.queue import DispatchQueue
+    from app.services.inbound_aggregation import InboundAggregationService
 
 logger = logging.getLogger(__name__)
 uvicorn_logger = logging.getLogger("uvicorn.error")
@@ -287,6 +288,15 @@ def _build_markdown_image_summary(segments: list[OutboundMarkdownSegment]) -> st
     return _normalize_outbound_plaintext(_markdown_to_plaintext("".join(text_parts)))
 
 
+def _build_delivery_text(raw_text: str) -> str:
+    return _normalize_outbound_plaintext(_markdown_to_plaintext(raw_text))
+
+
+def _build_asset_label_text(segment: OutboundMarkdownSegment) -> str:
+    alt = segment.alt.strip()
+    return f"【{alt}】" if alt else ""
+
+
 class WeChatSessionExpiredError(RuntimeError):
     """Raised when the upstream WeChat bot session has expired."""
 
@@ -319,6 +329,7 @@ class WeChatBotService:
         self._store = store
         self._session_manager = session_manager
         self._dispatch_queue = dispatch_queue
+        self._inbound_aggregation: InboundAggregationService | None = None
         self._transcript_writer = transcript_writer
         self._settings = settings
 
@@ -346,6 +357,9 @@ class WeChatBotService:
 
     def attach_dispatch_queue(self, dispatch_queue: "DispatchQueue") -> None:
         self._dispatch_queue = dispatch_queue
+
+    def attach_inbound_aggregation(self, inbound_aggregation: "InboundAggregationService") -> None:
+        self._inbound_aggregation = inbound_aggregation
 
     async def initialize(self) -> None:
         try:
@@ -522,33 +536,49 @@ class WeChatBotService:
             return [client_id] if client_id else []
 
         client_ids: list[str] = []
-        summary_text = _build_markdown_image_summary(segments)
-        if summary_text:
-            _emit_wechat_debug(
-                "wechat-bot: send_markdown summary_text_start user_id=%s text_len=%d image_count=%d file_count=%d",
-                user_id,
-                len(summary_text),
-                len(image_segments),
-                len(file_segments),
-            )
-            summary_started_at = time.perf_counter()
-            summary_client_id = await self.send_text(user_id=user_id, text=summary_text, context_token=context_token)
-            logger.info(
-                "wechat-bot: send_markdown summary_text_finished user_id=%s text_len=%d send_ms=%.0f client_id=%s",
-                user_id,
-                len(summary_text),
-                (time.perf_counter() - summary_started_at) * 1000,
-                summary_client_id,
-            )
-            if summary_client_id:
-                client_ids.append(summary_client_id)
+        pending_text_parts: list[str] = []
+        asset_index = 0
 
-        for segment_index, segment in enumerate(asset_segments, start=1):
+        async def flush_text_chunk(raw_text: str, *, label_text: str = "", reason: str = "chunk") -> None:
+            text = _build_delivery_text(raw_text)
+            if label_text and label_text not in text:
+                text = f"{text}\n{label_text}" if text else label_text
+            if not text:
+                return
+            _emit_wechat_debug(
+                "wechat-bot: send_markdown text_chunk_start user_id=%s reason=%s text_len=%d preview=%s",
+                user_id,
+                reason,
+                len(text),
+                self._preview_text(text),
+            )
+            text_started_at = time.perf_counter()
+            text_client_id = await self.send_text(user_id=user_id, text=text, context_token=context_token)
+            logger.info(
+                "wechat-bot: send_markdown text_chunk_finished user_id=%s reason=%s text_len=%d send_ms=%.0f client_id=%s",
+                user_id,
+                reason,
+                len(text),
+                (time.perf_counter() - text_started_at) * 1000,
+                text_client_id,
+            )
+            if text_client_id:
+                client_ids.append(text_client_id)
+
+        for segment in segments:
+            if segment.kind == "text":
+                pending_text_parts.append(segment.text)
+                continue
+            asset_index += 1
+            raw_text = "".join(pending_text_parts)
+            pending_text_parts = []
+            label_text = _build_asset_label_text(segment)
             try:
+                await flush_text_chunk(raw_text, label_text=label_text, reason=f"asset-{asset_index}-lead")
                 _emit_wechat_debug(
                     "wechat-bot: send_markdown asset_chunk_start user_id=%s segment_index=%d asset_kind=%s asset_url=%s alt=%s",
                     user_id,
-                    segment_index,
+                    asset_index,
                     segment.kind,
                     segment.url,
                     segment.alt,
@@ -562,7 +592,7 @@ class WeChatBotService:
                 logger.info(
                     "wechat-bot: send_markdown asset_chunk_finished user_id=%s segment_index=%d asset_kind=%s asset_url=%s send_ms=%.0f client_id=%s",
                     user_id,
-                    segment_index,
+                    asset_index,
                     segment.kind,
                     segment.url,
                     (time.perf_counter() - asset_started_at) * 1000,
@@ -577,7 +607,7 @@ class WeChatBotService:
                     _emit_wechat_debug(
                         "wechat-bot: send_markdown asset_fallback_text_start user_id=%s segment_index=%d asset_kind=%s fallback_len=%d asset_url=%s",
                         user_id,
-                        segment_index,
+                        asset_index,
                         segment.kind,
                         len(fallback_text),
                         segment.url,
@@ -591,7 +621,7 @@ class WeChatBotService:
                     logger.info(
                         "wechat-bot: send_markdown asset_fallback_text_finished user_id=%s segment_index=%d asset_kind=%s fallback_len=%d send_ms=%.0f client_id=%s",
                         user_id,
-                        segment_index,
+                        asset_index,
                         segment.kind,
                         len(fallback_text),
                         (time.perf_counter() - fallback_started_at) * 1000,
@@ -599,6 +629,7 @@ class WeChatBotService:
                     )
                     if fallback_client_id:
                         client_ids.append(fallback_client_id)
+        await flush_text_chunk("".join(pending_text_parts), reason="trailing")
         logger.info(
             "wechat-bot: send_markdown success user_id=%s segment_count=%d client_count=%d total_ms=%.0f",
             user_id,
@@ -857,29 +888,33 @@ class WeChatBotService:
                 "wechat_session_id": str(raw.get("session_id") or ""),
             },
         )
-        if self._dispatch_queue is None:
-            raise RuntimeError("WeChat dispatch queue is not attached")
-        session, message = await self._session_manager.ingest_inbound_message(payload)
+        if self._dispatch_queue is None or self._inbound_aggregation is None:
+            raise RuntimeError("WeChat inbound aggregation is not attached")
         try:
-            task = await self._dispatch_queue.enqueue_for_inbound(session, message)
+            result = await self._inbound_aggregation.ingest_text_message(payload)
         except (DispatchQueueError, SessionManagerError, ValueError) as exc:
-            session = await self._dispatch_queue.handle_inbound_dispatch_failure(
-                session=session,
-                message=message,
-                exc=exc,
+            session = await self._session_manager.ensure_session(
+                channel="wechat",
+                user_id=user_id,
+                agent_id=self._settings.default_agent_id,
+            )
+            self._transcript_writer.append_event(
+                session_id=session.session_id,
+                event_type="wechat_message_ingest_failed",
+                actor_type="system",
+                actor_id="gateway",
+                payload={"error": str(exc), "wechat_message_id": str(message_id or "")},
             )
             self._received_messages += 1
             return
-        if task is None:
+        if result.task_id is None and result.batch_state != "collecting":
             self._transcript_writer.append_event(
-                session_id=session.session_id,
+                session_id=result.session.session_id,
                 event_type="wechat_message_received_no_task",
                 actor_type="system",
                 actor_id="gateway",
-                payload={"message_id": message.message_id},
+                payload={"message_id": result.message.message_id, "batch_id": result.batch_id},
             )
-        else:
-            await self.start_typing_loop(user_id=user_id, context_token=context_token)
         self._received_messages += 1
 
     async def _handle_switch_command(self, *, user_id: str, context_token: str) -> None:
@@ -1083,31 +1118,7 @@ class WeChatBotService:
                     "thumb_filesize": thumb_filesize,
                 }
             )
-        upload_resp = await self._api_post(
-            "ilink/bot/getuploadurl",
-            request_payload,
-            timeout_s=DEFAULT_API_TIMEOUT_MS / 1000,
-        )
-        upload_full_url = str(upload_resp.get("upload_full_url") or "").strip()
-        upload_param = str(upload_resp.get("upload_param") or "").strip()
-        thumb_upload_param = str(upload_resp.get("thumb_upload_param") or "").strip()
-        _emit_wechat_debug(
-            "wechat-bot: getuploadurl success to_user_id=%s media_type=%s rawsize=%d has_upload_full_url=%s has_upload_param=%s has_thumb_upload_param=%s",
-            to_user_id,
-            media_type,
-            rawsize,
-            str(bool(upload_full_url)).lower(),
-            str(bool(upload_param)).lower(),
-            str(bool(thumb_upload_param)).lower(),
-        )
-        if not upload_full_url and not upload_param:
-            raise RuntimeError("WeChat getuploadurl returned neither upload_full_url nor upload_param")
         ciphertext = _encrypt_aes_ecb(image_bytes, aeskey)
-        cdn_url = upload_full_url or (
-            f"{DEFAULT_WECHAT_CDN_BASE_URL}/upload"
-            f"?encrypted_query_param={quote(upload_param, safe='')}"
-            f"&filekey={quote(filekey, safe='')}"
-        )
         headers = {
             "Content-Type": "application/octet-stream",
             "Content-Length": str(len(ciphertext)),
@@ -1117,6 +1128,31 @@ class WeChatBotService:
         thumb_download_param = ""
         for attempt in range(1, UPLOAD_MAX_RETRIES + 1):
             try:
+                upload_resp = await self._api_post(
+                    "ilink/bot/getuploadurl",
+                    request_payload,
+                    timeout_s=DEFAULT_API_TIMEOUT_MS / 1000,
+                )
+                upload_full_url = str(upload_resp.get("upload_full_url") or "").strip()
+                upload_param = str(upload_resp.get("upload_param") or "").strip()
+                thumb_upload_param = str(upload_resp.get("thumb_upload_param") or "").strip()
+                _emit_wechat_debug(
+                    "wechat-bot: getuploadurl success to_user_id=%s media_type=%s rawsize=%d attempt=%d has_upload_full_url=%s has_upload_param=%s has_thumb_upload_param=%s",
+                    to_user_id,
+                    media_type,
+                    rawsize,
+                    attempt,
+                    str(bool(upload_full_url)).lower(),
+                    str(bool(upload_param)).lower(),
+                    str(bool(thumb_upload_param)).lower(),
+                )
+                if not upload_full_url and not upload_param:
+                    raise RuntimeError("WeChat getuploadurl returned neither upload_full_url nor upload_param")
+                cdn_url = upload_full_url or (
+                    f"{DEFAULT_WECHAT_CDN_BASE_URL}/upload"
+                    f"?encrypted_query_param={quote(upload_param, safe='')}"
+                    f"&filekey={quote(filekey, safe='')}"
+                )
                 client = self._ensure_asset_http()
                 _emit_wechat_debug(
                     "wechat-bot: cdn_upload attempt=%d source_url=%s method=POST target=%s ciphertext_bytes=%d",

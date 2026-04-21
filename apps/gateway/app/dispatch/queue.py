@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import json
 import logging
 import time
 from uuid import uuid4
@@ -69,10 +70,19 @@ class DispatchQueue:
     def _session_task_key(self, session_id: str) -> str:
         return f"wch:dispatch:session:{session_id}"
 
+    def _cancelled_task_key(self, task_id: str) -> str:
+        return f"wch:dispatch:cancelled:{task_id}"
+
     async def enqueue_for_inbound(
         self,
         session: SessionRecord,
         message: MessageRecord,
+        *,
+        recent_messages_override: list[MessageRecord] | None = None,
+        query_text: str | None = None,
+        source_message_ids: list[str] | None = None,
+        aggregation_batch_id: str | None = None,
+        supersedes_task_id: str | None = None,
     ) -> DispatchTask | None:
         if session.status != SessionStatus.BOT_ACTIVE:
             return None
@@ -109,12 +119,18 @@ class DispatchQueue:
             )
             return None
         session, _, _ = allocation
-        recent_messages, _, _, _, _ = await self._session_manager.get_messages(session.session_id)
+        recent_messages = recent_messages_override
+        if recent_messages is None:
+            recent_messages, _, _, _, _ = await self._session_manager.get_messages(session.session_id)
         task = await self._enqueue_task(
             session=session,
             message=message,
             recent_messages=recent_messages,
             context_summary=session.context_summary,
+            query_text=query_text or message.content,
+            source_message_ids=list(source_message_ids or [message.message_id]),
+            aggregation_batch_id=aggregation_batch_id or "",
+            supersedes_task_id=supersedes_task_id,
             context_version=message.metadata.get("context_version") and int(message.metadata["context_version"]) or session.context_version,
             retry_count=0,
         )
@@ -170,6 +186,62 @@ class DispatchQueue:
             },
         )
 
+    async def supersede_active_task(
+        self,
+        session_id: str,
+        *,
+        expected_task_id: str | None,
+        reason: str,
+    ) -> SessionRecord:
+        session = await self._session_manager.get_session(session_id)
+        active_task_id = expected_task_id or session.active_task_id
+        if not active_task_id:
+            return session
+        if session.active_task_id and expected_task_id and session.active_task_id != expected_task_id:
+            return session
+        try:
+            task = await self._require_task(active_task_id)
+        except DispatchTaskNotFoundError:
+            return await self._session_manager.clear_dispatch_state(session_id, expected_task_id=active_task_id)
+
+        await self._mark_task_cancelled(
+            task.task_id,
+            {
+                "reason": reason,
+                "aggregation_batch_id": task.aggregation_batch_id,
+                "session_id": task.session_id,
+            },
+        )
+        if self._node_stream is not None:
+            self._node_stream.mark_task_finished(task.node_id, task.task_id)
+            await self._node_stream.cancel_task(
+                task.node_id,
+                task_id=task.task_id,
+                session_id=task.session_id,
+                aggregation_batch_id=task.aggregation_batch_id,
+                reason=reason,
+            )
+        try:
+            await self._store.lrem(self._node_queue_key(task.node_id), 1, task.task_id)
+            await self._delete_session_task_reference(task.session_id, task.task_id)
+            await self._store.expire(self._task_key(task.task_id), self._settings.dispatch_task_timeout_seconds)
+            await self._store.expire(self._inflight_key(task.task_id), self._settings.dispatch_task_timeout_seconds)
+        except RedisError as exc:
+            raise DispatchQueueError("Failed to supersede active dispatch task") from exc
+        self._transcript_writer.append_event(
+            session_id=session_id,
+            event_type="inbound_batch_superseded",
+            actor_type="system",
+            actor_id="gateway",
+            node_id=task.node_id,
+            payload={
+                "task_id": task.task_id,
+                "aggregation_batch_id": task.aggregation_batch_id,
+                "reason": reason,
+            },
+        )
+        return await self._session_manager.clear_dispatch_state(session_id, expected_task_id=task.task_id)
+
     async def pull_for_node(self, node_id: str, wait_seconds: int = 0) -> DispatchTask | None:
         try:
             queue_key = self._node_queue_key(node_id)
@@ -223,6 +295,20 @@ class DispatchQueue:
         task = await self._require_task(payload.task_id)
         await self._ensure_inflight(payload.task_id, payload.node_id)
         session = await self._session_manager.get_session(task.session_id)
+        if await self._should_drop_task_completion(task, session, payload.context_version, payload.metadata):
+            self._transcript_writer.append_event(
+                session_id=task.session_id,
+                event_type="stale_result_dropped",
+                actor_type="system",
+                actor_id=payload.node_id,
+                node_id=payload.node_id,
+                payload={
+                    "task_id": payload.task_id,
+                    "aggregation_batch_id": task.aggregation_batch_id,
+                },
+            )
+            await self._cleanup_task(task)
+            return session
         if payload.context_version != task.context_version:
             raise DispatchQueueError("Task result context version mismatch")
         append_started_at = time.perf_counter()
@@ -268,6 +354,21 @@ class DispatchQueue:
         task = await self._require_task(payload.task_id)
         await self._ensure_inflight(payload.task_id, payload.node_id)
         session = await self._session_manager.get_session(task.session_id)
+        if await self._should_drop_task_completion(task, session, payload.context_version, payload.metadata):
+            self._transcript_writer.append_event(
+                session_id=task.session_id,
+                event_type="stale_failure_dropped",
+                actor_type="system",
+                actor_id=payload.node_id,
+                node_id=payload.node_id,
+                payload={
+                    "task_id": payload.task_id,
+                    "aggregation_batch_id": task.aggregation_batch_id,
+                    "error_code": payload.error_code,
+                },
+            )
+            await self._cleanup_task(task)
+            return session
         self._transcript_writer.append_event(
             session_id=task.session_id,
             event_type="dispatch_failed",
@@ -683,10 +784,11 @@ class DispatchQueue:
         if not session.active_task_id:
             return session
         try:
+            await self._delete_session_task_reference(session.session_id, session.active_task_id)
             await self._store.delete(
                 self._task_key(session.active_task_id),
                 self._inflight_key(session.active_task_id),
-                self._session_task_key(session.session_id),
+                self._cancelled_task_key(session.active_task_id),
             )
         except RedisError as exc:
             raise DispatchQueueError("Failed to abandon active dispatch task") from exc
@@ -727,6 +829,28 @@ class DispatchQueue:
             metadata=metadata,
         )
 
+    async def _should_drop_task_completion(
+        self,
+        task: DispatchTask,
+        session: SessionRecord,
+        context_version: int,
+        metadata: dict[str, str] | None,
+    ) -> bool:
+        cancelled = await self._load_cancelled_task(task.task_id)
+        if cancelled is not None:
+            return True
+        if context_version != task.context_version:
+            return True
+        batch_id = ""
+        if isinstance(metadata, dict):
+            batch_id = str(metadata.get("aggregation_batch_id") or "").strip()
+        task_batch_id = getattr(task, "aggregation_batch_id", "")
+        if not isinstance(task_batch_id, str):
+            task_batch_id = ""
+        if task_batch_id and batch_id and batch_id != task_batch_id:
+            return True
+        return bool(session.active_task_id and session.active_task_id != task.task_id)
+
     async def _enqueue_task(
         self,
         *,
@@ -736,6 +860,10 @@ class DispatchQueue:
         context_summary: str,
         context_version: int,
         retry_count: int,
+        query_text: str | None = None,
+        source_message_ids: list[str] | None = None,
+        aggregation_batch_id: str = "",
+        supersedes_task_id: str | None = None,
     ) -> DispatchTask:
         if not session.assigned_node_id or not session.assigned_slot_id:
             raise DispatchQueueError("No node slot is assigned for this session")
@@ -749,6 +877,10 @@ class DispatchQueue:
             context_summary=context_summary,
             recent_messages=recent_messages,
             message=message,
+            query_text=query_text or message.content,
+            source_message_ids=list(source_message_ids or [message.message_id]),
+            aggregation_batch_id=aggregation_batch_id,
+            supersedes_task_id=supersedes_task_id,
             context_version=context_version,
             retry_count=retry_count,
             created_at=self._utcnow(),
@@ -787,6 +919,7 @@ class DispatchQueue:
             payload={
                 "task_id": task.task_id,
                 "message_id": message.message_id,
+                "aggregation_batch_id": task.aggregation_batch_id,
                 "context_version": task.context_version,
                 "slot_id": task.slot_id,
                 "retry_count": retry_count,
@@ -853,6 +986,7 @@ class DispatchQueue:
             payload={
                 "task_id": task.task_id,
                 "message_id": task.message.message_id,
+                "aggregation_batch_id": task.aggregation_batch_id,
                 "context_version": task.context_version,
                 "slot_id": task.slot_id,
                 "retry_count": task.retry_count,
@@ -1007,6 +1141,7 @@ class DispatchQueue:
                 self._task_key(task.task_id),
                 self._inflight_key(task.task_id),
                 self._session_task_key(task.session_id),
+                self._cancelled_task_key(task.task_id),
             )
         except RedisError as exc:
             raise DispatchQueueError("Failed to cleanup stale dispatch task") from exc
@@ -1027,6 +1162,7 @@ class DispatchQueue:
                     self._task_key(task_id),
                     self._inflight_key(task_id),
                     self._session_task_key(session_id),
+                    self._cancelled_task_key(task_id),
                 )
                 return
             await self._store.delete(self._session_task_key(session_id))
@@ -1096,14 +1232,39 @@ class DispatchQueue:
 
     async def _cleanup_task(self, task: DispatchTask) -> None:
         try:
+            await self._delete_session_task_reference(task.session_id, task.task_id)
             await self._store.delete(
                 self._task_key(task.task_id),
                 self._inflight_key(task.task_id),
-                self._session_task_key(task.session_id),
+                self._cancelled_task_key(task.task_id),
             )
         except RedisError as exc:
             raise DispatchQueueError("Failed to cleanup dispatch task") from exc
         await self._session_manager.clear_dispatch_state(task.session_id, expected_task_id=task.task_id)
+
+    async def _delete_session_task_reference(self, session_id: str, task_id: str) -> None:
+        current_task_id = await self._store.get(self._session_task_key(session_id))
+        if current_task_id == task_id:
+            await self._store.delete(self._session_task_key(session_id))
+
+    async def _mark_task_cancelled(self, task_id: str, payload: dict[str, str]) -> None:
+        await self._store.setex(
+            self._cancelled_task_key(task_id),
+            self._settings.dispatch_task_timeout_seconds,
+            json.dumps(payload, ensure_ascii=True),
+        )
+
+    async def _load_cancelled_task(self, task_id: str) -> dict[str, str] | None:
+        raw = await self._store.get(self._cancelled_task_key(task_id))
+        if not raw:
+            return None
+        if not isinstance(raw, (str, bytes, bytearray)):
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"reason": raw.decode() if isinstance(raw, (bytes, bytearray)) else raw}
+        return {str(key): str(value) for key, value in payload.items()}
 
     def _build_slot_id(self, slot_number: int) -> str:
         return f"{SLOT_ID_PREFIX}{slot_number:02d}"

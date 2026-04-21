@@ -7,6 +7,7 @@ from app.dispatch.queue import DispatchQueue
 from app.access.wechat_bot import WeChatBotService
 from app.services.gateway_summary_service import GatewaySummaryService
 from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
+from app.services.inbound_aggregation import InboundAggregationService
 from app.services.node_registry import NodeRegistry
 from app.services.node_auth import NodeAuthService
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
@@ -58,6 +59,10 @@ def get_gateway_summary_stream(request: Request) -> GatewaySummaryStreamBroker:
 
 def get_gateway_summary_service(request: Request) -> GatewaySummaryService:
     return request.app.state.gateway_summary_service
+
+
+def get_inbound_aggregation(request: Request) -> InboundAggregationService:
+    return request.app.state.inbound_aggregation
 
 
 def get_gateway_summary_snapshot_service(request: Request) -> GatewaySummarySnapshotService:

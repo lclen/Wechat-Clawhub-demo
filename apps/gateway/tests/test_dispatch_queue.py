@@ -198,6 +198,7 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
             "wch:dispatch:task:task-stale",
             "wch:dispatch:inflight:task-stale",
             "wch:dispatch:session:session-3",
+            "wch:dispatch:cancelled:task-stale",
         )
         self.outgoing_dispatcher.deliver_system_notice.assert_awaited_once()
         self.assertEqual(
@@ -412,6 +413,7 @@ class DispatchQueueSlotTests(unittest.IsolatedAsyncioTestCase):
             "wch:dispatch:task:task-stale",
             "wch:dispatch:inflight:task-stale",
             "wch:dispatch:session:session-stale",
+            "wch:dispatch:cancelled:task-stale",
         )
         self.queue._release_slot.assert_awaited_once()
 

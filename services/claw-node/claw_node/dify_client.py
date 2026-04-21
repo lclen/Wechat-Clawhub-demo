@@ -24,6 +24,7 @@ class DifyClient:
         self._local_cache = local_cache
         self._event_callback = event_callback
         self._conversation_ids: dict[str, str] = {}
+        self._remote_task_ids: dict[str, str] = {}
         self._streaming_only = False
         self._client = httpx.AsyncClient(
             base_url=settings.dify_base_url.rstrip("/"),
@@ -160,6 +161,17 @@ class DifyClient:
         )
         return str(answer), usage_payload
 
+    async def stop_remote_task(self, *, local_task_id: str, user_id: str) -> bool:
+        remote_task_id = self._remote_task_ids.get(local_task_id, "").strip()
+        if not remote_task_id:
+            return False
+        response = await self._client.post(
+            f"/chat-messages/{remote_task_id}/stop",
+            json={"user": user_id},
+        )
+        response.raise_for_status()
+        return True
+
     async def _ask_streaming(
         self,
         payload: dict[str, Any],
@@ -173,6 +185,7 @@ class DifyClient:
         usage: dict[str, Any] | None = None
         metadata: dict[str, Any] | None = None
         message_id = ""
+        remote_task_id = ""
         conversation_id = str(streaming_payload.get("conversation_id") or "").strip()
         stream_started_at = time.perf_counter()
         self._emit_event(
@@ -199,6 +212,10 @@ class DifyClient:
                 except json.JSONDecodeError:
                     continue
                 event_type = str(event.get("event") or "").strip()
+                remote_task_id = str(event.get("task_id") or remote_task_id).strip()
+                local_task_id = str((trace_metadata or {}).get("task_id") or "").strip()
+                if local_task_id and remote_task_id:
+                    self._remote_task_ids[local_task_id] = remote_task_id
                 if event_type in {"message", "agent_message", "message_replace"}:
                     answer_parts.append(str(event.get("answer") or ""))
                     message_id = str(event.get("message_id") or message_id)

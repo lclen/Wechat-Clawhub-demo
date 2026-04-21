@@ -54,6 +54,8 @@ class Worker:
         self._discovery = DiscoveryService(settings, self._handle_pair_request)
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)
         self._active_tasks: set[asyncio.Task] = set()
+        self._tasks_by_id: dict[str, asyncio.Task] = {}
+        self._task_runtime_meta: dict[str, dict[str, str]] = {}
         self._channel_states: dict[str, ChannelLeaseState] = {}
         self._channel_states_lock = asyncio.Lock()
         self._shutdown = asyncio.Event()
@@ -68,6 +70,8 @@ class Worker:
         self._task_stream_send_lock = asyncio.Lock()
         self._task_stream_reconnect_failures = 0
         self._task_stream_degraded = False
+        self._task_stream_disconnect_count = 0
+        self._task_stream_fallback_count = 0
         self._fallback_polling_task: asyncio.Task | None = None
 
     def _summarize_task_stream_event(self, event: dict[str, Any]) -> str:
@@ -250,11 +254,12 @@ class Worker:
 
     async def _start_task_assignment(self, task: dict[str, Any], *, source: str) -> None:
         log_label = "task_assigned_received" if source == "ws" else "pulled"
+        task_id = str(task.get("task_id") or "").strip()
         logger.info(
             "[dispatch] %s source=%s task_id=%s session=%s context_version=%s user=%s preview=%s",
             log_label,
             source,
-            task.get("task_id"),
+            task_id,
             task.get("session_id"),
             task.get("context_version"),
             task.get("user_id"),
@@ -264,7 +269,13 @@ class Worker:
         await self._semaphore.acquire()
         worker_task = asyncio.create_task(self._handle_task(task))
         self._active_tasks.add(worker_task)
-        worker_task.add_done_callback(self._on_task_done)
+        if task_id:
+            self._tasks_by_id[task_id] = worker_task
+            self._task_runtime_meta[task_id] = {
+                "session_id": str(task.get("session_id") or ""),
+                "user_id": str(task.get("user_id") or ""),
+            }
+        worker_task.add_done_callback(lambda done_task, active_task_id=task_id: self._on_task_done(done_task, active_task_id))
 
     async def _task_stream_loop(self) -> None:
         while not self._shutdown.is_set():
@@ -364,8 +375,11 @@ class Worker:
             await asyncio.sleep(DIAGNOSTICS_FLUSH_INTERVAL_SECONDS)
             await self._flush_pending_diagnostics_events()
 
-    def _on_task_done(self, task: asyncio.Task) -> None:
+    def _on_task_done(self, task: asyncio.Task, task_id: str = "") -> None:
         self._active_tasks.discard(task)
+        if task_id:
+            self._tasks_by_id.pop(task_id, None)
+            self._task_runtime_meta.pop(task_id, None)
         self._semaphore.release()
 
     async def _ensure_gateway_loops_started(self) -> None:
@@ -709,6 +723,7 @@ class Worker:
                 raise RuntimeError(self._inference_error or "Inference backend is not configured on this node.")
             message = task["message"]
             recent_messages = task.get("recent_messages", [])
+            query_text = str(task.get("query_text") or message.get("content") or "")
             await self._local_cache.store_context_snapshot(
                 task["session_id"],
                 {
@@ -734,7 +749,7 @@ class Worker:
                     "provider": self._effective_provider_name(),
                     "started_at": started_at_iso,
                     "finished_at": None,
-                    "query_preview": self._preview_text(str(message.get("content") or ""), max_len=120),
+                    "query_preview": self._preview_text(query_text, max_len=120),
                     "error": "",
                 },
             )
@@ -765,12 +780,15 @@ class Worker:
                 session_id=task["session_id"],
                 user_id=task["user_id"],
                 agent_id=task["agent_id"],
-                query=message["content"],
+                query=query_text,
                 context_summary=task.get("context_summary", ""),
                 recent_messages=recent_messages,
                 trace_metadata=common_metadata,
             )
-            result_metadata = self._stringify_mapping(usage or {})
+            result_metadata = {
+                **self._stringify_mapping(usage or {}),
+                "aggregation_batch_id": str(task.get("aggregation_batch_id") or ""),
+            }
             inference_ms = max(1, int((time.perf_counter() - inference_started_at) * 1000))
             model_latency_ms = self._coerce_usage_int(usage, "latency")
             prompt_tokens = self._coerce_usage_int(usage, "prompt_tokens")
@@ -866,6 +884,27 @@ class Worker:
                 answer,
                 result_metadata,
             )
+        except asyncio.CancelledError:
+            common_metadata = self._task_metadata(task)
+            self._update_latest_task(
+                task=task,
+                payload={
+                    "status": "cancelled",
+                    "stage": "cancelled",
+                    "finished_at": self._utcnow().isoformat(),
+                    "error": "cancelled",
+                },
+            )
+            self._record_task_event(
+                task=task,
+                result="cancelled",
+                message="任务已被网关取消，将忽略当前结果。",
+                metadata=common_metadata,
+                level="warning",
+            )
+            with suppress(Exception):
+                await self._mark_channel_task_completed(task)
+            return
         except Exception as exc:
             logger.exception("Task execution failed: %s", exc)
             self._last_error = str(exc)
@@ -1120,9 +1159,45 @@ class Worker:
             if payload_type in {"ack", "pong"}:
                 logger.debug("[worker] task stream control payload ignored: %s", payload)
                 continue
+            if payload_type == "cancel_task":
+                await self._cancel_active_task(
+                    task_id=str(payload.get("task_id") or "").strip(),
+                    session_id=str(payload.get("session_id") or "").strip(),
+                    reason=str(payload.get("reason") or "cancelled_by_gateway").strip() or "cancelled_by_gateway",
+                )
+                try:
+                    await self._send_task_stream_event(
+                        {
+                            "type": "ack",
+                            "event": "cancel_task",
+                            "task_id": str(payload.get("task_id") or ""),
+                            "session_id": str(payload.get("session_id") or ""),
+                        }
+                    )
+                except Exception:
+                    pass
+                continue
             if payload_type in {"task", "task_assigned"} and isinstance(payload.get("task"), dict):
                 return payload["task"]
             logger.warning("[worker] task stream received unexpected payload: %s", payload)
+
+    async def _cancel_active_task(self, *, task_id: str, session_id: str, reason: str) -> None:
+        if not task_id:
+            return
+        worker_task = self._tasks_by_id.get(task_id)
+        runtime_meta = self._task_runtime_meta.get(task_id, {})
+        user_id = str(runtime_meta.get("user_id") or "")
+        if isinstance(self._inference, DifyClient) and user_id:
+            with suppress(Exception):
+                await self._inference.stop_remote_task(local_task_id=task_id, user_id=user_id)
+        if worker_task is not None and not worker_task.done():
+            logger.info(
+                "[dispatch] cancel_task_received task_id=%s session=%s reason=%s",
+                task_id,
+                session_id or runtime_meta.get("session_id", ""),
+                reason,
+            )
+            worker_task.cancel()
 
     def _enqueue_diagnostics_event(self, event: dict[str, object], snapshot: dict[str, object]) -> None:
         self._pending_diagnostics_events.append(
@@ -1141,6 +1216,7 @@ class Worker:
     ) -> None:
         disconnect_at = self._utcnow().isoformat()
         self._task_stream_reconnect_failures += 1
+        self._task_stream_disconnect_count += 1
         self._diagnostics.update_task_stream(
             {
                 "protocol_version": TASK_STREAM_PROTOCOL_VERSION,
@@ -1148,11 +1224,7 @@ class Worker:
                 "last_disconnect_at": disconnect_at,
                 "last_disconnect_code": disconnect_code,
                 "last_disconnect_reason": reason,
-                "reconnect_count": int(
-                    ((self._diagnostics.export_runtime_state().get("task_stream") or {}).get("reconnect_count"))
-                    or 0
-                )
-                + 1,
+                "reconnect_count": self._task_stream_disconnect_count,
             }
         )
         self._enqueue_diagnostics_event(
@@ -1196,16 +1268,12 @@ class Worker:
             return True
 
         self._task_stream_degraded = True
-        runtime_state = self._diagnostics.export_runtime_state()
-        current_task_stream = runtime_state.get("task_stream")
-        fallback_count = 0
-        if isinstance(current_task_stream, dict):
-            fallback_count = int(current_task_stream.get("fallback_poll_count") or 0)
+        self._task_stream_fallback_count += 1
         self._diagnostics.update_task_stream(
             {
                 "protocol_version": TASK_STREAM_PROTOCOL_VERSION,
                 "connection_mode": "degraded_http_polling",
-                "fallback_poll_count": fallback_count + 1,
+                "fallback_poll_count": self._task_stream_fallback_count,
             }
         )
         self._enqueue_diagnostics_event(
@@ -1452,6 +1520,7 @@ class Worker:
             "slot_id": str(task.get("slot_id") or ""),
             "context_version": str(task.get("context_version") or ""),
             "user_id": str(task.get("user_id") or ""),
+            "aggregation_batch_id": str(task.get("aggregation_batch_id") or ""),
         }
 
     def _update_latest_task(self, *, task: dict[str, Any], payload: dict[str, Any]) -> None:

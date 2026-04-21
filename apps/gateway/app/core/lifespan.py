@@ -13,6 +13,7 @@ from app.dispatch.scheduler import DispatchScheduler
 from app.services.node_auth import NodeAuthService
 from app.services.gateway_summary_service import GatewaySummaryService
 from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
+from app.services.inbound_aggregation import InboundAggregationService
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.node_stream import NodeStreamBroker
 from app.services.outgoing_dispatcher import OutgoingDispatcher
@@ -63,7 +64,15 @@ async def lifespan(app: FastAPI):
         settings,
         node_stream=node_stream,
     )
+    inbound_aggregation = InboundAggregationService(
+        session_manager=session_manager,
+        dispatch_queue=dispatch_queue,
+        outgoing_dispatcher=outgoing_dispatcher,
+        transcript_writer=transcript_writer,
+        settings=settings,
+    )
     wechat_bot.attach_dispatch_queue(dispatch_queue)
+    wechat_bot.attach_inbound_aggregation(inbound_aggregation)
     setup_service = SetupService(
         settings=settings,
         wechat_bot=wechat_bot,
@@ -97,6 +106,7 @@ async def lifespan(app: FastAPI):
     app.state.session_overview_snapshot_service = session_overview_snapshot
     app.state.gateway_summary_service = gateway_summary_service
     app.state.dispatch_queue = dispatch_queue
+    app.state.inbound_aggregation = inbound_aggregation
     app.state.node_auth = node_auth
     app.state.wechat_bot = wechat_bot
     app.state.outgoing_dispatcher = outgoing_dispatcher
@@ -108,6 +118,7 @@ async def lifespan(app: FastAPI):
         summary_task.cancel()
         with suppress(asyncio.CancelledError):
             await summary_task
+        await inbound_aggregation.shutdown()
         await wechat_bot.shutdown()
         await redis_store.close()
 

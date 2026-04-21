@@ -17,6 +17,10 @@ class DispatchTask(BaseModel):
     context_summary: str = ""
     recent_messages: list[MessageRecord] = Field(default_factory=list)
     message: MessageRecord
+    query_text: str = ""
+    source_message_ids: list[str] = Field(default_factory=list)
+    aggregation_batch_id: str = ""
+    supersedes_task_id: str | None = None
     context_version: int
     retry_count: int = 0
     created_at: datetime

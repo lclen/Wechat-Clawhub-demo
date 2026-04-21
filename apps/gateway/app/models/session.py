@@ -105,6 +105,8 @@ class InboundMessageResponse(BaseModel):
     ok: bool = True
     session: SessionRecord
     message: MessageRecord
+    batch_id: str | None = None
+    batch_state: str = "collecting"
     task_id: str | None = None
 
 

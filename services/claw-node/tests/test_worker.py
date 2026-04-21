@@ -10,12 +10,18 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 
 from claw_node.config import NodeSettings
+from claw_node.dify_client import DifyClient
 from claw_node.worker import (
     ChannelLeaseState,
     TASK_STREAM_FALLBACK_FAILURE_THRESHOLD,
     TASK_STREAM_FALLBACK_PULL_WAIT_SECONDS,
     Worker,
 )
+
+
+class _FakeDifyClient(DifyClient):
+    def __init__(self) -> None:
+        self.stop_remote_task = AsyncMock()
 
 
 class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
@@ -762,6 +768,34 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         task_stream = worker._diagnostics.export_runtime_state()["task_stream"]
         self.assertEqual(task_stream["connection_mode"], "disconnected")
         self.assertEqual(task_stream["reconnect_count"], 1)
+
+    async def test_cancel_active_task_stops_remote_dify_and_cancels_local_coroutine(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+        )
+        worker = Worker(settings)
+        worker._inference = _FakeDifyClient()
+        active = asyncio.create_task(asyncio.sleep(60))
+        worker._tasks_by_id["task-1"] = active
+        worker._task_runtime_meta["task-1"] = {"session_id": "session-1", "user_id": "wechat-user"}
+
+        await worker._cancel_active_task(task_id="task-1", session_id="session-1", reason="superseded")
+        await asyncio.sleep(0)
+        try:
+            await active
+        except asyncio.CancelledError:
+            pass
+
+        self.assertTrue(active.cancelled())
+        worker._inference.stop_remote_task.assert_awaited_once_with(
+            local_task_id="task-1",
+            user_id="wechat-user",
+        )
 
     async def test_task_stream_enters_short_wait_http_fallback_after_threshold(self) -> None:
         settings = NodeSettings(

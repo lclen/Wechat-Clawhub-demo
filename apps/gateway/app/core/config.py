@@ -6,6 +6,9 @@ from pathlib import Path
 from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+_DEFAULT_BUILTIN_MODEL_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_DEFAULT_BUILTIN_MODEL_NAME = "qwen3.5-plus"
+
 
 class Settings(BaseSettings):
     app_name: str = "wechat-claw-hub gateway"
@@ -19,6 +22,7 @@ class Settings(BaseSettings):
     dispatch_inflight_ttl_seconds: int = Field(default=300, ge=30)
     dispatch_task_timeout_seconds: int = Field(default=120, ge=30, le=3600)
     session_slot_idle_timeout_seconds: int = Field(default=600, ge=60, le=86_400)
+    inbound_text_quiet_window_seconds: float = Field(default=3.0, ge=0.1, le=30.0)
     recent_message_limit: int = Field(default=20, ge=1, le=200)
     transcript_dir: Path = Field(default=Path("data/transcripts"))
     identity_dir: Path = Field(default=Path("data/identity"))
@@ -159,34 +163,43 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def apply_legacy_builtin_model_env(self) -> "Settings":
-        has_builtin_identity = bool(
-            self.builtin_model_base_url.strip()
-            or self.builtin_model_api_key.strip()
-            or self.builtin_model_name.strip()
-        )
-        has_legacy_identity = bool(
-            self.legacy_openai_base_url.strip()
-            or self.legacy_openai_api_key.strip()
-            or self.legacy_openai_model.strip()
-        )
-        if has_builtin_identity or not has_legacy_identity:
+        builtin_base_url = self.builtin_model_base_url.strip()
+        builtin_api_key = self.builtin_model_api_key.strip()
+        builtin_model_name = self.builtin_model_name.strip()
+        legacy_base_url = self.legacy_openai_base_url.strip()
+        legacy_api_key = self.legacy_openai_api_key.strip()
+        legacy_model_name = self.legacy_openai_model.strip()
+
+        has_builtin_identity = bool(builtin_base_url or builtin_api_key or builtin_model_name)
+        has_legacy_identity = bool(legacy_base_url or legacy_api_key or legacy_model_name)
+        if not has_builtin_identity and not has_legacy_identity:
             return self
 
-        self.builtin_model_base_url = self.legacy_openai_base_url
-        self.builtin_model_api_key = self.legacy_openai_api_key
-        self.builtin_model_name = self.legacy_openai_model
-        self.builtin_model_enable_thinking = self.legacy_openai_enable_thinking
-        self.builtin_model_temperature = self.legacy_openai_temperature
-        self.builtin_model_top_p = self.legacy_openai_top_p
-        self.builtin_model_max_tokens = self.legacy_openai_max_tokens
-        self.builtin_model_seed = self.legacy_openai_seed
-        self.builtin_model_thinking_budget = self.legacy_openai_thinking_budget
-        self.builtin_model_stop = self.legacy_openai_stop
-        self.builtin_model_enable_search = self.legacy_openai_enable_search
-        self.builtin_model_search_forced = self.legacy_openai_search_forced
-        self.builtin_model_search_strategy = self.legacy_openai_search_strategy
-        self.builtin_model_enable_search_extension = self.legacy_openai_enable_search_extension
-        self.builtin_model_multimodal_enabled = self.legacy_openai_multimodal_enabled
+        resolved_base_url = builtin_base_url or legacy_base_url
+        resolved_api_key = builtin_api_key or legacy_api_key
+        resolved_model_name = builtin_model_name or legacy_model_name
+        if resolved_api_key and not resolved_base_url:
+            resolved_base_url = _DEFAULT_BUILTIN_MODEL_BASE_URL
+        if resolved_api_key and not resolved_model_name:
+            resolved_model_name = _DEFAULT_BUILTIN_MODEL_NAME
+
+        self.builtin_model_base_url = resolved_base_url
+        self.builtin_model_api_key = resolved_api_key
+        self.builtin_model_name = resolved_model_name
+
+        if not has_builtin_identity and has_legacy_identity:
+            self.builtin_model_enable_thinking = self.legacy_openai_enable_thinking
+            self.builtin_model_temperature = self.legacy_openai_temperature
+            self.builtin_model_top_p = self.legacy_openai_top_p
+            self.builtin_model_max_tokens = self.legacy_openai_max_tokens
+            self.builtin_model_seed = self.legacy_openai_seed
+            self.builtin_model_thinking_budget = self.legacy_openai_thinking_budget
+            self.builtin_model_stop = self.legacy_openai_stop
+            self.builtin_model_enable_search = self.legacy_openai_enable_search
+            self.builtin_model_search_forced = self.legacy_openai_search_forced
+            self.builtin_model_search_strategy = self.legacy_openai_search_strategy
+            self.builtin_model_enable_search_extension = self.legacy_openai_enable_search_extension
+            self.builtin_model_multimodal_enabled = self.legacy_openai_multimodal_enabled
         return self
 
 

@@ -63,6 +63,49 @@ class OutgoingDispatcher:
                 payload={"error": str(exc)},
             )
 
+    async def start_processing_indicator(self, session: SessionRecord) -> None:
+        if session.channel != "wechat":
+            return
+        try:
+            await self._wechat_bot.start_typing_loop(
+                user_id=session.user_id,
+                context_token=session.reply_context_token,
+            )
+        except Exception as exc:
+            self._transcript_writer.append_event(
+                session_id=session.session_id,
+                event_type="wechat_typing_start_failed",
+                actor_type="system",
+                actor_id="gateway",
+                payload={"error": str(exc)},
+            )
+
+    async def send_progress_notice(
+        self,
+        session: SessionRecord,
+        content: str,
+        *,
+        event_type: str = "wechat_progress_notice_failed",
+    ) -> bool:
+        if session.channel != "wechat":
+            return False
+        try:
+            await self._wechat_bot.send_text(
+                user_id=session.user_id,
+                text=content,
+                context_token=session.reply_context_token,
+            )
+            return True
+        except Exception as exc:
+            self._transcript_writer.append_event(
+                session_id=session.session_id,
+                event_type=event_type,
+                actor_type="system",
+                actor_id="gateway",
+                payload=await self._build_wechat_error_payload(exc),
+            )
+            return False
+
     async def deliver_bot_reply(self, session: SessionRecord, content: str) -> None:
         if session.channel != "wechat":
             return
