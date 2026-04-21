@@ -26,6 +26,26 @@ class OutgoingDispatcher:
         self._wechat_bot = wechat_bot
         self._transcript_writer = transcript_writer
 
+    async def _get_wechat_last_error(self) -> str | None:
+        try:
+            status = await self._wechat_bot.get_status()
+        except Exception:
+            return None
+        return getattr(status, "last_error", None)
+
+    async def _build_wechat_error_payload(self, exc: Exception) -> dict[str, str]:
+        error_message = str(exc).strip()
+        if not error_message:
+            error_message = repr(exc)
+        payload = {
+            "error": f"{type(exc).__name__}: {error_message}",
+            "exception_type": type(exc).__name__,
+        }
+        last_error = await self._get_wechat_last_error()
+        if last_error:
+            payload["wechat_last_error"] = str(last_error)
+        return payload
+
     async def clear_processing_indicator(self, session: SessionRecord) -> None:
         if session.channel != "wechat":
             return
@@ -68,28 +88,31 @@ class OutgoingDispatcher:
                 (time.perf_counter() - started_at) * 1000,
             )
         except Exception as exc:
+            wechat_last_error = await self._get_wechat_last_error()
             self._transcript_writer.append_event(
                 session_id=session.session_id,
                 event_type="wechat_send_failed",
                 actor_type="system",
                 actor_id="gateway",
-                payload={"error": str(exc)},
+                payload=await self._build_wechat_error_payload(exc),
             )
             logger.exception(
-                "[dispatch] outgoing_reply_failed session=%s channel=%s chars=%s send_ms=%.0f error=%s",
+                "[dispatch] outgoing_reply_failed session=%s channel=%s chars=%s send_ms=%.0f error=%s wechat_last_error=%s",
                 session.session_id,
                 session.channel,
                 len(content),
                 (time.perf_counter() - started_at) * 1000,
                 exc,
+                wechat_last_error,
             )
             uvicorn_logger.warning(
-                "[dispatch] outgoing_reply_failed session=%s channel=%s chars=%s send_ms=%.0f error=%s",
+                "[dispatch] outgoing_reply_failed session=%s channel=%s chars=%s send_ms=%.0f error=%s wechat_last_error=%s",
                 session.session_id,
                 session.channel,
                 len(content),
                 (time.perf_counter() - started_at) * 1000,
                 exc,
+                wechat_last_error,
             )
         finally:
             await self.clear_processing_indicator(session)
@@ -116,7 +139,7 @@ class OutgoingDispatcher:
                 event_type=event_type,
                 actor_type="system",
                 actor_id="gateway",
-                payload={"error": str(exc)},
+                payload=await self._build_wechat_error_payload(exc),
             )
             return False
         finally:

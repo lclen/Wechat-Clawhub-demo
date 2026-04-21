@@ -492,6 +492,14 @@ class WeChatBotService:
                 client_id,
                 exc,
             )
+            logger.exception(
+                "wechat-bot: send_text failed user_id=%s text_len=%d preview=%s client_id=%s error=%s",
+                user_id,
+                len(text),
+                self._preview_text(text),
+                client_id,
+                self._last_error,
+            )
             raise
 
     async def send_markdown(self, *, user_id: str, content: str, context_token: str | None = None) -> list[str]:

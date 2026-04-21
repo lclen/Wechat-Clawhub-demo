@@ -38,30 +38,32 @@ export function showDateDivider(messages: MessageRecord[], index: number) {
   return new Date(messages[index].created_at).toDateString() !== new Date(messages[index - 1].created_at).toDateString();
 }
 
-export function sessionPreview(session: SessionRecord) {
+export function sessionPreview(session: SessionRecord, latestReplyAt?: string | null) {
+  const hasReplyAfterDispatch = hasCompletedReplyAfterDispatch(session, latestReplyAt);
   return session.status === "human_active"
     ? `人工已接管${session.claimed_by ? ` · ${session.claimed_by}` : ""}`
     : session.status === "handoff_pending"
       ? "用户请求转人工，等待坐席认领"
-      : session.queue_status === "inflight"
-        ? `${session.assigned_node_id || "节点"} 正在处理`
-        : session.queue_status === "pending"
-          ? "消息已入队，等待节点领取"
+      : session.queue_status === "pending"
+        ? "消息已入队，等待节点领取"
+        : (session.queue_status === "inflight" || session.active_task_id) && !hasReplyAfterDispatch
+          ? `${session.assigned_node_id || "节点"} 正在处理`
           : (session.context_summary || "当前没有新的处理事件");
 }
 
-export function sessionBadgeTone(session: SessionRecord) {
+export function sessionBadgeTone(session: SessionRecord, latestReplyAt?: string | null) {
+  const hasReplyAfterDispatch = hasCompletedReplyAfterDispatch(session, latestReplyAt);
   return session.status === "human_active" || session.status === "handoff_pending"
     ? "human"
     : session.queue_status === "pending"
       ? "queued"
-      : session.queue_status === "inflight" || session.active_task_id
+      : (session.queue_status === "inflight" || session.active_task_id) && !hasReplyAfterDispatch
         ? "typing"
         : "idle";
 }
 
-export function getSessionBadgeLabel(session: SessionRecord) {
-  return session.queue_status === "inflight"
+export function getSessionBadgeLabel(session: SessionRecord, latestReplyAt?: string | null) {
+  return (session.queue_status === "inflight" || session.active_task_id) && !hasCompletedReplyAfterDispatch(session, latestReplyAt)
     ? "处理中"
     : session.queue_status === "pending"
       ? "排队中"
@@ -72,14 +74,27 @@ export function getSessionBadgeLabel(session: SessionRecord) {
           : "空闲";
 }
 
-export function getTypingState(session: SessionRecord | null, now: number) {
+export function getTypingState(session: SessionRecord | null, now: number, latestReplyAt?: string | null) {
   if (!session) return "";
   if (session.queue_status === "pending") return `消息已入队，等待 ${session.assigned_node_id || "可用节点"} 领取任务`;
-  if (session.queue_status === "inflight" || session.active_task_id) {
+  if ((session.queue_status === "inflight" || session.active_task_id) && !hasCompletedReplyAfterDispatch(session, latestReplyAt)) {
     const elapsed = session.last_dispatch_at ? Math.max(1, Math.floor((now - new Date(session.last_dispatch_at).getTime()) / 1000)) : null;
     return `${session.assigned_node_id || "Agent"} 正在输入${elapsed ? `，已处理 ${elapsed}s` : ""}`;
   }
   return "";
+}
+
+function hasCompletedReplyAfterDispatch(session: SessionRecord, latestReplyAt?: string | null) {
+  const dispatchAt = session.last_dispatch_at ? new Date(session.last_dispatch_at).getTime() : Number.NaN;
+  if (Number.isNaN(dispatchAt)) return false;
+
+  const latestSessionMessageAt = session.last_message_at ? new Date(session.last_message_at).getTime() : Number.NaN;
+  if (Number.isFinite(latestSessionMessageAt) && latestSessionMessageAt > dispatchAt) {
+    return true;
+  }
+
+  const latestReplyTime = latestReplyAt ? new Date(latestReplyAt).getTime() : Number.NaN;
+  return Number.isFinite(latestReplyTime) && latestReplyTime > dispatchAt;
 }
 
 export function getChannelReleaseHint(session: SessionRecord | null, now: number) {

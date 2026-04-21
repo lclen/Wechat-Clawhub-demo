@@ -955,7 +955,7 @@ export function App() {
   const counts = useMemo(() => buildSessionCounts(sessions, now), [sessions, now]);
   const latestUserMessage = useMemo(() => findLatestMessageByRole(messages, "user"), [messages]);
   const latestBotMessage = useMemo(() => findLatestMessageByRole(messages, "bot"), [messages]);
-  const typingState = getTypingState(selectedSession, now);
+  const typingState = getTypingState(selectedSession, now, latestBotMessage?.created_at);
   const channelReleaseHint = getChannelReleaseHint(selectedSession, now);
   const availableDispatchNodes = useMemo(() => countAvailableDispatchNodes(nodes, gatewaySetup.dispatch_mode_enabled), [nodes, gatewaySetup.dispatch_mode_enabled]);
   const setupCompletedRoles = useMemo(

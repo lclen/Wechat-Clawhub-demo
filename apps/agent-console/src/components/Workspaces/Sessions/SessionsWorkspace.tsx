@@ -191,7 +191,7 @@ export function SessionsWorkspace({
                       <MetaPill label="节点" value={selectedSession.assigned_node_id || "未绑定"} />
                       <MetaPill label="槽位" value={selectedSession.assigned_slot_id || "未占用"} />
                       <MetaPill label="路由" value={selectedSession.routing_mode === "manual" ? "手动绑定" : "自动分配"} />
-                      <MetaPill label="状态" value={getSessionBadgeLabel(selectedSession)} />
+                      <MetaPill label="状态" value={getSessionBadgeLabel(selectedSession, latestBotMessage?.created_at)} />
                     </div>
                   </div>
                   <MetricStrip items={selectedSessionMetrics} className="session-stage-metrics" />
