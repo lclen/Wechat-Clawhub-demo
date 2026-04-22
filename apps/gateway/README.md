@@ -20,6 +20,9 @@
 - 微信 onboarding 接口
   - `POST /api/wechat/onboard/start`
   - `POST /api/wechat/onboard/poll`
+ - 微信公众号官方回调接口
+  - `GET /api/wechat/mp/callback`
+  - `POST /api/wechat/mp/callback`
 - 节点接口
   - `GET /api/nodes`
   - `POST /api/nodes/register`
@@ -68,6 +71,10 @@ npm run dev
 - `WCH_DIFY_API_KEY`
 - `WCH_WECHAT_TOKEN`
 - `WCH_WECHAT_BASE_URL`
+- `WCH_WECHAT_MP_APP_ID`
+- `WCH_WECHAT_MP_APP_SECRET`
+- `WCH_WECHAT_MP_TOKEN`
+- `WCH_WECHAT_MP_ENCODING_AES_KEY`
 - `WCH_BUILTIN_MODEL_BASE_URL`
 - `WCH_BUILTIN_MODEL_API_KEY`
 - `WCH_BUILTIN_MODEL_NAME`
