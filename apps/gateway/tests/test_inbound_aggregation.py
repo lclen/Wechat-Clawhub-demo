@@ -138,6 +138,85 @@ class InboundAggregationServiceTests(unittest.IsolatedAsyncioTestCase):
             "已收到补充，正在按最新内容重新思考…",
         )
 
+    async def test_collecting_batch_prefers_real_text_over_image_placeholder_and_keeps_media(self) -> None:
+        session = self._build_session()
+        image_message = self._build_message(message_id="msg-1", content="请结合这张图片理解并回答用户意图。")
+        image_message.metadata = {
+            "context_version": "1",
+            "wechat_media_placeholder": "true",
+            "wechat_media_ids_json": '[{"media_id":"wm_1","kind":"image","mime_type":"image/png","filename":"a.png"}]',
+        }
+        text_message = self._build_message(message_id="msg-2", content="图里写了什么？")
+        task = Mock(task_id="task-1")
+        self.session_manager.ingest_inbound_message.side_effect = [(session, image_message), (session, text_message)]
+        self.session_manager.get_session.side_effect = [session, session, session, session]
+        self.session_manager.get_messages.return_value = ([image_message, text_message], 0, True, None, False)
+        self.dispatch_queue.enqueue_for_inbound.return_value = task
+        self.outgoing_dispatcher.send_progress_notice.return_value = True
+
+        await self.service.ingest_text_message(
+            InboundMessageRequest(
+                channel="wechat",
+                user_id="wechat-user",
+                content=image_message.content,
+                metadata=image_message.metadata,
+            )
+        )
+        await self.service.ingest_text_message(
+            InboundMessageRequest(channel="wechat", user_id="wechat-user", content=text_message.content)
+        )
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(self.dispatch_queue.enqueue_for_inbound.await_args.kwargs["query_text"], "图里写了什么？")
+        synthetic = self.dispatch_queue.enqueue_for_inbound.await_args.kwargs["recent_messages_override"][-1]
+        self.assertEqual(synthetic.content, "图里写了什么？")
+        self.assertEqual(synthetic.metadata["wechat_media_placeholder"], "false")
+        self.assertIn('"media_id": "wm_1"', synthetic.metadata["wechat_media_ids_json"])
+
+    async def test_superseded_batch_keeps_image_metadata_but_replaces_placeholder_query(self) -> None:
+        session_id = "wechat:user-1"
+        old_session = self._build_session(session_id=session_id, active_task_id="task-old")
+        cleared_session = self._build_session(session_id=session_id, active_task_id=None)
+        old_message = self._build_message(message_id="msg-1", content="请结合这张图片理解并回答用户意图。", session_id=session_id)
+        old_message.metadata = {
+            "context_version": "1",
+            "wechat_media_placeholder": "true",
+            "wechat_media_ids_json": '[{"media_id":"wm_2","kind":"image","mime_type":"image/jpeg","filename":"b.jpg"}]',
+        }
+        new_message = self._build_message(message_id="msg-2", content="请描述图片内容", session_id=session_id)
+        new_task = Mock(task_id="task-new")
+        self.service._batches[session_id] = PendingInboundBatch(
+            batch_id="batch-old",
+            session_id=session_id,
+            channel="wechat",
+            user_id="wechat-user",
+            dispatch_state="inflight",
+            source_message_ids=["msg-1"],
+            segments=["请结合这张图片理解并回答用户意图。"],
+            placeholder_source_message_ids={"msg-1"},
+            wechat_media_refs=[{"media_id": "wm_2", "kind": "image", "mime_type": "image/jpeg", "filename": "b.jpg"}],
+            merged_query="请结合这张图片理解并回答用户意图。",
+            merged_query_is_placeholder=True,
+            active_task_id="task-old",
+            latest_message=old_message,
+        )
+        self.session_manager.ingest_inbound_message.return_value = (old_session, new_message)
+        self.session_manager.get_session.side_effect = [old_session, cleared_session, cleared_session]
+        self.session_manager.get_messages.return_value = ([old_message, new_message], 0, True, None, False)
+        self.dispatch_queue.supersede_active_task.return_value = cleared_session
+        self.dispatch_queue.enqueue_for_inbound.return_value = new_task
+        self.outgoing_dispatcher.send_progress_notice.return_value = True
+
+        await self.service.ingest_text_message(
+            InboundMessageRequest(channel="wechat", user_id="wechat-user", content=new_message.content)
+        )
+        await asyncio.sleep(0.05)
+
+        self.assertEqual(self.dispatch_queue.enqueue_for_inbound.await_args.kwargs["query_text"], "请描述图片内容")
+        synthetic = self.dispatch_queue.enqueue_for_inbound.await_args.kwargs["recent_messages_override"][-1]
+        self.assertEqual(synthetic.metadata["wechat_media_placeholder"], "false")
+        self.assertIn('"media_id": "wm_2"', synthetic.metadata["wechat_media_ids_json"])
+
     async def test_dispatch_failure_after_quiet_window_uses_queue_failure_notice_path(self) -> None:
         session = self._build_session()
         message = self._build_message(message_id="msg-1", content="第一段")

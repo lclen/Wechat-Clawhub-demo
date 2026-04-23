@@ -1,9 +1,12 @@
 import { useEffect } from "react";
 
+const CONNECTION_SNAPSHOT_POLL_MS = 12000;
+const LOGS_POLL_MS = 4000;
+
 type UseWorkspacePollingEffectsOptions = {
   launcherAvailable: boolean;
   workspace: string;
-  refreshLocalNodeSnapshot: () => Promise<void>;
+  refreshLocalNodeSnapshot: () => Promise<unknown>;
   refreshRuntimeLogs: (options?: { silent?: boolean }) => Promise<void>;
   launcherStatusKey: string;
 };
@@ -22,16 +25,30 @@ export function useWorkspacePollingEffects(options: UseWorkspacePollingEffectsOp
     let cancelled = false;
     let timer = 0;
     const run = async () => {
+      if (document.hidden) {
+        if (!cancelled) {
+          timer = window.setTimeout(() => void run(), CONNECTION_SNAPSHOT_POLL_MS);
+        }
+        return;
+      }
       try {
         await refreshLocalNodeSnapshot();
       } finally {
-        if (!cancelled) timer = window.setTimeout(() => void run(), 4000);
+        if (!cancelled) timer = window.setTimeout(() => void run(), CONNECTION_SNAPSHOT_POLL_MS);
       }
     };
     void run();
+    const onVisible = () => {
+      if (!document.hidden) {
+        window.clearTimeout(timer);
+        void run();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [launcherAvailable, refreshLocalNodeSnapshot, workspace]);
 
@@ -42,7 +59,7 @@ export function useWorkspacePollingEffects(options: UseWorkspacePollingEffectsOp
     const run = async () => {
       await refreshRuntimeLogs({ silent: true });
       if (!cancelled) {
-        timer = window.setTimeout(() => void run(), 4000);
+        timer = window.setTimeout(() => void run(), LOGS_POLL_MS);
       }
     };
     void run();

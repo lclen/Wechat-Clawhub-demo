@@ -582,8 +582,10 @@ class GatewaySummaryTruthAndFallbackTests(unittest.IsolatedAsyncioTestCase):
         store.ping.return_value = True
         manager = AsyncMock()
         manager.list_sessions.return_value = [live]
+        dispatch_queue = AsyncMock()
+        dispatch_queue.reconcile_sessions_state.return_value = [live]
 
-        response = await list_sessions_route(store, manager, snapshot_service)
+        response = await list_sessions_route(store, manager, dispatch_queue, snapshot_service)
 
         self.assertEqual([session.session_id for session in response.sessions], ["wechat:live"])
         snapshot = await snapshot_service.get_snapshot()
@@ -593,7 +595,7 @@ class GatewaySummaryTruthAndFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         broken_store = AsyncMock()
         broken_store.ping.side_effect = RuntimeError("redis down")
-        degraded_response = await list_sessions_route(broken_store, manager, snapshot_service)
+        degraded_response = await list_sessions_route(broken_store, manager, dispatch_queue, snapshot_service)
         self.assertEqual([session.session_id for session in degraded_response.sessions], ["wechat:stale"])
         manager.list_sessions.assert_awaited_once()
 

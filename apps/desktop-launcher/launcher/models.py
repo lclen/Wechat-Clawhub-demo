@@ -342,6 +342,7 @@ def apply_machine_role(profile: LauncherProfile, machine_role: LauncherMachineRo
     else:
         profile.enable_gateway = True
         profile.enable_local_node = True
+    normalize_gateway_base_url(profile)
     return profile
 
 
@@ -357,6 +358,14 @@ def apply_start_request(profile: LauncherProfile, payload: StartRequest) -> Laun
     profile.dispatch_mode_enabled = payload.dispatch_mode_enabled
     profile.redis_source = payload.redis_source
     profile.node_cache_redis_source = payload.node_cache_redis_source
+    normalize_gateway_base_url(profile)
+    return profile
+
+
+def normalize_gateway_base_url(profile: LauncherProfile) -> LauncherProfile:
+    runtime = derive_runtime_model(profile)
+    normalized = profile.gateway_base_url.strip().rstrip("/")
+    profile.gateway_base_url = "" if runtime.gateway_should_run else normalized
     return profile
 
 

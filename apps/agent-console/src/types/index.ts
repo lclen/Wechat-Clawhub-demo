@@ -86,6 +86,12 @@ export type SetupTaskStatus = "pending" | "running" | "succeeded" | "failed";
 export type GatewaySetupConfig = {
   redis_url: string;
   default_agent_id: string;
+  public_entry_enabled: boolean;
+  public_entry_base_url: string;
+  public_entry_display_name: string;
+  public_entry_qr_url: string;
+  public_entry_contact_hint: string;
+  public_entry_notes: string;
   dify_base_url: string;
   dify_api_key: string;
   builtin_model_base_url: string;
@@ -140,6 +146,8 @@ export type PairingStatus = "pending" | "paired" | "paired_pending_confirm" | "r
 export type DiscoveredNodeRecord = { discovery_id: string; node_id: string | null; pairing_label: string | null; hostname: string; lan_ip: string | null; platform: string | null; node_version: string | null; capabilities: string[]; advertised_address: string | null; pairing_required: boolean; already_paired: boolean; pairing_port: number; last_seen_at: string };
 export type SetupTaskResult = { task_id: string; kind: "gateway_save" | "gateway_console_setup" | "node_install" | "console_connect" | "gateway_probe" | "discovery_scan" | "discovery_pair" | "manual_pair"; status: SetupTaskStatus; title: string; created_at: string; updated_at: string; summary: string; logs: string[]; metadata: Record<string, string> };
 export type SetupProfileResponse = { recommended_workspace: "quick_setup" | "connection" | "sessions"; setup_completed: boolean; completed_roles: SetupRole[]; available_roles: SetupRole[]; preferred_gateway_base_url: string; gateway: GatewaySetupConfig; console: ConsoleSetupConfig; last_task: SetupTaskResult | null };
+export type PublicEntryTicketStats = { pending_qr: number; waiting_confirm: number; bound: number; expired: number; failed: number; active_bindings: number };
+export type PublicEntryProfileResponse = { enabled: boolean; base_url: string; display_name: string; qr_url: string; contact_hint: string; notes: string; access_url: string; stats: PublicEntryTicketStats };
 export type GatewaySetupSaveResponse = { task: SetupTaskResult; restart_required: boolean; applied_runtime: string[] };
 export type GatewaySetupSaveRequest = { config: GatewaySetupConfig; console_gateway_base_url?: string };
 export type GatewayConsoleSetupRequest = { gateway: GatewaySetupConfig; console: ConsoleSetupConfig };

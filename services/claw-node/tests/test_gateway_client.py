@@ -68,6 +68,42 @@ class GatewayClientPullTaskTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ws_url, "ws://127.0.0.1:8300/api/nodes/node-local-1/ws?wait_seconds=9")
 
+    async def test_download_media_reads_node_media_route_and_filename(self) -> None:
+        captured: dict[str, str] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured["path"] = request.url.path
+            return httpx.Response(
+                200,
+                content=b"image-bytes",
+                headers={
+                    "Content-Type": "image/png",
+                    "Content-Disposition": 'attachment; filename="sample.png"',
+                },
+            )
+
+        settings = NodeSettings(
+            CLAW_NODE_ID="node-local-1",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="test-token",
+        )
+        client = GatewayClient(settings)
+        await client.close()
+        client._api_client = httpx.AsyncClient(  # type: ignore[assignment]
+            base_url=settings.gateway_base_url.rstrip("/"),
+            headers={"X-Node-Token": settings.node_token},
+            transport=httpx.MockTransport(handler),
+        )
+        try:
+            downloaded = await client.download_media("wm_1")
+        finally:
+            await client.close()
+
+        self.assertEqual(captured["path"], "/api/nodes/node-local-1/media/wm_1")
+        self.assertEqual(downloaded.content, b"image-bytes")
+        self.assertEqual(downloaded.content_type, "image/png")
+        self.assertEqual(downloaded.filename, "sample.png")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,4 @@
-import { DEFAULT_BUILTIN_MODEL_LABEL } from "../quickSetupDefaults";
+import { DEFAULT_BUILTIN_MODEL_LABEL, DEFAULT_REMOTE_WORKER_NODE_ID, LEGACY_WORKER_NODE_IDS } from "../quickSetupDefaults";
 import { hasText, safeTrim } from "../stringUtils";
 import type {
   ConsoleSetupConfig,
@@ -126,10 +126,13 @@ export function launcherRoleUsesLocalNode(machineRole: LauncherMachineRole) {
 
 export function resolveWorkerNodeId(currentValue: string, launcherProfile?: LauncherProfile | null) {
   const candidate = safeTrim(currentValue) || launcherProfile?.local_node_id || "";
+  if (LEGACY_WORKER_NODE_IDS.has(candidate)) {
+    return DEFAULT_REMOTE_WORKER_NODE_ID;
+  }
   if (candidate && candidate !== "local-node") {
     return candidate;
   }
-  return launcherProfile?.enable_gateway === false ? "claw-node-1" : "local-node";
+  return launcherProfile?.enable_gateway === false ? DEFAULT_REMOTE_WORKER_NODE_ID : "local-node";
 }
 
 export function resolveWorkerGatewayBaseUrl(

@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.models.public_entry import PublicEntryTicketStats
+
 
 SetupRole = Literal["gateway_host", "gateway_host_console", "worker_node", "console_only"]
 SetupTaskStatus = Literal["pending", "running", "succeeded", "failed"]
@@ -22,6 +24,12 @@ PairingStatus = Literal[
 class GatewaySetupConfig(BaseModel):
     redis_url: str = Field(default="redis://localhost:6379/0", min_length=1)
     default_agent_id: str = Field(default="default-agent", min_length=1)
+    public_entry_enabled: bool = False
+    public_entry_base_url: str = ""
+    public_entry_display_name: str = ""
+    public_entry_qr_url: str = ""
+    public_entry_contact_hint: str = ""
+    public_entry_notes: str = ""
     dify_base_url: str = ""
     dify_api_key: str = ""
     builtin_model_base_url: str = ""
@@ -109,6 +117,17 @@ class SetupProfileResponse(BaseModel):
     gateway: GatewaySetupConfig
     console: ConsoleSetupConfig
     last_task: SetupTaskResult | None = None
+
+
+class PublicEntryProfileResponse(BaseModel):
+    enabled: bool
+    base_url: str = ""
+    display_name: str = ""
+    qr_url: str = ""
+    contact_hint: str = ""
+    notes: str = ""
+    access_url: str = ""
+    stats: PublicEntryTicketStats = Field(default_factory=PublicEntryTicketStats)
 
 
 class GatewaySetupSaveRequest(BaseModel):

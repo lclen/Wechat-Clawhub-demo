@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -33,7 +34,10 @@ class PendingInboundBatch:
     dispatch_state: str = "collecting"
     source_message_ids: list[str] = field(default_factory=list)
     segments: list[str] = field(default_factory=list)
+    placeholder_source_message_ids: set[str] = field(default_factory=set)
+    wechat_media_refs: list[dict[str, str]] = field(default_factory=list)
     merged_query: str = ""
+    merged_query_is_placeholder: bool = False
     last_segment_at: datetime | None = None
     active_task_id: str | None = None
     supersedes_task_id: str | None = None
@@ -85,10 +89,14 @@ class InboundAggregationService:
             supersedes_task_id: str | None = None
             seed_source_message_ids: list[str] = []
             seed_segments: list[str] = []
+            seed_placeholder_source_message_ids: set[str] = set()
+            seed_wechat_media_refs: list[dict[str, str]] = []
             if existing is not None and existing.dispatch_state in {"dispatching", "inflight"}:
                 supersedes_task_id = existing.active_task_id
                 seed_source_message_ids = list(existing.source_message_ids)
                 seed_segments = list(existing.segments)
+                seed_placeholder_source_message_ids = set(existing.placeholder_source_message_ids)
+                seed_wechat_media_refs = [dict(item) for item in existing.wechat_media_refs]
                 await self._outgoing_dispatcher.clear_processing_indicator(session)
                 if supersedes_task_id:
                     session = await self._dispatch_queue.supersede_active_task(
@@ -124,6 +132,8 @@ class InboundAggregationService:
                     supersedes_task_id=supersedes_task_id,
                     source_message_ids=seed_source_message_ids,
                     segments=seed_segments,
+                    placeholder_source_message_ids=seed_placeholder_source_message_ids,
+                    wechat_media_refs=seed_wechat_media_refs,
                 )
                 self._batches[session.session_id] = batch
             else:
@@ -131,10 +141,13 @@ class InboundAggregationService:
 
             batch.source_message_ids.append(message.message_id)
             batch.segments.append(message.content)
+            if self._is_media_placeholder_message(message):
+                batch.placeholder_source_message_ids.add(message.message_id)
+            self._extend_wechat_media_refs(batch, message)
             batch.latest_message = message
             batch.last_segment_at = self._utcnow()
             batch.dispatch_state = "collecting"
-            batch.merged_query = self._merge_segments(batch.segments)
+            batch.merged_query, batch.merged_query_is_placeholder = self._merge_segments(batch)
             self._schedule_batch_timer(batch)
             self._record_event(
                 session_id=session.session_id,
@@ -253,7 +266,7 @@ class InboundAggregationService:
             actor_id=latest_message.actor_id,
             node_id=latest_message.node_id,
             metadata={
-                **latest_message.metadata,
+                **self._build_synthetic_metadata(batch, latest_message),
                 "aggregation_batch_id": batch.batch_id,
                 "aggregation_source_message_ids": ",".join(batch.source_message_ids),
             },
@@ -284,8 +297,63 @@ class InboundAggregationService:
             task.cancel()
         batch.timer_task = None
 
-    def _merge_segments(self, segments: list[str]) -> str:
-        return "\n".join(segment.strip() for segment in segments if segment.strip()).strip()
+    def _merge_segments(self, batch: PendingInboundBatch) -> tuple[str, bool]:
+        real_segments: list[str] = []
+        placeholder_segments: list[str] = []
+        for source_message_id, segment in zip(batch.source_message_ids, batch.segments, strict=False):
+            normalized = segment.strip()
+            if not normalized:
+                continue
+            if source_message_id in batch.placeholder_source_message_ids:
+                placeholder_segments.append(normalized)
+            else:
+                real_segments.append(normalized)
+        if real_segments:
+            return "\n".join(real_segments).strip(), False
+        merged_placeholder = "\n".join(placeholder_segments).strip()
+        return merged_placeholder, bool(merged_placeholder)
+
+    def _is_media_placeholder_message(self, message: MessageRecord) -> bool:
+        return str(message.metadata.get("wechat_media_placeholder") or "").strip().lower() == "true"
+
+    def _extend_wechat_media_refs(self, batch: PendingInboundBatch, message: MessageRecord) -> None:
+        raw_refs = str(message.metadata.get("wechat_media_ids_json") or "").strip()
+        if not raw_refs:
+            return
+        try:
+            parsed = json.loads(raw_refs)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(parsed, list):
+            return
+        seen_ids = {item.get("media_id", "") for item in batch.wechat_media_refs}
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            media_id = str(item.get("media_id") or "").strip()
+            if not media_id or media_id in seen_ids:
+                continue
+            seen_ids.add(media_id)
+            batch.wechat_media_refs.append(
+                {
+                    "media_id": media_id,
+                    "kind": str(item.get("kind") or "image").strip() or "image",
+                    "mime_type": str(item.get("mime_type") or "").strip(),
+                    "filename": str(item.get("filename") or "").strip(),
+                }
+            )
+
+    def _build_synthetic_metadata(
+        self,
+        batch: PendingInboundBatch,
+        latest_message: MessageRecord,
+    ) -> dict[str, str]:
+        metadata = dict(latest_message.metadata)
+        if batch.wechat_media_refs:
+            metadata["wechat_media_ids_json"] = json.dumps(batch.wechat_media_refs, ensure_ascii=False)
+            metadata["wechat_media_kind"] = "image"
+        metadata["wechat_media_placeholder"] = str(batch.merged_query_is_placeholder).lower()
+        return metadata
 
     def _should_reset_existing_batch(self, batch: PendingInboundBatch, session: SessionRecord) -> bool:
         if batch.dispatch_state == "collecting":

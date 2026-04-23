@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -16,6 +18,13 @@ from claw_node.node_identity import NodeIdentity, build_node_identity
 
 logger = logging.getLogger(__name__)
 TASK_STREAM_PROTOCOL_VERSION = "task-stream-v2"
+
+
+@dataclass(frozen=True)
+class DownloadedGatewayMedia:
+    content: bytes
+    content_type: str
+    filename: str
 
 
 class GatewayClient:
@@ -99,6 +108,17 @@ class GatewayClient:
         response.raise_for_status()
         data = response.json()
         return data.get("task")
+
+    async def download_media(self, media_id: str) -> DownloadedGatewayMedia:
+        client = self._get_api_client()
+        response = await client.get(f"/api/nodes/{self._settings.node_id}/media/{media_id}")
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
+        return DownloadedGatewayMedia(
+            content=response.content,
+            content_type=content_type,
+            filename=self._extract_filename(response) or f"{media_id}.bin",
+        )
 
     async def list_sessions(self) -> list[dict[str, Any]]:
         client = self._get_api_client()
@@ -301,3 +321,10 @@ class GatewayClient:
         if "additional_headers" in parameters:
             return "additional_headers"
         return "extra_headers"
+
+    def _extract_filename(self, response: httpx.Response) -> str:
+        content_disposition = response.headers.get("content-disposition", "")
+        match = re.search(r'filename="?([^";]+)"?', content_disposition)
+        if match:
+            return match.group(1).strip()
+        return ""

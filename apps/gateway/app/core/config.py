@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     identity_dir: Path = Field(default=Path("data/identity"))
     memory_dir: Path = Field(default=Path("data/memory"))
     runtime_root: Path = Field(default=Path("runtime"))
+    wechat_media_ttl_seconds: int = Field(default=86_400, ge=60, le=604_800)
     node_tokens: dict[str, str] = Field(default_factory=dict)
     dispatch_mode_enabled: bool = False
     local_node_id: str = "local-node"
@@ -36,6 +37,12 @@ class Settings(BaseSettings):
     console_gateway_base_url: str = ""
 
     default_agent_id: str = "default-agent"
+    public_entry_enabled: bool = False
+    public_entry_base_url: str = ""
+    public_entry_display_name: str = ""
+    public_entry_qr_url: str = ""
+    public_entry_contact_hint: str = ""
+    public_entry_notes: str = ""
     dify_base_url: str = ""
     dify_api_key: str = ""
     wechat_token: str = ""

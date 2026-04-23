@@ -30,7 +30,22 @@ if (-not (Test-Path $WinSWExe)) {
     throw "WinSW executable not found under $WinSWSource. Put WinSW-x64.exe or WinSW.exe there before building the bundle."
 }
 
-Copy-Item -Recurse -Force $NodeSource (Join-Path $BundleRoot "claw-node")
+$NodeBundleTarget = Join-Path $BundleRoot "claw-node"
+$RoboCopyArgs = @(
+    $NodeSource,
+    $NodeBundleTarget,
+    "/E",
+    "/XD",
+    ".tmp",
+    ".pytest_cache",
+    "__pycache__",
+    "/XF",
+    "*.pyc"
+)
+$null = & robocopy @RoboCopyArgs
+if ($LASTEXITCODE -gt 7) {
+    throw "Failed to copy claw-node source into bundle. robocopy exit code: $LASTEXITCODE"
+}
 Copy-Item -Recurse -Force $WinSWSource (Join-Path $BundleRoot "winsw")
 
 $EnvExample = @"

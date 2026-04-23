@@ -264,6 +264,8 @@ class ProcessManager:
         node_spec = self._resolved_local_node_spec(profile)
         existing_config = self._read_local_node_runtime_config(profile, layout)
         gateway_base_url = node_spec["gateway_base_url"] or existing_config.get("CLAW_GATEWAY_BASE_URL", "").strip()
+        existing_max_concurrency = existing_config.get("CLAW_MAX_CONCURRENCY", "").strip() or "1"
+        existing_channel_capacity = existing_config.get("CLAW_CHANNEL_CAPACITY", "").strip()
         local_node_id = node_spec["node_id"]
         install_dir = self._managed_local_node_install_dir(profile, layout, node_spec)
         install_dir.mkdir(parents=True, exist_ok=True)
@@ -295,8 +297,10 @@ class ProcessManager:
             ),
             "-ModelProvider",
             existing_config.get("CLAW_MODEL_PROVIDER", "").strip() or "auto",
+            "-ChannelCapacity",
+            existing_channel_capacity or "0",
             "-MaxConcurrency",
-            "1",
+            existing_max_concurrency,
             "-InstallDir",
             str(install_dir),
             "-DiscoveryEnabled",
@@ -791,8 +795,12 @@ class ProcessManager:
         if owner is None:
             return None
         managed = self._processes.get(component)
-        if managed is not None and managed.poll() is None and managed.pid == owner.get("pid"):
-            return None
+        if managed is not None and managed.poll() is None:
+            owner_pid = owner.get("pid")
+            if managed.pid == owner_pid:
+                return None
+            if isinstance(owner_pid, int) and self._is_process_descendant(owner_pid, managed.pid):
+                return None
         # If the occupying process is a stale launcher sub-process (e.g. after launcher restart),
         # kill it so we can start a fresh one.
         cmd = (owner.get("command_line") or "").lower()
@@ -821,6 +829,19 @@ class ProcessManager:
             "command_line": command_line,
             "hint": self._classify_process_hint(command_line),
         }
+
+    def _is_process_descendant(self, pid: int, ancestor_pid: int) -> bool:
+        current_pid = pid
+        for _ in range(8):
+            parent_pid = self._query_process_parent_pid(current_pid)
+            if parent_pid is None:
+                return False
+            if parent_pid == ancestor_pid:
+                return True
+            if parent_pid <= 0 or parent_pid == current_pid:
+                return False
+            current_pid = parent_pid
+        return False
 
     def _listening_port_snapshot(self) -> dict[int, int]:
         now = time.monotonic()
@@ -902,6 +923,31 @@ class ProcessManager:
         command_line = result.stdout.strip()
         self._process_command_line_cache[pid] = (now, command_line)
         return command_line
+
+    def _query_process_parent_pid(self, pid: int) -> int | None:
+        try:
+            result = subprocess.run(  # noqa: S603
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter \"ProcessId = {pid}\").ParentProcessId",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                encoding="utf-8",
+                errors="ignore",
+            )
+        except Exception:
+            return None
+        value = result.stdout.strip()
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
 
     def _classify_process_hint(self, command_line: str) -> str:
         normalized = command_line.lower()

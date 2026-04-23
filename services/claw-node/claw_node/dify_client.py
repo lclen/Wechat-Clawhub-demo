@@ -19,10 +19,12 @@ class DifyClient:
         settings: NodeSettings,
         local_cache: LocalCache | None = None,
         event_callback: Callable[[dict[str, Any]], None] | None = None,
+        media_downloader: Callable[[str], Any] | None = None,
     ) -> None:
         self._settings = settings
         self._local_cache = local_cache
         self._event_callback = event_callback
+        self._media_downloader = media_downloader
         self._conversation_ids: dict[str, str] = {}
         self._remote_task_ids: dict[str, str] = {}
         self._streaming_only = False
@@ -31,7 +33,6 @@ class DifyClient:
             timeout=httpx.Timeout(60.0),
             headers={
                 "Authorization": f"Bearer {settings.dify_api_key}",
-                "Content-Type": "application/json",
             },
         )
 
@@ -65,7 +66,12 @@ class DifyClient:
         }
         if conversation_id:
             payload["conversation_id"] = conversation_id
-        files = self._collect_files(recent_messages)
+        files = await self._collect_files(
+            user_id=user_id,
+            session_id=session_id,
+            recent_messages=recent_messages,
+            trace_metadata=trace_metadata,
+        )
         if files:
             payload["files"] = files
         request_started_at = time.perf_counter()
@@ -326,21 +332,149 @@ class DifyClient:
         value = usage.get(key)
         return "" if value is None else str(value)
 
-    def _collect_files(self, recent_messages: list[dict[str, Any]]) -> list[dict[str, str]]:
+    async def _collect_files(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        recent_messages: list[dict[str, Any]],
+        trace_metadata: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        if not recent_messages:
+            return []
+        latest = recent_messages[-1]
+        metadata = latest.get("metadata")
+        if not isinstance(metadata, dict):
+            return []
         files: list[dict[str, str]] = []
         seen: set[str] = set()
-        for item in recent_messages[-6:]:
-            metadata = item.get("metadata")
-            if not isinstance(metadata, dict):
+        local_specs = await self._extract_wechat_local_files(
+            metadata,
+            user_id=user_id,
+            session_id=session_id,
+            trace_metadata=trace_metadata,
+        )
+        for spec in [*local_specs, *self._extract_remote_files(metadata)]:
+            dedupe_key = json.dumps(spec, sort_keys=True, ensure_ascii=True)
+            if dedupe_key in seen:
                 continue
-            file_specs = self._extract_remote_files(metadata)
-            for spec in file_specs:
-                dedupe_key = json.dumps(spec, sort_keys=True, ensure_ascii=True)
-                if dedupe_key in seen:
-                    continue
-                seen.add(dedupe_key)
-                files.append(spec)
+            seen.add(dedupe_key)
+            files.append(spec)
         return files
+
+    async def _extract_wechat_local_files(
+        self,
+        metadata: dict[str, Any],
+        *,
+        user_id: str,
+        session_id: str,
+        trace_metadata: dict[str, str] | None = None,
+    ) -> list[dict[str, str]]:
+        if self._media_downloader is None:
+            return []
+        raw_refs = str(metadata.get("wechat_media_ids_json") or "").strip()
+        if not raw_refs:
+            return []
+        try:
+            parsed = json.loads(raw_refs)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(parsed, list):
+            return []
+        uploaded_files: list[dict[str, str]] = []
+        for item in parsed:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("kind") or "image").strip().lower() != "image":
+                continue
+            media_id = str(item.get("media_id") or "").strip()
+            if not media_id:
+                continue
+            upload_file_id = await self._upload_gateway_media_to_dify(
+                media_id=media_id,
+                filename=str(item.get("filename") or "").strip(),
+                mime_type=str(item.get("mime_type") or "").strip(),
+                user_id=user_id,
+                session_id=session_id,
+                trace_metadata=trace_metadata,
+            )
+            uploaded_files.append(
+                {
+                    "type": "image",
+                    "transfer_method": "local_file",
+                    "upload_file_id": upload_file_id,
+                }
+            )
+        return uploaded_files
+
+    async def _upload_gateway_media_to_dify(
+        self,
+        *,
+        media_id: str,
+        filename: str,
+        mime_type: str,
+        user_id: str,
+        session_id: str,
+        trace_metadata: dict[str, str] | None = None,
+    ) -> str:
+        if self._media_downloader is None:
+            raise RuntimeError("WeChat media downloader is not configured for Dify")
+        started_at = time.perf_counter()
+        self._emit_event(
+            result="dify_file_upload_started",
+            message="开始上传图片到 Dify。",
+            session_id=session_id,
+            metadata={
+                **(trace_metadata or {}),
+                "media_id": media_id,
+            },
+        )
+        try:
+            downloaded = await self._media_downloader(media_id)
+            resolved_filename = getattr(downloaded, "filename", "") or filename or f"{media_id}.bin"
+            resolved_mime_type = getattr(downloaded, "content_type", "") or mime_type or "application/octet-stream"
+            response = await self._client.post(
+                "/files/upload",
+                data={"user": user_id},
+                files={
+                    "file": (
+                        resolved_filename,
+                        getattr(downloaded, "content"),
+                        resolved_mime_type,
+                    )
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            upload_file_id = str(payload.get("id") or ((payload.get("data") or {}).get("id")) or "").strip()
+            if not upload_file_id:
+                raise RuntimeError("Dify /files/upload response did not include file id")
+            self._emit_event(
+                result="dify_file_upload_finished",
+                message="图片已上传到 Dify。",
+                session_id=session_id,
+                metadata={
+                    **(trace_metadata or {}),
+                    "media_id": media_id,
+                    "upload_file_id": upload_file_id,
+                    "elapsed_ms": str(max(1, int((time.perf_counter() - started_at) * 1000))),
+                },
+            )
+            return upload_file_id
+        except Exception as exc:
+            self._emit_event(
+                result="dify_file_upload_failed",
+                message="上传图片到 Dify 失败。",
+                session_id=session_id,
+                metadata={
+                    **(trace_metadata or {}),
+                    "media_id": media_id,
+                    "elapsed_ms": str(max(1, int((time.perf_counter() - started_at) * 1000))),
+                    "error": str(exc),
+                },
+                level="warning",
+            )
+            raise
 
     def _extract_remote_files(self, metadata: dict[str, Any]) -> list[dict[str, str]]:
         raw_files = str(metadata.get("dify_files_json") or "").strip()

@@ -9,6 +9,7 @@ from launcher.models import (
     apply_machine_role,
     apply_start_request,
     derive_runtime_model,
+    normalize_gateway_base_url,
     StartRequest,
 )
 from launcher.process_manager import ProcessManager
@@ -20,6 +21,7 @@ class LauncherRuntimeModelTests(unittest.TestCase):
 
         self.assertTrue(profile.enable_gateway)
         self.assertTrue(profile.enable_local_node)
+        self.assertEqual(profile.gateway_base_url, "")
 
     def test_gateway_start_request_restores_builtin_local_node(self) -> None:
         profile = LauncherProfile(enable_gateway=True, enable_local_node=False, dispatch_mode_enabled=False)
@@ -58,6 +60,20 @@ class LauncherRuntimeModelTests(unittest.TestCase):
         self.assertEqual(runtime.machine_role, LauncherMachineRole.NODE)
         self.assertFalse(runtime.gateway_should_run)
         self.assertTrue(runtime.local_node_should_run)
+
+    def test_normalize_gateway_base_url_clears_remote_value_for_gateway_role(self) -> None:
+        profile = LauncherProfile(enable_gateway=True, enable_local_node=True, gateway_base_url="http://192.168.0.17:8300/")
+
+        normalize_gateway_base_url(profile)
+
+        self.assertEqual(profile.gateway_base_url, "")
+
+    def test_normalize_gateway_base_url_preserves_remote_value_for_worker_role(self) -> None:
+        profile = LauncherProfile(enable_gateway=False, enable_local_node=True, gateway_base_url="http://192.168.0.17:8300/")
+
+        normalize_gateway_base_url(profile)
+
+        self.assertEqual(profile.gateway_base_url, "http://192.168.0.17:8300")
 
     def test_console_role_disables_local_node_runtime(self) -> None:
         profile = apply_machine_role(LauncherProfile(), LauncherMachineRole.CONSOLE)

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
-from app.core.deps import get_node_registry, get_setup_service
+from app.core.deps import get_node_registry, get_public_entry_service, get_setup_service
 from app.models.setup import (
     ConsoleConnectRequest,
     GatewayDispatchModeRequest,
@@ -12,6 +12,7 @@ from app.models.setup import (
     DiscoveryScanRequest,
     DiscoveryScanResponse,
     GatewayConsoleSetupRequest,
+    PublicEntryProfileResponse,
     GatewaySetupSaveRequest,
     GatewaySetupSaveResponse,
     ManualPairRequest,
@@ -22,6 +23,7 @@ from app.models.setup import (
 )
 from app.services.setup_service import SetupService
 from app.services.node_registry import NodeRegistry
+from app.services.public_entry_service import PublicEntryService
 
 router = APIRouter(prefix="/api/setup", tags=["setup"])
 
@@ -31,6 +33,18 @@ async def get_setup_profile(
     setup_service: SetupService = Depends(get_setup_service),
 ) -> SetupProfileResponse:
     return setup_service.get_profile()
+
+
+@router.get("/public-entry", response_model=PublicEntryProfileResponse)
+async def get_public_entry_profile(
+    request: Request,
+    setup_service: SetupService = Depends(get_setup_service),
+    public_entry_service: PublicEntryService = Depends(get_public_entry_service),
+) -> PublicEntryProfileResponse:
+    return setup_service.get_public_entry_profile(
+        access_url=public_entry_service.build_access_url(str(request.base_url).rstrip("/")),
+        stats=public_entry_service.get_stats(),
+    )
 
 
 @router.post("/reset", status_code=200)

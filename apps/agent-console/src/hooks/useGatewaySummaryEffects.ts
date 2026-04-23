@@ -8,10 +8,7 @@ import type {
   NodeRecord,
 } from "../types";
 
-type RequestJson = <T>(input: string, init?: RequestInit) => Promise<T>;
-
 type UseGatewaySummaryEffectsOptions = {
-  requestJson: RequestJson;
   currentRoleIsWorker: boolean;
   currentRoleIsConsole: boolean;
   localGatewayManaged: boolean | null;
@@ -23,6 +20,7 @@ type UseGatewaySummaryEffectsOptions = {
   workspace: string;
   gatewaySummaryStreamActive: boolean;
   setGatewaySummaryStreamActive: (next: boolean) => void;
+  refreshGatewaySummarySnapshot: (options?: { force?: boolean; minIntervalMs?: number }) => Promise<GatewaySummaryResponse | null>;
   setWorkerGatewayProbeTask: (next: {
     task_id: string;
     kind: "gateway_probe";
@@ -39,7 +37,6 @@ type UseGatewaySummaryEffectsOptions = {
 
 export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOptions) {
   const {
-    requestJson,
     currentRoleIsWorker,
     currentRoleIsConsole,
     localGatewayManaged,
@@ -51,6 +48,7 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
     workspace,
     gatewaySummaryStreamActive,
     setGatewaySummaryStreamActive,
+    refreshGatewaySummarySnapshot,
     setWorkerGatewayProbeTask,
     applyGatewaySummary,
   } = options;
@@ -187,10 +185,9 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
         if (!remoteGateway || !nodeId) return;
         let failed = false;
         try {
-          const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null);
+          const summary = await refreshGatewaySummarySnapshot();
           if (cancelled) return;
           if (summary) {
-            applyGatewaySummary(summary);
             setWorkerProbeFromSummary(summary, nodeId, remoteGateway);
           }
         } catch {
@@ -211,11 +208,8 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
         if (!remoteGateway) return;
         let failed = false;
         try {
-          const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`).catch(() => null);
+          const summary = await refreshGatewaySummarySnapshot();
           if (cancelled) return;
-          if (summary) {
-            applyGatewaySummary(summary);
-          }
         } catch {
           failed = true;
         } finally {
@@ -231,9 +225,8 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
 
       let failed = false;
       try {
-        const summary = await requestJson<GatewaySummaryResponse>("/api/system/summary");
+        await refreshGatewaySummarySnapshot();
         if (cancelled) return;
-        applyGatewaySummary(summary);
       } catch {
         failed = true;
       } finally {
@@ -254,5 +247,5 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [applyGatewaySummary, currentRoleIsConsole, currentRoleIsWorker, gatewaySummaryStreamActive, launcherStatus, localGatewayManaged, requestJson, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, workspace, setWorkerGatewayProbeTask]);
+  }, [applyGatewaySummary, currentRoleIsConsole, currentRoleIsWorker, gatewaySummaryStreamActive, launcherStatus, localGatewayManaged, refreshGatewaySummarySnapshot, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, workspace, setWorkerGatewayProbeTask]);
 }

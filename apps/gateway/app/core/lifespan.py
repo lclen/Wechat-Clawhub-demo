@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.access.wechat_bot import WeChatBotService
+from app.access.wechat_multi_bot import MultiWeChatBotService
 from app.core.config import get_settings
 from app.dispatch.queue import DispatchQueue
 from app.dispatch.scheduler import DispatchScheduler
@@ -17,6 +17,7 @@ from app.services.inbound_aggregation import InboundAggregationService
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.node_stream import NodeStreamBroker
 from app.services.outgoing_dispatcher import OutgoingDispatcher
+from app.services.public_entry_service import PublicEntryService
 from app.services.setup_service import SetupService
 from app.services.snapshot_services import GatewaySummarySnapshotService, SessionOverviewSnapshotService
 from app.services.session_manager import SessionManager
@@ -25,6 +26,7 @@ from app.services.node_registry import NodeRegistry
 from app.services.redis_store import RedisStore
 from app.services.transcript_writer import TranscriptWriter
 from app.services.user_data_store import UserDataStore
+from app.services.wechat_media_store import WeChatMediaStore
 
 
 @asynccontextmanager
@@ -38,6 +40,10 @@ async def lifespan(app: FastAPI):
     node_registry = NodeRegistry(redis_store, settings)
     transcript_writer = TranscriptWriter(settings.transcript_dir)
     user_data_store = UserDataStore(identity_dir=settings.identity_dir, memory_dir=settings.memory_dir)
+    wechat_media_store = WeChatMediaStore(
+        settings.runtime_root / "wechat-media",
+        ttl_seconds=settings.wechat_media_ttl_seconds,
+    )
     session_stream = SessionStreamBroker()
     node_stream = NodeStreamBroker()
     node_diagnostics_stream = NodeDiagnosticsStreamBroker()
@@ -53,7 +59,7 @@ async def lifespan(app: FastAPI):
         overview_snapshot=session_overview_snapshot,
     )
     scheduler = DispatchScheduler(node_registry, settings)
-    wechat_bot = WeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
+    wechat_bot = MultiWeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
     outgoing_dispatcher = OutgoingDispatcher(wechat_bot=wechat_bot, transcript_writer=transcript_writer)
     dispatch_queue = DispatchQueue(
         redis_store,
@@ -73,11 +79,17 @@ async def lifespan(app: FastAPI):
     )
     wechat_bot.attach_dispatch_queue(dispatch_queue)
     wechat_bot.attach_inbound_aggregation(inbound_aggregation)
+    wechat_bot.attach_media_store(wechat_media_store)
     setup_service = SetupService(
         settings=settings,
         wechat_bot=wechat_bot,
         diagnostics_stream=node_diagnostics_stream,
         redis_store=redis_store,
+    )
+    public_entry_service = PublicEntryService(
+        settings=settings,
+        wechat_bot=wechat_bot,
+        user_data_store=user_data_store,
     )
     node_auth = NodeAuthService(settings, setup_service=setup_service)
     gateway_summary_service = GatewaySummaryService(
@@ -111,6 +123,8 @@ async def lifespan(app: FastAPI):
     app.state.wechat_bot = wechat_bot
     app.state.outgoing_dispatcher = outgoing_dispatcher
     app.state.setup_service = setup_service
+    app.state.public_entry_service = public_entry_service
+    app.state.wechat_media_store = wechat_media_store
     await wechat_bot.initialize()
     try:
         yield
@@ -119,6 +133,7 @@ async def lifespan(app: FastAPI):
         with suppress(asyncio.CancelledError):
             await summary_task
         await inbound_aggregation.shutdown()
+        await public_entry_service.close()
         await wechat_bot.shutdown()
         await redis_store.close()
 

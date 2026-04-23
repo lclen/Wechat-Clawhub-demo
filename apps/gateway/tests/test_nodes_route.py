@@ -5,15 +5,19 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+from fastapi import HTTPException
+
 from app.api.routes.nodes import (
     _dispatch_task_queue_age_ms,
     _summarize_task_stream_event,
+    download_node_media,
     stream_node_tasks,
 )
 from app.services.node_stream import NodeStreamReceiveResult
 from app.models.node import NodeStatus
 from app.models.node import NodeRecord
 from app.services.node_inventory import build_node_inventory
+from app.services.wechat_media_store import WeChatMediaNotFoundError
 
 
 def build_node(
@@ -174,6 +178,60 @@ class NodeTaskQueueAgeTests(unittest.TestCase):
         self.assertIsNotNone(age_ms)
         assert age_ms is not None
         self.assertGreaterEqual(age_ms, 0)
+
+
+class NodeMediaRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_node_media_returns_file_response(self) -> None:
+        request = SimpleNamespace(
+            headers={},
+            client=None,
+            url=SimpleNamespace(path="/api/nodes/node-1/media/wm_1"),
+        )
+        store = SimpleNamespace(ping=AsyncMock(return_value=True))
+        node_auth = SimpleNamespace(verify_request=MagicMock())
+        media_store = SimpleNamespace(
+            open=MagicMock(
+                return_value=(
+                    SimpleNamespace(mime_type="image/png", filename="sample.png"),
+                    "D:/wechat-claw-hub/runtime/wechat-media/files/wm_1.png",
+                )
+            )
+        )
+
+        response = await download_node_media(
+            request=request,
+            node_id="node-1",
+            media_id="wm_1",
+            store=store,
+            node_auth=node_auth,
+            media_store=media_store,
+        )
+
+        self.assertEqual(response.media_type, "image/png")
+        self.assertIn('filename="sample.png"', response.headers.get("content-disposition", ""))
+        node_auth.verify_request.assert_called_once_with(request, "node-1")
+
+    async def test_download_node_media_returns_404_for_missing_media(self) -> None:
+        request = SimpleNamespace(
+            headers={},
+            client=None,
+            url=SimpleNamespace(path="/api/nodes/node-1/media/wm_missing"),
+        )
+        store = SimpleNamespace(ping=AsyncMock(return_value=True))
+        node_auth = SimpleNamespace(verify_request=MagicMock())
+        media_store = SimpleNamespace(open=MagicMock(side_effect=WeChatMediaNotFoundError("missing")))
+
+        with self.assertRaises(HTTPException) as ctx:
+            await download_node_media(
+                request=request,
+                node_id="node-1",
+                media_id="wm_missing",
+                store=store,
+                node_auth=node_auth,
+                media_store=media_store,
+            )
+
+        self.assertEqual(ctx.exception.status_code, 404)
 
 
 class NodeTaskStreamRouteTests(unittest.IsolatedAsyncioTestCase):

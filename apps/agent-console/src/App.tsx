@@ -161,6 +161,7 @@ import type {
   NodeRecord,
   PairingStatus,
   PollResponse,
+  PublicEntryProfileResponse,
   PairingDebugEntry,
   QrStart,
   SessionFilter,
@@ -182,6 +183,12 @@ const FAST_POLL_MS = 1200;
 const RETRY_POLL_MS = 1000; // backend unreachable — retry quickly
 const WS_RECONNECT_BASE_MS = 1500;
 const WS_RECONNECT_MAX_MS = 15000;
+const PUBLIC_ENTRY_PROFILE_MIN_INTERVAL_MS = 10000;
+
+type RefreshPublicEntryProfileOptions = {
+  force?: boolean;
+  minIntervalMs?: number;
+};
 
 async function requestJson<T>(input: string, init?: RequestInit): Promise<T> {
   const response = await fetch(input, { headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) }, ...init });
@@ -279,6 +286,8 @@ export function App() {
   const [gatewaySummaryStreamActive, setGatewaySummaryStreamActive] = useState(false);
   const [qr, setQr] = useState<QrStart | null>(null);
   const [qrImageSrc, setQrImageSrc] = useState("");
+  const [publicEntryProfileState, setPublicEntryProfileState] = useState<PublicEntryProfileResponse | null>(null);
+  const [publicEntryQrImageSrc, setPublicEntryQrImageSrc] = useState<string | null>(null);
   const [pollState, setPollState] = useState<PollResponse | null>(null);
   const [wechatBaseUrl, setWechatBaseUrl] = useState(initialSummaryState.wechat_status?.base_url || "https://ilinkai.weixin.qq.com");
   const [manualToken, setManualToken] = useState("");
@@ -362,6 +371,9 @@ export function App() {
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
   const restoredSessionScrollRef = useRef(initialUiState.session_scroll);
   const nodeDiagnosticsCacheRef = useRef<Map<string, NodeDiagnosticsRecord>>(new Map());
+  const publicEntryProfileRequestRef = useRef<Promise<PublicEntryProfileResponse | null> | null>(null);
+  const publicEntryProfileEndpointRef = useRef("");
+  const publicEntryProfileLastLoadedAtRef = useRef(0);
   const runtimeMachineRole = launcherMachineRoleValue(launcherStatus);
   const effectiveRole = resolveEffectiveRole(setupRole, setupProfile?.completed_roles ?? [], runtimeMachineRole);
   const roleCapabilities = useMemo(() => buildRoleCapabilities(effectiveRole), [effectiveRole]);
@@ -462,7 +474,6 @@ export function App() {
     retryPollMs: RETRY_POLL_MS,
   });
   useGatewaySummaryEffects({
-    requestJson,
     currentRoleIsWorker,
     currentRoleIsConsole,
     localGatewayManaged,
@@ -474,6 +485,7 @@ export function App() {
     workspace,
     gatewaySummaryStreamActive,
     setGatewaySummaryStreamActive,
+    refreshGatewaySummarySnapshot,
     setWorkerGatewayProbeTask,
     applyGatewaySummary,
   });
@@ -616,6 +628,31 @@ export function App() {
   }, [qr]);
 
   useEffect(() => {
+    let cancelled = false;
+    const run = async () => {
+      const accessUrl = safeTrim(publicEntryProfileState?.access_url);
+      if (!accessUrl) {
+        setPublicEntryQrImageSrc(null);
+        return;
+      }
+      try {
+        const dataUrl = await QRCode.toDataURL(accessUrl, {
+          margin: 1,
+          width: 360,
+          color: { dark: "#10233a", light: "#f8fbff" },
+        });
+        if (!cancelled) setPublicEntryQrImageSrc(dataUrl);
+      } catch {
+        if (!cancelled) setPublicEntryQrImageSrc(null);
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [publicEntryProfileState?.access_url]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -670,6 +707,7 @@ export function App() {
     requestJson,
     withBusy,
     qr,
+    pollState,
     wechatBaseUrl,
     manualToken,
     launcherStatus,
@@ -722,6 +760,81 @@ export function App() {
       workerGatewayAutoProbeKeyRef.current = "";
     },
   });
+  const refreshPublicEntryProfile = useCallback(async (options?: RefreshPublicEntryProfileOptions) => {
+    if (currentRoleIsWorker) {
+      setPublicEntryProfileState(null);
+      publicEntryProfileEndpointRef.current = "";
+      return null;
+    }
+    const remoteGateway = safeTrim(sessionRemoteGatewayBaseUrl);
+    const endpoint = shouldUseLocalGatewayApi
+      ? "/api/setup/public-entry"
+      : remoteGateway
+        ? `${remoteGateway}/api/setup/public-entry`
+        : "";
+    if (!endpoint) {
+      setPublicEntryProfileState(null);
+      publicEntryProfileEndpointRef.current = "";
+      return null;
+    }
+    const force = options?.force ?? false;
+    const minIntervalMs = options?.minIntervalMs ?? PUBLIC_ENTRY_PROFILE_MIN_INTERVAL_MS;
+    const now = Date.now();
+    if (!force) {
+      if (publicEntryProfileRequestRef.current && publicEntryProfileEndpointRef.current === endpoint) {
+        return publicEntryProfileRequestRef.current;
+      }
+      if (
+        publicEntryProfileState
+        && publicEntryProfileEndpointRef.current === endpoint
+        && now - publicEntryProfileLastLoadedAtRef.current < minIntervalMs
+      ) {
+        return publicEntryProfileState;
+      }
+    }
+    publicEntryProfileEndpointRef.current = endpoint;
+    const request = (async () => {
+      try {
+        const profile = await requestJson<PublicEntryProfileResponse>(endpoint);
+        publicEntryProfileLastLoadedAtRef.current = Date.now();
+        setPublicEntryProfileState(profile);
+        return profile;
+      } catch {
+        setPublicEntryProfileState(null);
+        return null;
+      } finally {
+        publicEntryProfileRequestRef.current = null;
+      }
+    })();
+    publicEntryProfileRequestRef.current = request;
+    try {
+      return await request;
+    } catch {
+      return null;
+    }
+  }, [currentRoleIsWorker, publicEntryProfileState, requestJson, sessionRemoteGatewayBaseUrl, shouldUseLocalGatewayApi]);
+  useEffect(() => {
+    void refreshPublicEntryProfile();
+  }, [refreshPublicEntryProfile]);
+  const savePublicEntryProfile = useCallback(() => {
+    void (async () => {
+      await runGatewaySetup({
+        showResultScreen: false,
+        successNotice: "公共入口资料已保存。",
+      });
+      await refreshPublicEntryProfile();
+    })();
+  }, [refreshPublicEntryProfile, runGatewaySetup]);
+  const copyPublicEntryUrl = useCallback(() => {
+    const accessUrl = safeTrim(publicEntryProfileState?.access_url);
+    if (!accessUrl) {
+      setNotice("当前还没有可复制的公共入口链接。");
+      return;
+    }
+    void navigator.clipboard.writeText(accessUrl)
+      .then(() => setNotice("公共入口链接已复制。"))
+      .catch(() => setNotice("复制入口链接失败，请手动复制。"));
+  }, [publicEntryProfileState?.access_url, setNotice]);
   const repairCurrentMachineNode = useCallback(() => {
     if (currentRoleIsWorker) {
       void runWorkerSetup({ showResultScreen: false });
@@ -733,7 +846,7 @@ export function App() {
     try {
       await withBusy("connection-refresh-all", async () => {
         await refreshQuickSetupStatus({ silent: true });
-        await refreshLocalNodeDiagnostics();
+        await refreshLocalNodeDiagnostics({ force: true });
       });
       setNotice("已刷新网关、节点、微信和模型状态。");
     } catch (error) {
@@ -2011,12 +2124,14 @@ export function App() {
             roleSections={{
               showGatewayOverview: roleCapabilities.sections.showGatewayOverview,
               showWeChatAccess: roleCapabilities.sections.showWeChatAccess,
+              showPublicEntryProfile: roleCapabilities.sections.showPublicEntryProfile,
               showRemoteNodeInventory: roleCapabilities.sections.showRemoteNodeInventory,
               showLocalNodePanel: roleCapabilities.sections.showLocalNodePanel,
             }}
             roleActions={{
               canManageGateway: roleCapabilities.actions.canManageGateway,
               canManageWeChat: roleCapabilities.actions.canManageWeChat,
+              canManagePublicEntry: roleCapabilities.actions.canManagePublicEntry,
               canManageNodes: roleCapabilities.actions.canManageNodes,
             }}
             connectionConsolePresentation={connectionConsoleView}
@@ -2054,6 +2169,23 @@ export function App() {
             pollStatus={pollState?.status ?? "未开始"}
             wechatBaseUrl={wechatBaseUrl}
             manualToken={manualToken}
+            publicEntryProfile={{
+              enabled: gatewaySetup.public_entry_enabled,
+              baseUrl: gatewaySetup.public_entry_base_url,
+              displayName: gatewaySetup.public_entry_display_name,
+              contactHint: gatewaySetup.public_entry_contact_hint,
+              notes: gatewaySetup.public_entry_notes,
+              accessUrl: publicEntryProfileState?.access_url || "",
+              accessQrImageSrc: publicEntryQrImageSrc,
+              stats: {
+                pendingQr: publicEntryProfileState?.stats.pending_qr || 0,
+                waitingConfirm: publicEntryProfileState?.stats.waiting_confirm || 0,
+                bound: publicEntryProfileState?.stats.bound || 0,
+                expired: publicEntryProfileState?.stats.expired || 0,
+                failed: publicEntryProfileState?.stats.failed || 0,
+                activeBindings: publicEntryProfileState?.stats.active_bindings || 0,
+              },
+            }}
             modelCheckText={modelCheck ? (modelCheck.configured_model_available ? "可用" : "未命中模型列表") : null}
             wechatLastError={wechatStatus?.last_error || null}
             wechatStatus={wechatStatus}
@@ -2063,6 +2195,11 @@ export function App() {
             onRefreshAllStatus={() => void refreshAllConnectionStatus()}
             onWechatBaseUrlChange={setWechatBaseUrl}
             onManualTokenChange={setManualToken}
+            onUpdatePublicEntryProfile={(key, value) => {
+              updateGatewaySetup(key, value as never);
+            }}
+            onSavePublicEntryProfile={savePublicEntryProfile}
+            onCopyPublicEntryUrl={copyPublicEntryUrl}
             onStartQrFlow={() => void startQrFlow()}
             onPollQrStatus={() => void pollQrStatus()}
             onConnectManualToken={() => void connectManualToken()}
@@ -2081,8 +2218,8 @@ export function App() {
             onUpdateLocalNodeModelDraft={updateLocalNodeModelDraft}
             onAssessmentMaxRoundsChange={setAssessmentMaxRounds}
             onAssessmentApplyStrategyChange={setAssessmentApplyStrategy}
-            onRefreshLocalNodeStatus={() => void refreshLocalNodeStatus()}
-            onRefreshLocalNodeDiagnostics={() => void refreshLocalNodeDiagnostics()}
+            onRefreshLocalNodeStatus={() => void refreshLocalNodeStatus({ force: true })}
+            onRefreshLocalNodeDiagnostics={() => void refreshLocalNodeDiagnostics({ force: true })}
             onStartLocalNodeService={() => void startLocalNodeService()}
             onStopLocalNodeService={() => void stopLocalNodeService()}
             onRestartLocalNodeService={() => void restartLocalNodeService()}
@@ -2106,7 +2243,7 @@ export function App() {
             localNodeStatus={localNodeStatus}
             localNodeModelDirty={localNodeModelDirty}
             onSaveLocalNodeModelConfig={() => void saveLocalNodeModelConfig()}
-            onRefreshLocalNodeDiagnostics={() => void refreshLocalNodeDiagnostics()}
+            onRefreshLocalNodeDiagnostics={() => void refreshLocalNodeDiagnostics({ force: true })}
             onRunLocalNodeConversationTest={(payload: LocalNodeConversationTestRequest): Promise<LocalNodeConversationTestResponse> => runLocalNodeConversationTest(payload)}
           />
         ) : workspace === "logs" ? (

@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, Mock
 import httpx
 
 from app.access.wechat_bot import (
+    INBOUND_IMAGE_PLACEHOLDER_TEXT,
+    InboundWeChatMediaRef,
     WeChatBotService,
     WeChatSessionExpiredError,
     WECHAT_ILINK_APP_CLIENT_VERSION,
@@ -68,6 +70,61 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         self.inbound_aggregation.ingest_text_message.assert_awaited_once()
         self.service.start_typing_loop.assert_not_awaited()
         self.assertEqual(self.service._received_messages, 1)
+
+    async def test_handle_raw_message_keeps_text_and_adds_image_metadata(self) -> None:
+        raw = {
+            "message_id": "wx-msg-2",
+            "message_type": 1,
+            "from_user_id": "wechat-user",
+            "context_token": "ctx-2",
+            "item_list": [
+                {"type": 1, "text_item": {"text": "看看这张图"}},
+                {"type": 2, "image_item": {"media": {"encrypt_query_param": "enc"}}},
+            ],
+        }
+        self.service._cache_inbound_image = AsyncMock(  # type: ignore[method-assign]
+            return_value=InboundWeChatMediaRef(
+                media_id="wm_1",
+                kind="image",
+                mime_type="image/png",
+                filename="wechat-image.png",
+            )
+        )
+        self.inbound_aggregation.ingest_text_message.return_value = Mock(task_id=None, batch_state="collecting")
+
+        await self.service._handle_raw_message(raw)
+
+        payload = self.inbound_aggregation.ingest_text_message.await_args.args[0]
+        self.assertEqual(payload.content, "看看这张图")
+        self.assertEqual(payload.metadata["wechat_media_kind"], "image")
+        self.assertEqual(payload.metadata["wechat_media_placeholder"], "false")
+        self.assertIn('"media_id": "wm_1"', payload.metadata["wechat_media_ids_json"])
+
+    async def test_handle_raw_message_uses_placeholder_for_image_only(self) -> None:
+        raw = {
+            "message_id": "wx-msg-3",
+            "message_type": 1,
+            "from_user_id": "wechat-user",
+            "context_token": "ctx-3",
+            "item_list": [
+                {"type": 2, "image_item": {"media": {"encrypt_query_param": "enc"}}},
+            ],
+        }
+        self.service._cache_inbound_image = AsyncMock(  # type: ignore[method-assign]
+            return_value=InboundWeChatMediaRef(
+                media_id="wm_2",
+                kind="image",
+                mime_type="image/jpeg",
+                filename="wechat-image.jpg",
+            )
+        )
+        self.inbound_aggregation.ingest_text_message.return_value = Mock(task_id=None, batch_state="collecting")
+
+        await self.service._handle_raw_message(raw)
+
+        payload = self.inbound_aggregation.ingest_text_message.await_args.args[0]
+        self.assertEqual(payload.content, INBOUND_IMAGE_PLACEHOLDER_TEXT)
+        self.assertEqual(payload.metadata["wechat_media_placeholder"], "true")
 
     def test_parse_markdown_segments_extracts_images_and_text(self) -> None:
         segments = parse_markdown_segments("说明文字 ![接线图](https://example.com/a.jpg) 收尾")
