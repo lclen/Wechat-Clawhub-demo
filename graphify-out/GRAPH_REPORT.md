@@ -1,7 +1,7 @@
-# Graph Report - D:\wechat-claw-hub  (2026-04-23)
+# Graph Report - D:\wechat-claw-hub  (2026-04-24)
 
 ## Corpus Check
-- 200 files · ~616,248 words
+- 200 files · ~617,925 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -450,11 +450,11 @@ Nodes (1): Raised when WeChat onboarding fails.
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `Settings` connect `Community 0` to `Community 1`, `Community 2`, `Community 4`, `Community 5`, `Community 6`, `Community 8`, `Community 10`?**
-  _High betweenness centrality (0.086) - this node is a cross-community bridge._
-- **Why does `syncSessionMessageCache()` connect `Community 3` to `Community 1`, `Community 5`?**
-  _High betweenness centrality (0.060) - this node is a cross-community bridge._
+  _High betweenness centrality (0.077) - this node is a cross-community bridge._
 - **Why does `RedisStore` connect `Community 0` to `Community 1`, `Community 2`, `Community 5`, `Community 6`, `Community 7`, `Community 8`, `Community 10`?**
-  _High betweenness centrality (0.051) - this node is a cross-community bridge._
+  _High betweenness centrality (0.050) - this node is a cross-community bridge._
+- **Why does `syncSessionMessageCache()` connect `Community 3` to `Community 1`, `Community 5`?**
+  _High betweenness centrality (0.050) - this node is a cross-community bridge._
 - **Are the 127 inferred relationships involving `Settings` (e.g. with `get_settings()` and `OutboundMarkdownSegment`) actually correct?**
   _`Settings` has 127 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 32 inferred relationships involving `SetupService` (e.g. with `Remove node from Redis active set only, keeping pairing token intact.     The n` and `GatewaySummaryBuildError`) actually correct?**

@@ -88862,8 +88862,8 @@
       "source_file": "D:\\wechat-claw-hub\\services\\claw-node\\claw_node\\gateway_client.py",
       "source_location": "L16",
       "weight": 0.8,
-      "_src": "node_identity_nodeidentity",
-      "_tgt": "gateway_client_downloadedgatewaymedia",
+      "_src": "gateway_client_downloadedgatewaymedia",
+      "_tgt": "node_identity_nodeidentity",
       "confidence_score": 0.5,
       "source": "gateway_client_downloadedgatewaymedia",
       "target": "node_identity_nodeidentity"
