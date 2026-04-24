@@ -1,20 +1,55 @@
 import { ToggleSecretInput } from "./ConnectionUi";
 import {
   CommandBar,
+  MetricStrip,
   SectionHeader,
   SurfaceCard,
   SignalBadge,
+  InfoList,
 } from "../../shared/ConsolePrimitives";
 
+type PublicEntryProfile = {
+  enabled: boolean;
+  baseUrl: string;
+  displayName: string;
+  contactHint: string;
+  notes: string;
+  accessUrl: string;
+  accessQrImageSrc: string | null;
+  stats: {
+    pendingQr: number;
+    waitingConfirm: number;
+    bound: number;
+    expired: number;
+    failed: number;
+    activeBindings: number;
+  };
+};
+
 type WeChatConfigCardProps = {
+  showLoginSection: boolean;
+  showPublicEntrySection: boolean;
+  canManagePublicEntry: boolean;
   statusRows: Array<{ label: string; value: string; multiline?: boolean }>;
   qrImageSrc: string | null;
   pollStatus: string;
   wechatBaseUrl: string;
   manualToken: string;
+  publicEntryProfile: PublicEntryProfile;
   busyKey: string | null;
   onWechatBaseUrlChange: (value: string) => void;
   onManualTokenChange: (value: string) => void;
+  onUpdatePublicEntryProfile: (
+    key:
+      | "public_entry_enabled"
+      | "public_entry_base_url"
+      | "public_entry_display_name"
+      | "public_entry_contact_hint"
+      | "public_entry_notes",
+    value: boolean | string,
+  ) => void;
+  onSavePublicEntryProfile: () => void;
+  onCopyPublicEntryUrl: () => void;
   onStartQrFlow: () => void;
   onPollQrStatus: () => void;
   onConnectManualToken: () => void;
@@ -22,14 +57,21 @@ type WeChatConfigCardProps = {
 };
 
 export function WeChatConfigCard({
+  showLoginSection,
+  showPublicEntrySection,
+  canManagePublicEntry,
   statusRows,
   qrImageSrc,
   pollStatus,
   wechatBaseUrl,
   manualToken,
+  publicEntryProfile,
   busyKey,
   onWechatBaseUrlChange,
   onManualTokenChange,
+  onUpdatePublicEntryProfile,
+  onSavePublicEntryProfile,
+  onCopyPublicEntryUrl,
   onStartQrFlow,
   onPollQrStatus,
   onConnectManualToken,
@@ -38,148 +80,265 @@ export function WeChatConfigCard({
   return (
     <SurfaceCard className="wechat-command-surface" tone="strong">
       <SectionHeader
-        kicker="核心平台"
-        title="微信交互链路"
-        description="支持通过原生微信扫码进行身份同步。首次接入建议使用扫码模式，联调阶段可切换为手动 Token 模式。"
-        actions={
-          <div className="inline-actions">
-            <button
-              type="button"
-              onClick={onStartQrFlow}
-              disabled={busyKey !== null}
-            >
-              {busyKey === "wechat-qr" ? "生成中..." : "生成二维码"}
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={onPollQrStatus}
-              disabled={busyKey !== null}
-            >
-              {busyKey === "wechat-poll" ? "同步状态..." : "刷新状态"}
-            </button>
-          </div>
-        }
+        kicker="固定入口"
+        title="微信入口配置"
+        description="把入口账号登录链路和给外部用户的固定入口资料拆开管理，避免把扫码登录二维码误当成公共用户入口。"
       />
 
-      <div className="connection-wechat-layout" style={{ marginTop: 20 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 24 }}>
-          {/* 左侧：状态统计 */}
-          <div className="connection-fact-grid" style={{ height: "fit-content" }}>
-            {statusRows.map((row) => (
-              <div key={row.label} className="connection-fact-tile">
-                <span>{row.label}</span>
-                <strong className={row.multiline ? "multiline" : ""}>{row.value}</strong>
-              </div>
-            ))}
-          </div>
-
-          {/* 右侧：二维码展示区 */}
-          <div
-            className="qr-stage"
-            style={{
-              backgroundColor: "rgba(0,0,0,0.1)",
-              borderRadius: 12,
-              padding: 24,
-              border: "1px solid var(--line)",
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center"
-            }}
-          >
-            <div
-              className="qr-frame"
-              style={{
-                width: 160,
-                height: 160,
-                backgroundColor: "var(--panel)",
-                borderRadius: 8,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                overflow: "hidden",
-                border: "1px solid var(--line)"
-              }}
-            >
-              {qrImageSrc ? (
-                <img
-                  className="qr-image"
-                  src={qrImageSrc}
-                  alt="WeChat QR code"
-                  style={{ width: "90%", height: "90%", imageRendering: "pixelated" }}
-                />
-              ) : (
-                <div
-                  className="qr-placeholder"
-                  style={{ padding: 20, textAlign: "center", fontSize: "11px", opacity: 0.4 }}
-                >
-                  等待生成...
+      <div className="wechat-sections">
+        {showLoginSection ? (
+          <section className="wechat-split-section">
+            <SectionHeader
+              kicker="入口账号登录"
+              title="绑定入口账号"
+              description="这里只负责把当前网关绑定到固定微信入口账号。对外用户入口资料在下方单独维护。"
+              actions={
+                <div className="inline-actions">
+                  <button
+                    type="button"
+                    onClick={onStartQrFlow}
+                    disabled={busyKey !== null}
+                  >
+                    {busyKey === "wechat-qr" ? "生成中..." : "生成二维码"}
+                  </button>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={onPollQrStatus}
+                    disabled={busyKey !== null}
+                  >
+                    {busyKey === "wechat-poll" ? "同步状态..." : "刷新状态"}
+                  </button>
                 </div>
-              )}
-            </div>
-            <div className="qr-meta" style={{ marginTop: 16, textAlign: "center" }}>
-              <div
-                className="qr-status-line"
-                style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
-              >
-                <span style={{ fontSize: "13px", opacity: 0.6 }}>扫码态</span>
-                <SignalBadge tone={qrImageSrc ? "info" : "neutral"}>{pollStatus}</SignalBadge>
+              }
+            />
+
+            <div className="wechat-login-grid">
+              <div className="connection-fact-grid connection-fact-grid-wide">
+                {statusRows.map((row) => (
+                  <div key={row.label} className="connection-fact-tile">
+                    <span>{row.label}</span>
+                    <strong className={row.multiline ? "multiline" : ""}>{row.value}</strong>
+                  </div>
+                ))}
+              </div>
+
+              <div className="qr-stage">
+                <div className="qr-frame">
+                  {qrImageSrc ? (
+                    <img
+                      className="qr-image"
+                      src={qrImageSrc}
+                      alt="WeChat QR code"
+                      style={{ width: "90%", height: "90%", imageRendering: "pixelated" }}
+                    />
+                  ) : (
+                    <div className="qr-placeholder">
+                      等待生成绑定二维码...
+                    </div>
+                  )}
+                </div>
+                <div className="qr-meta">
+                  <div className="qr-status-line">
+                    <span>扫码态</span>
+                    <SignalBadge tone={qrImageSrc ? "info" : "neutral"}>{pollStatus}</SignalBadge>
+                  </div>
+                  <p>这里的二维码只用于当前入口账号登录，不直接给外部用户使用。</p>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
 
-        <CommandBar
-          label="接入策略"
-          detail="扫码成功后 Token 将自动同步，无需手动操作。"
-          style={{ marginTop: 24, marginBottom: 16 }}
-        />
+            <CommandBar
+              label="登录链路"
+              detail="扫码成功后 Token 会自动同步；联调或补录时也可以走手动 Token 直连。"
+              style={{ marginTop: 18, marginBottom: 12 }}
+            />
 
-        {/* 手动调试模式 */}
-        <details className="form-advanced-details connection-fold-card">
-          <summary>
-            <div className="console-section-copy">
-              <span className="section-kicker">调试模式</span>
-              <h3>手动直连</h3>
-              <p className="console-section-description">用于本地联调或规避扫码风控。</p>
+            <details className="form-advanced-details connection-fold-card">
+              <summary>
+                <div className="console-section-copy">
+                  <span className="section-kicker">调试模式</span>
+                  <h3>手动直连</h3>
+                  <p className="console-section-description">用于本地联调或规避扫码链路异常。</p>
+                </div>
+              </summary>
+              <div className="connection-form-grid" style={{ marginTop: 20 }}>
+                <label>
+                  <span>WeChat Base URL</span>
+                  <input
+                    value={wechatBaseUrl}
+                    onChange={(event) => onWechatBaseUrlChange(event.target.value)}
+                    placeholder="https://ilinkai.weixin.qq.com"
+                  />
+                </label>
+                <label className="connection-full-span">
+                  <span>手动 Token</span>
+                  <ToggleSecretInput
+                    value={manualToken}
+                    onChange={(event) => onManualTokenChange(event.target.value)}
+                    placeholder="在此输入 ilink 提供的 Token"
+                  />
+                </label>
+              </div>
+              <div className="inline-actions" style={{ marginTop: 16 }}>
+                <button
+                  type="button"
+                  onClick={onConnectManualToken}
+                  disabled={busyKey !== null}
+                >
+                  {busyKey === "wechat-connect" ? "正在握手..." : "尝试手动连接"}
+                </button>
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={onDisconnectWeChat}
+                  disabled={busyKey !== null}
+                >
+                  断开当前链路
+                </button>
+              </div>
+            </details>
+          </section>
+        ) : null}
+
+        {showPublicEntrySection ? (
+          <section className="wechat-split-section">
+            <SectionHeader
+              kicker="公共入口资料"
+              title="给外部用户的固定入口资料"
+              description="这里维护的是系统托管的固定公共入口。外部用户先扫公共页二维码，再领取自己的专属 OpenClaw 配对二维码。"
+              actions={
+                <div className="inline-actions">
+                  {publicEntryProfile.accessUrl ? (
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={onCopyPublicEntryUrl}
+                    >
+                      复制入口链接
+                    </button>
+                  ) : null}
+                  {canManagePublicEntry ? (
+                    <button
+                      type="button"
+                      onClick={onSavePublicEntryProfile}
+                      disabled={busyKey !== null}
+                    >
+                      {busyKey === "setup-gateway" ? "保存中..." : "保存公共入口资料"}
+                    </button>
+                  ) : null}
+                </div>
+              }
+            />
+
+            <div className="public-entry-shell">
+              <div className="public-entry-form">
+                <label className="public-entry-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={publicEntryProfile.enabled}
+                    disabled={!canManagePublicEntry || busyKey !== null}
+                    onChange={(event) => onUpdatePublicEntryProfile("public_entry_enabled", event.target.checked)}
+                  />
+                  <div>
+                    <strong>启用公共入口资料</strong>
+                    <span>启用后，网关会对外开放固定入口页，并为每位访问者创建一次性的专属配对二维码。</span>
+                  </div>
+                </label>
+
+                <CommandBar
+                  label="固定分享入口"
+                  detail="填写外部用户真正能访问到的公网基址，系统会自动在后面拼上 /entry 并生成固定公共二维码。"
+                >
+                  <div className="public-entry-url-line">
+                    <code>{publicEntryProfile.accessUrl || "等待网关生成公开入口 URL"}</code>
+                  </div>
+                </CommandBar>
+
+                <MetricStrip
+                  className="public-entry-metric-strip"
+                  items={[
+                    { label: "待扫码", value: String(publicEntryProfile.stats.pendingQr) },
+                    { label: "待确认", value: String(publicEntryProfile.stats.waitingConfirm) },
+                    { label: "已绑定", value: String(publicEntryProfile.stats.bound) },
+                    { label: "活跃绑定", value: String(publicEntryProfile.stats.activeBindings) },
+                  ]}
+                />
+
+                <div className="connection-form-grid">
+                  <label className="connection-full-span">
+                    <span>公网入口 URL</span>
+                    <input
+                      value={publicEntryProfile.baseUrl}
+                      readOnly={!canManagePublicEntry}
+                      onChange={(event) => onUpdatePublicEntryProfile("public_entry_base_url", event.target.value)}
+                      placeholder="例如 http://121.41.47.90:5014"
+                    />
+                  </label>
+                  <label>
+                    <span>显示名称</span>
+                    <input
+                      value={publicEntryProfile.displayName}
+                      readOnly={!canManagePublicEntry}
+                      onChange={(event) => onUpdatePublicEntryProfile("public_entry_display_name", event.target.value)}
+                      placeholder="例如 ClawBot 服务入口"
+                    />
+                  </label>
+                  <label>
+                    <span>联系提示</span>
+                    <input
+                      value={publicEntryProfile.contactHint}
+                      readOnly={!canManagePublicEntry}
+                      onChange={(event) => onUpdatePublicEntryProfile("public_entry_contact_hint", event.target.value)}
+                      placeholder="例如 添加后发送问题即可开始对话"
+                    />
+                  </label>
+                  <label className="connection-full-span">
+                    <span>备注</span>
+                    <textarea
+                      value={publicEntryProfile.notes}
+                      readOnly={!canManagePublicEntry}
+                      onChange={(event) => onUpdatePublicEntryProfile("public_entry_notes", event.target.value)}
+                      placeholder="补充给控制台或外部说明使用，不会当成会话消息。"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <aside className="public-entry-preview">
+                <div className="public-entry-preview-frame">
+                  {publicEntryProfile.accessQrImageSrc ? (
+                    <img
+                      src={publicEntryProfile.accessQrImageSrc}
+                      alt={publicEntryProfile.displayName || "公共入口二维码"}
+                    />
+                  ) : (
+                    <div className="public-entry-preview-empty">等待网关生成固定公共入口二维码</div>
+                  )}
+                </div>
+                <div className="public-entry-preview-copy">
+                  <div className="public-entry-preview-heading">
+                    <strong>{publicEntryProfile.displayName || "未设置显示名称"}</strong>
+                    <SignalBadge tone={publicEntryProfile.enabled ? "good" : "neutral"}>
+                      {publicEntryProfile.enabled ? "已启用" : "未启用"}
+                    </SignalBadge>
+                  </div>
+                  <p>{publicEntryProfile.contactHint || "尚未填写联系提示。"}</p>
+                  <InfoList
+                    items={[
+                      { label: "公网基址", value: publicEntryProfile.baseUrl || "未设置" },
+                      { label: "入口页", value: publicEntryProfile.accessUrl || "未生成" },
+                      { label: "失败/过期", value: `${publicEntryProfile.stats.failed} / ${publicEntryProfile.stats.expired}` },
+                    ]}
+                  />
+                  <div className="public-entry-preview-notes">
+                    {publicEntryProfile.notes || "尚未填写备注。"}
+                  </div>
+                </div>
+              </aside>
             </div>
-          </summary>
-          <div className="connection-form-grid" style={{ marginTop: 20 }}>
-            <label>
-              <span>WeChat Base URL</span>
-              <input
-                value={wechatBaseUrl}
-                onChange={(event) => onWechatBaseUrlChange(event.target.value)}
-                placeholder="https://ilinkai.weixin.qq.com"
-              />
-            </label>
-            <label className="connection-full-span">
-              <span>手动 Token</span>
-              <ToggleSecretInput
-                value={manualToken}
-                onChange={(event) => onManualTokenChange(event.target.value)}
-                placeholder="在此输入 ilink 提供的 Token"
-              />
-            </label>
-          </div>
-          <div className="inline-actions" style={{ marginTop: 16 }}>
-            <button
-              type="button"
-              onClick={onConnectManualToken}
-              disabled={busyKey !== null}
-            >
-              {busyKey === "wechat-connect" ? "正在握手..." : "尝试手动连接"}
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={onDisconnectWeChat}
-              disabled={busyKey !== null}
-            >
-              断开当前链路
-            </button>
-          </div>
-        </details>
+          </section>
+        ) : null}
       </div>
     </SurfaceCard>
   );

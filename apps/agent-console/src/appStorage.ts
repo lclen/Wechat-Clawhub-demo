@@ -2,7 +2,9 @@ import { clearPersistedWorkspace, loadPersistedWorkspace } from "./roleWorkspace
 import {
   DEFAULT_CONSOLE_SETUP,
   DEFAULT_GATEWAY_SETUP,
+  DEFAULT_REMOTE_WORKER_NODE_ID,
   DEFAULT_WORKER_SETUP,
+  LEGACY_WORKER_NODE_IDS,
   SETUP_DRAFT_KEY,
   SUMMARY_STATE_CACHE_KEY,
   UI_STATE_CACHE_KEY,
@@ -21,6 +23,14 @@ function stripNullableValues<T extends Record<string, unknown>>(value: T | undef
   return Object.fromEntries(
     Object.entries(value).filter(([, entry]) => entry !== undefined && entry !== null),
   ) as Partial<T>;
+}
+
+function normalizeStoredWorkerNodeId(nodeId: string | undefined) {
+  const trimmed = String(nodeId || "").trim();
+  if (LEGACY_WORKER_NODE_IDS.has(trimmed)) {
+    return DEFAULT_REMOTE_WORKER_NODE_ID;
+  }
+  return trimmed;
 }
 
 export function loadSetupDraft() {
@@ -43,7 +53,12 @@ export function loadSetupDraft() {
     return {
       role: null,
       gateway: { ...DEFAULT_GATEWAY_SETUP, ...stripNullableValues(parsed.gateway) },
-      worker: { ...DEFAULT_WORKER_SETUP, ...stripNullableValues(parsed.worker), node_token: "" },
+      worker: {
+        ...DEFAULT_WORKER_SETUP,
+        ...stripNullableValues(parsed.worker),
+        node_id: normalizeStoredWorkerNodeId(parsed.worker?.node_id) || DEFAULT_WORKER_SETUP.node_id,
+        node_token: "",
+      },
       console: { ...DEFAULT_CONSOLE_SETUP, ...stripNullableValues(parsed.console) },
     };
   } catch {

@@ -11,6 +11,7 @@ import type {
   SystemStatus,
   WeChatStatus,
 } from "../types";
+import { DEFAULT_REMOTE_WORKER_NODE_ID, LEGACY_WORKER_NODE_IDS } from "../quickSetupDefaults";
 import { formatTimeLabel } from "./sessionSelectors";
 
 export function runningLauncherComponents(status: LauncherStatusResponse | null): Set<string> {
@@ -168,8 +169,9 @@ export function buildLauncherStartPayload(
   const dispatchModeEnabled = options?.dispatchModeEnabled ?? (launcherStatus?.profile.dispatch_mode_enabled ?? false);
   const enableNodeCacheRedis = options?.enableNodeCacheRedis
     ?? ((launcherStatus?.profile.node_cache_policy !== "disabled") && launcherRoleUsesLocalNode(machineRole) && !dispatchModeEnabled);
+  const requestedNodeId = options?.localNodeId?.trim() || launcherStatus?.profile.local_node_id?.trim() || DEFAULT_REMOTE_WORKER_NODE_ID;
   const localNodeId = machineRole === "node"
-    ? (options?.localNodeId?.trim() || launcherStatus?.profile.local_node_id?.trim() || "claw-node-local-1")
+    ? (LEGACY_WORKER_NODE_IDS.has(requestedNodeId) ? DEFAULT_REMOTE_WORKER_NODE_ID : requestedNodeId)
     : "local-node";
   return {
     machine_role: machineRole,

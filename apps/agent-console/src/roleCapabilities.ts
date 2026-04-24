@@ -9,6 +9,7 @@ export type RoleWorkspaceCapability = {
 export type RoleActionCapabilities = {
   canManageGateway: boolean;
   canManageWeChat: boolean;
+  canManagePublicEntry: boolean;
   canManageNodes: boolean;
   canManageLocalNode: boolean;
   canBindSessions: boolean;
@@ -20,6 +21,7 @@ export type RoleActionCapabilities = {
 export type RoleSectionCapabilities = {
   showGatewayOverview: boolean;
   showWeChatAccess: boolean;
+  showPublicEntryProfile: boolean;
   showRemoteNodeInventory: boolean;
   showLocalNodePanel: boolean;
   showSessionConsole: boolean;
@@ -117,6 +119,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
       actions: {
         canManageGateway: true,
         canManageWeChat: true,
+        canManagePublicEntry: true,
         canManageNodes: true,
         canManageLocalNode: true,
         canBindSessions: true,
@@ -127,6 +130,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
       sections: {
         showGatewayOverview: true,
         showWeChatAccess: true,
+        showPublicEntryProfile: true,
         showRemoteNodeInventory: true,
         showLocalNodePanel: true,
         showSessionConsole: true,
@@ -152,6 +156,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
       actions: {
         canManageGateway: false,
         canManageWeChat: false,
+        canManagePublicEntry: false,
         canManageNodes: false,
         canManageLocalNode: true,
         canBindSessions: false,
@@ -162,6 +167,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
       sections: {
         showGatewayOverview: false,
         showWeChatAccess: false,
+        showPublicEntryProfile: false,
         showRemoteNodeInventory: false,
         showLocalNodePanel: true,
         showSessionConsole: true,
@@ -187,6 +193,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
       actions: {
         canManageGateway: false,
         canManageWeChat: false,
+        canManagePublicEntry: false,
         canManageNodes: false,
         canManageLocalNode: false,
         canBindSessions: true,
@@ -197,6 +204,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
       sections: {
         showGatewayOverview: true,
         showWeChatAccess: false,
+        showPublicEntryProfile: true,
         showRemoteNodeInventory: true,
         showLocalNodePanel: false,
         showSessionConsole: true,
@@ -220,6 +228,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
     actions: {
       canManageGateway: false,
       canManageWeChat: false,
+      canManagePublicEntry: false,
       canManageNodes: false,
       canManageLocalNode: false,
       canBindSessions: false,
@@ -230,6 +239,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
     sections: {
       showGatewayOverview: false,
       showWeChatAccess: false,
+      showPublicEntryProfile: false,
       showRemoteNodeInventory: false,
       showLocalNodePanel: false,
       showSessionConsole: false,

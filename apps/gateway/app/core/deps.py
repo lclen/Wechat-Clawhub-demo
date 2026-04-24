@@ -4,7 +4,7 @@ from fastapi import HTTPException, Request, status
 
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueue
-from app.access.wechat_bot import WeChatBotService
+from app.access.wechat_multi_bot import MultiWeChatBotService
 from app.services.gateway_summary_service import GatewaySummaryService
 from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
 from app.services.inbound_aggregation import InboundAggregationService
@@ -17,8 +17,10 @@ from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager
 from app.services.snapshot_services import GatewaySummarySnapshotService, SessionOverviewSnapshotService
 from app.services.session_stream import SessionStreamBroker
+from app.services.public_entry_service import PublicEntryService
 from app.services.setup_service import SetupService
 from app.services.transcript_writer import TranscriptWriter
+from app.services.wechat_media_store import WeChatMediaStore
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -77,7 +79,7 @@ def get_node_auth(request: Request) -> NodeAuthService:
     return request.app.state.node_auth
 
 
-def get_wechat_bot(request: Request) -> WeChatBotService:
+def get_wechat_bot(request: Request) -> MultiWeChatBotService:
     return request.app.state.wechat_bot
 
 
@@ -91,6 +93,14 @@ def get_transcript_writer(request: Request) -> TranscriptWriter:
 
 def get_setup_service(request: Request) -> SetupService:
     return request.app.state.setup_service
+
+
+def get_public_entry_service(request: Request) -> PublicEntryService:
+    return request.app.state.public_entry_service
+
+
+def get_wechat_media_store(request: Request) -> WeChatMediaStore:
+    return request.app.state.wechat_media_store
 
 
 async def ensure_redis_available(store: RedisStore) -> None:

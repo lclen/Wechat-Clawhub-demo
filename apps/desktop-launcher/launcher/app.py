@@ -39,11 +39,13 @@ from launcher.models import (
     LocalNodeModelConfigRequest,
     LocalNodeStatusResponse,
     LocalNodeTaskStreamHealth,
+    normalize_gateway_base_url,
     NodeCacheToggleRequest,
     StartRequest,
     StopRequest,
 )
 from launcher.environment import detect_environment
+from launcher.network import local_gateway_base_url
 from launcher.process_manager import ProcessManager
 from launcher.profile_store import build_layout, default_state_path, ensure_layout, load_profile, redis_state, save_profile
 from launcher.redis_runtime import ensure_redis_binary
@@ -56,6 +58,8 @@ _WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 def create_app() -> FastAPI:
     repo_root = resource_root()
     profile = load_profile()
+    original_gateway_base_url = profile.gateway_base_url
+    normalize_gateway_base_url(profile)
     manager = ProcessManager(repo_root=repo_root)
     app = FastAPI(title="wechat-claw-hub desktop launcher", version="0.1.0")
     app.state.profile = profile
@@ -69,6 +73,8 @@ def create_app() -> FastAPI:
     app.state.bootstrap_status_lock = asyncio.Lock()
     app.state.local_node_status_cache = {"expires_at": 0.0, "value": None}
     app.state.local_node_status_lock = asyncio.Lock()
+    if profile.gateway_base_url != original_gateway_base_url:
+        save_profile(profile, default_state_path())
 
     async def load_cached_response(
         *,
@@ -288,6 +294,7 @@ def create_app() -> FastAPI:
         gateway_url = str(body.get("gateway_base_url", "")).strip()
         profile = app.state.profile
         profile.gateway_base_url = gateway_url
+        normalize_gateway_base_url(profile)
         save_profile(profile, app.state.state_path)
         app.state.profile = profile
         return await bootstrap_status()
@@ -1153,17 +1160,15 @@ def create_app() -> FastAPI:
         logger = logging.getLogger(__name__)
         profile = app.state.profile
 
-        # Use remote gateway URL if configured, otherwise use local gateway
-        if profile.gateway_base_url:
-            target = f"{profile.gateway_base_url.rstrip('/')}/api/{path}"
-        else:
-            target = f"http://127.0.0.1:{profile.gateway_port}/api/{path}"
+        gateway_base_url = _resolve_gateway_proxy_base_url(profile)
+        target = f"{gateway_base_url}/api/{path}"
 
         logger.info(f"Proxying {request.method} /api/{path} -> {target}")
         try:
             body = await request.body()
             headers = {key: value for key, value in request.headers.items() if key.lower() not in {"host", "content-length", "connection"}}
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            proxy_timeout = httpx.Timeout(connect=5.0, read=75.0, write=30.0, pool=30.0)
+            async with httpx.AsyncClient(timeout=proxy_timeout) as client:
                 response = await client.request(
                     request.method,
                     target,
@@ -1197,10 +1202,7 @@ def create_app() -> FastAPI:
         logger = logging.getLogger(__name__)
 
         profile = app.state.profile
-        if profile.gateway_base_url:
-            base_url = profile.gateway_base_url.rstrip("/")
-        else:
-            base_url = f"http://127.0.0.1:{profile.gateway_port}"
+        base_url = _resolve_gateway_proxy_base_url(profile)
 
         target = _build_ws_proxy_target(base_url, f"/api/{path}", websocket.query_params)
         await websocket.accept()
@@ -1283,6 +1285,16 @@ def _build_ws_proxy_target(base_url: str, path: str, query_params) -> str:
     scheme = "wss" if parts.scheme == "https" else "ws"
     query_string = urlencode(list(query_params.multi_items())) if hasattr(query_params, "multi_items") else urlencode(query_params)
     return urlunsplit((scheme, parts.netloc, path, query_string, ""))
+
+
+def _resolve_gateway_proxy_base_url(profile) -> str:
+    runtime_model = derive_runtime_model(profile)
+    if runtime_model.gateway_should_run:
+        return local_gateway_base_url(profile.gateway_port).rstrip("/")
+    configured = profile.gateway_base_url.strip().rstrip("/")
+    if configured:
+        return configured
+    return local_gateway_base_url(profile.gateway_port).rstrip("/")
 
 
 def _read_env_file(path: Path) -> dict[str, str]:

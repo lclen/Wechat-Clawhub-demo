@@ -19,6 +19,7 @@ def create_inference_client(
     *,
     local_cache: LocalCache | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
+    media_downloader: Callable[[str], Any] | None = None,
 ) -> tuple[InferenceClient | None, str | None]:
     try:
         provider = settings.model_provider.strip().lower()
@@ -27,12 +28,22 @@ def create_inference_client(
             return OpenAICompatibleClient(settings, event_callback=event_callback), None
         if provider == "dify":
             _ensure_dify_config(settings)
-            return DifyClient(settings, local_cache=local_cache, event_callback=event_callback), None
+            return DifyClient(
+                settings,
+                local_cache=local_cache,
+                event_callback=event_callback,
+                media_downloader=media_downloader,
+            ), None
 
         if settings.openai_base_url and settings.openai_api_key and settings.openai_model:
             return OpenAICompatibleClient(settings, event_callback=event_callback), None
         if settings.dify_base_url and settings.dify_api_key:
-            return DifyClient(settings, local_cache=local_cache, event_callback=event_callback), None
+            return DifyClient(
+                settings,
+                local_cache=local_cache,
+                event_callback=event_callback,
+                media_downloader=media_downloader,
+            ), None
 
         raise RuntimeError(
             "No inference backend is configured. Set OpenAI-compatible or Dify environment variables."

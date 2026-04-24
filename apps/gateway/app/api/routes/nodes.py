@@ -5,6 +5,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import FileResponse
 
 from app.core.config import Settings
 from app.core.deps import (
@@ -16,6 +17,7 @@ from app.core.deps import (
     get_redis_store,
     get_settings_dep,
     get_setup_service,
+    get_wechat_media_store,
 )
 from app.dispatch.queue import DispatchQueue, DispatchQueueError, DispatchTaskNotFoundError
 from app.models.dispatch import ChannelReleasedRequest, PullTaskResponse, TaskFailureRequest, TaskResultRequest
@@ -35,6 +37,7 @@ from app.services.node_inventory import build_node_list_response
 from app.services.node_registry import NodeNotFoundError, NodeRegistry, NodeRegistryError
 from app.services.redis_store import RedisStore
 from app.services.setup_service import SetupService
+from app.services.wechat_media_store import WeChatMediaNotFoundError, WeChatMediaStore
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 logger = logging.getLogger(__name__)
@@ -226,6 +229,28 @@ async def get_node_diagnostics(
 ) -> NodeDiagnosticsResponse:
     diagnostics = NodeDiagnosticsRecord.model_validate(setup_service.get_node_diagnostics(node_id))
     return NodeDiagnosticsResponse(node_id=node_id, diagnostics=diagnostics)
+
+
+@router.get("/{node_id}/media/{media_id}")
+async def download_node_media(
+    request: Request,
+    node_id: str,
+    media_id: str,
+    store: RedisStore = Depends(get_redis_store),
+    node_auth: NodeAuthService = Depends(get_node_auth),
+    media_store: WeChatMediaStore = Depends(get_wechat_media_store),
+) -> FileResponse:
+    await ensure_redis_available(store)
+    node_auth.verify_request(request, node_id)
+    try:
+        record, file_path = media_store.open(media_id)
+    except WeChatMediaNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return FileResponse(
+        path=file_path,
+        media_type=record.mime_type,
+        filename=record.filename,
+    )
 
 
 @router.websocket("/{node_id}/diagnostics/ws")

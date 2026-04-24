@@ -63,6 +63,12 @@ def build_gateway_config() -> GatewaySetupConfig:
     return GatewaySetupConfig(
         redis_url="redis://localhost:6379/0",
         default_agent_id="default-agent",
+        public_entry_enabled=False,
+        public_entry_base_url="",
+        public_entry_display_name="",
+        public_entry_qr_url="",
+        public_entry_contact_hint="",
+        public_entry_notes="",
         dify_base_url="https://api.dify.ai/v1",
         dify_api_key="test-key",
         builtin_model_base_url="",
@@ -167,6 +173,23 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         profile = service.get_profile()
 
         self.assertEqual(profile.console.gateway_base_url, "http://192.168.0.17:8300")
+
+    async def test_public_entry_profile_reads_gateway_public_entry_fields(self) -> None:
+        self.settings.public_entry_enabled = True
+        self.settings.public_entry_base_url = "https://entry.example.com"
+        self.settings.public_entry_display_name = "ClawBot 统一入口"
+        self.settings.public_entry_qr_url = "https://example.com/clawbot.png"
+        self.settings.public_entry_contact_hint = "扫码添加后直接发送问题"
+        self.settings.public_entry_notes = "对外统一入口"
+
+        profile = self.service.get_public_entry_profile()
+
+        self.assertTrue(profile.enabled)
+        self.assertEqual(profile.base_url, "https://entry.example.com")
+        self.assertEqual(profile.display_name, "ClawBot 统一入口")
+        self.assertEqual(profile.qr_url, "https://example.com/clawbot.png")
+        self.assertEqual(profile.contact_hint, "扫码添加后直接发送问题")
+        self.assertEqual(profile.notes, "对外统一入口")
 
     async def test_gateway_console_setup_partial_failure_keeps_gateway_config(self) -> None:
         self.service._probe_console_gateway = AsyncMock(side_effect=RuntimeError("gateway unreachable"))
@@ -419,6 +442,34 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
         self.assertIn("WCH_CONSOLE_GATEWAY_BASE_URL=http://192.168.0.17:8300", env_text)
         self.assertTrue(any("已保存主网关访问地址：http://192.168.0.17:8300" in line for line in task.logs))
+
+    async def test_save_gateway_config_persists_public_entry_profile_fields(self) -> None:
+        config = build_gateway_config().model_copy(
+            update={
+                "public_entry_enabled": True,
+                "public_entry_base_url": "https://entry.example.com",
+                "public_entry_display_name": "ClawBot 统一入口",
+                "public_entry_qr_url": "https://example.com/entry.png",
+                "public_entry_contact_hint": "添加后发送问题即可开始对话",
+                "public_entry_notes": "固定公共入口资料",
+            }
+        )
+
+        task, _ = await self.service.save_gateway_config(config)
+
+        self.assertEqual(task.status, "succeeded")
+        profile = self.service.get_profile()
+        self.assertTrue(profile.gateway.public_entry_enabled)
+        self.assertEqual(profile.gateway.public_entry_base_url, "https://entry.example.com")
+        self.assertEqual(profile.gateway.public_entry_display_name, "ClawBot 统一入口")
+        self.assertEqual(profile.gateway.public_entry_qr_url, "https://example.com/entry.png")
+        self.assertEqual(profile.gateway.public_entry_contact_hint, "添加后发送问题即可开始对话")
+        self.assertEqual(profile.gateway.public_entry_notes, "固定公共入口资料")
+        env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
+        self.assertIn("WCH_PUBLIC_ENTRY_ENABLED=true", env_text)
+        self.assertIn("WCH_PUBLIC_ENTRY_BASE_URL=https://entry.example.com", env_text)
+        self.assertIn('WCH_PUBLIC_ENTRY_DISPLAY_NAME="ClawBot 统一入口"', env_text)
+        self.assertIn("WCH_PUBLIC_ENTRY_QR_URL=https://example.com/entry.png", env_text)
 
     async def test_save_gateway_config_defaults_to_builtin_model_when_model_fields_empty(self) -> None:
         gateway_config = GatewaySetupConfig(

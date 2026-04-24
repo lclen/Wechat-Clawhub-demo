@@ -20,10 +20,18 @@ export const FILTERS: { key: SessionFilter; label: string }[] = [
 ];
 
 export const DEFAULT_SETUP_ROLES: SetupRole[] = ["gateway_host", "gateway_host_console", "worker_node", "console_only"];
+export const DEFAULT_REMOTE_WORKER_NODE_ID = "claw-node-1";
+export const LEGACY_WORKER_NODE_IDS = new Set(["claw-node-local-1"]);
 
 export const DEFAULT_GATEWAY_SETUP: GatewaySetupConfig = {
   redis_url: "redis://localhost:6379/0",
   default_agent_id: "default-agent",
+  public_entry_enabled: false,
+  public_entry_base_url: "",
+  public_entry_display_name: "",
+  public_entry_qr_url: "",
+  public_entry_contact_hint: "",
+  public_entry_notes: "",
   dify_base_url: "",
   dify_api_key: "",
   builtin_model_base_url: "",
@@ -47,7 +55,7 @@ export const DEFAULT_GATEWAY_SETUP: GatewaySetupConfig = {
 };
 
 export const DEFAULT_WORKER_SETUP: WorkerNodeSetupConfig = {
-  node_id: "claw-node-local-1",
+  node_id: DEFAULT_REMOTE_WORKER_NODE_ID,
   gateway_base_url: "",
   node_token: "",
   pairing_key: "",

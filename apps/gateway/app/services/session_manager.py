@@ -73,7 +73,7 @@ class SessionManager:
         session = await self.ensure_session(
             channel=payload.channel,
             user_id=payload.user_id,
-            agent_id=payload.agent_id or self._settings.default_agent_id,
+            agent_id=payload.agent_id,
         )
         now = self._utcnow()
         message = MessageRecord(
@@ -117,7 +117,7 @@ class SessionManager:
         self._transcript_writer.append_message(message)
         return session
 
-    async def ensure_session(self, *, channel: str, user_id: str, agent_id: str) -> SessionRecord:
+    async def ensure_session(self, *, channel: str, user_id: str, agent_id: str | None) -> SessionRecord:
         return await self._get_or_create_session(channel=channel, user_id=user_id, agent_id=agent_id)
 
     async def list_sessions(self) -> list[SessionRecord]:
@@ -346,7 +346,7 @@ class SessionManager:
         await self._publish_overview_if_needed()
         return parsed
 
-    async def _get_or_create_session(self, *, channel: str, user_id: str, agent_id: str) -> SessionRecord:
+    async def _get_or_create_session(self, *, channel: str, user_id: str, agent_id: str | None) -> SessionRecord:
         session_id = build_session_id(channel, user_id)
         now = self._utcnow()
         try:
@@ -355,11 +355,13 @@ class SessionManager:
                 summary = await self._store.get(self._session_summary_key(session_id))
                 return self._parse_session(raw, summary)
 
+            resolved_agent_id = agent_id or self._user_data_store.resolve_or_create_bound_agent_id(channel, user_id)
+
             meta = {
                 "session_id": session_id,
                 "channel": channel,
                 "user_id": user_id,
-                "agent_id": agent_id,
+                "agent_id": resolved_agent_id,
                 "status": SessionStatus.BOT_ACTIVE.value,
                 "assigned_node_id": "",
                 "assigned_slot_id": "",
@@ -387,7 +389,7 @@ class SessionManager:
                 event_type="session_created",
                 actor_type="system",
                 actor_id="gateway",
-                payload={"channel": channel, "user_id": user_id, "agent_id": agent_id},
+                payload={"channel": channel, "user_id": user_id, "agent_id": resolved_agent_id},
             )
             parsed = self._parse_session(meta, "")
             self._user_data_store.persist_session(parsed)

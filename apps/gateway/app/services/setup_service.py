@@ -24,6 +24,7 @@ from app.models.setup import (
     DiscoveryScanResponse,
     ManualPairRequest,
     GatewaySetupConfig,
+    PublicEntryProfileResponse,
     PairingStatus,
     SetupProfileResponse,
     SetupTaskResult,
@@ -31,6 +32,7 @@ from app.models.setup import (
     WorkerNodeSetupConfig,
     utcnow,
 )
+from app.models.public_entry import PublicEntryTicketStats
 from app.services.node_registry import NodeRegistry
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.redis_store import RedisStore
@@ -164,6 +166,12 @@ class SetupService:
         gateway = GatewaySetupConfig(
             redis_url=self._settings.redis_url,
             default_agent_id=self._settings.default_agent_id,
+            public_entry_enabled=self._settings.public_entry_enabled,
+            public_entry_base_url=self._settings.public_entry_base_url,
+            public_entry_display_name=self._settings.public_entry_display_name,
+            public_entry_qr_url=self._settings.public_entry_qr_url,
+            public_entry_contact_hint=self._settings.public_entry_contact_hint,
+            public_entry_notes=self._settings.public_entry_notes,
             dify_base_url=self._settings.dify_base_url,
             dify_api_key=self._settings.dify_api_key,
             builtin_model_base_url=self._settings.builtin_model_base_url,
@@ -208,6 +216,23 @@ class SetupService:
             gateway=gateway,
             console=console,
             last_task=last_task,
+        )
+
+    def get_public_entry_profile(
+        self,
+        *,
+        access_url: str = "",
+        stats: PublicEntryTicketStats | None = None,
+    ) -> PublicEntryProfileResponse:
+        return PublicEntryProfileResponse(
+            enabled=self._settings.public_entry_enabled,
+            base_url=self._settings.public_entry_base_url,
+            display_name=self._settings.public_entry_display_name,
+            qr_url=self._settings.public_entry_qr_url,
+            contact_hint=self._settings.public_entry_contact_hint,
+            notes=self._settings.public_entry_notes,
+            access_url=access_url,
+            stats=stats or PublicEntryTicketStats(),
         )
 
     async def save_gateway_config(
@@ -1432,6 +1457,12 @@ class SetupService:
         env_updates = {
             "WCH_REDIS_URL": normalized_config.redis_url,
             "WCH_DEFAULT_AGENT_ID": normalized_config.default_agent_id,
+            "WCH_PUBLIC_ENTRY_ENABLED": "true" if normalized_config.public_entry_enabled else "false",
+            "WCH_PUBLIC_ENTRY_BASE_URL": normalized_config.public_entry_base_url,
+            "WCH_PUBLIC_ENTRY_DISPLAY_NAME": normalized_config.public_entry_display_name,
+            "WCH_PUBLIC_ENTRY_QR_URL": normalized_config.public_entry_qr_url,
+            "WCH_PUBLIC_ENTRY_CONTACT_HINT": normalized_config.public_entry_contact_hint,
+            "WCH_PUBLIC_ENTRY_NOTES": normalized_config.public_entry_notes,
             "WCH_DIFY_BASE_URL": normalized_config.dify_base_url,
             "WCH_DIFY_API_KEY": normalized_config.dify_api_key,
             "WCH_BUILTIN_MODEL_BASE_URL": normalized_config.builtin_model_base_url,
@@ -1457,6 +1488,12 @@ class SetupService:
         applied_runtime = [
             "redis_url",
             "default_agent_id",
+            "public_entry_enabled",
+            "public_entry_base_url",
+            "public_entry_display_name",
+            "public_entry_qr_url",
+            "public_entry_contact_hint",
+            "public_entry_notes",
             "dify_base_url",
             "dify_api_key",
             "builtin_model_base_url",
@@ -1480,6 +1517,12 @@ class SetupService:
         ]
         self._settings.redis_url = normalized_config.redis_url
         self._settings.default_agent_id = normalized_config.default_agent_id
+        self._settings.public_entry_enabled = normalized_config.public_entry_enabled
+        self._settings.public_entry_base_url = normalized_config.public_entry_base_url
+        self._settings.public_entry_display_name = normalized_config.public_entry_display_name
+        self._settings.public_entry_qr_url = normalized_config.public_entry_qr_url
+        self._settings.public_entry_contact_hint = normalized_config.public_entry_contact_hint
+        self._settings.public_entry_notes = normalized_config.public_entry_notes
         self._settings.dify_base_url = normalized_config.dify_base_url
         self._settings.dify_api_key = normalized_config.dify_api_key
         self._settings.builtin_model_base_url = normalized_config.builtin_model_base_url
@@ -1518,6 +1561,13 @@ class SetupService:
         config: GatewaySetupConfig,
         task: SetupTaskState,
     ) -> GatewaySetupConfig:
+        public_entry_base_url = config.public_entry_base_url.strip().rstrip("/")
+        if public_entry_base_url.lower().endswith("/entry"):
+            public_entry_base_url = public_entry_base_url[: -len("/entry")].rstrip("/")
+        public_entry_display_name = config.public_entry_display_name.strip()
+        public_entry_qr_url = config.public_entry_qr_url.strip()
+        public_entry_contact_hint = config.public_entry_contact_hint.strip()
+        public_entry_notes = config.public_entry_notes.strip()
         dify_base_url = config.dify_base_url.strip()
         dify_api_key = config.dify_api_key.strip() or self._preserve_secret(
             task,
@@ -1545,6 +1595,12 @@ class SetupService:
         if has_dify_config or has_builtin_config:
             return config.model_copy(
                 update={
+                    "public_entry_enabled": config.public_entry_enabled,
+                    "public_entry_base_url": public_entry_base_url,
+                    "public_entry_display_name": public_entry_display_name,
+                    "public_entry_qr_url": public_entry_qr_url,
+                    "public_entry_contact_hint": public_entry_contact_hint,
+                    "public_entry_notes": public_entry_notes,
                     "dify_base_url": dify_base_url,
                     "dify_api_key": dify_api_key,
                     "builtin_model_base_url": builtin_model_base_url,
@@ -1577,6 +1633,12 @@ class SetupService:
             self._append_log(task, "当前未检测到内置模型 API Key，请在需要时补充。")
         return config.model_copy(
             update={
+                "public_entry_enabled": config.public_entry_enabled,
+                "public_entry_base_url": public_entry_base_url,
+                "public_entry_display_name": public_entry_display_name,
+                "public_entry_qr_url": public_entry_qr_url,
+                "public_entry_contact_hint": public_entry_contact_hint,
+                "public_entry_notes": public_entry_notes,
                 "dify_base_url": "",
                 "dify_api_key": "",
                 "builtin_model_base_url": fallback_base_url,

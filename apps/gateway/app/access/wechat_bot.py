@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import math
 import mimetypes
@@ -15,7 +16,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import quote
 from urllib.parse import unquote
 
@@ -28,6 +29,7 @@ from app.models.wechat import WeChatStatusResponse
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager, SessionManagerError
 from app.services.transcript_writer import TranscriptWriter
+from app.services.wechat_media_store import WeChatMediaStore, WeChatMediaStoreError
 
 if TYPE_CHECKING:
     from app.dispatch.queue import DispatchQueue
@@ -80,6 +82,7 @@ SEND_MIN_INTERVAL_SECONDS = 2.5
 TYPING_REFRESH_INTERVAL_SECONDS = 4.0
 TYPING_STALE_THRESHOLD_SECONDS = 1_800
 SWITCH_COMMANDS = {"切换节点", "/switch"}
+INBOUND_IMAGE_PLACEHOLDER_TEXT = "请结合这张图片理解并回答用户意图。"
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((.*?)\)", re.DOTALL)
 STANDALONE_URL_RE = re.compile(r"^\s*(https?://\S+)\s*$", re.IGNORECASE)
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
@@ -133,6 +136,36 @@ def _encrypt_aes_ecb(plaintext: bytes, key: bytes) -> bytes:
         raise ModuleNotFoundError(
             "No module named 'Crypto'. Install pycryptodome, pycryptodomex, or cryptography."
         ) from exc
+
+
+def _decrypt_aes_ecb(ciphertext: bytes, key: bytes) -> bytes:
+    try:
+        from Crypto.Cipher import AES  # type: ignore[import-not-found]
+
+        cipher = AES.new(key, AES.MODE_ECB)
+        padded = cipher.decrypt(ciphertext)
+    except ModuleNotFoundError:
+        try:
+            from Cryptodome.Cipher import AES  # type: ignore[import-not-found]
+
+            cipher = AES.new(key, AES.MODE_ECB)
+            padded = cipher.decrypt(ciphertext)
+        except ModuleNotFoundError:
+            try:
+                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+                decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
+                padded = decryptor.update(ciphertext) + decryptor.finalize()
+            except ModuleNotFoundError as exc:
+                raise ModuleNotFoundError(
+                    "No module named 'Crypto'. Install pycryptodome, pycryptodomex, or cryptography."
+                ) from exc
+    if not padded:
+        return padded
+    pad_len = padded[-1]
+    if pad_len < 1 or pad_len > 16 or padded[-pad_len:] != bytes([pad_len] * pad_len):
+        raise ValueError("Invalid AES-ECB padding")
+    return padded[:-pad_len]
 
 
 def _aes_ecb_padded_size(plaintext_size: int) -> int:
@@ -213,6 +246,17 @@ def _encode_wechat_media_aes_key(aeskey_hex: str) -> str:
     compatibility mode because that path is validated in production.
     """
     return base64.b64encode(aeskey_hex.encode()).decode()
+
+
+def _parse_wechat_media_aes_key(aes_key_b64: str) -> bytes:
+    decoded = base64.b64decode(aes_key_b64)
+    if len(decoded) == 16:
+        return decoded
+    if len(decoded) == 32:
+        hex_str = decoded.decode("ascii")
+        if all(ch in "0123456789abcdefABCDEF" for ch in hex_str):
+            return bytes.fromhex(hex_str)
+    raise ValueError(f"aes_key must decode to 16 raw bytes or 32-char hex, got {len(decoded)} bytes")
 
 
 def _split_text_segment_with_standalone_urls(text: str) -> list[OutboundMarkdownSegment]:
@@ -315,6 +359,24 @@ class TypingTicketEntry:
     ever_succeeded: bool = False
 
 
+UserRouteRecorder = Callable[[str, str], None]
+
+
+@dataclass(frozen=True)
+class InboundWeChatMediaRef:
+    media_id: str
+    kind: str
+    mime_type: str
+    filename: str
+
+
+@dataclass(frozen=True)
+class ParsedInboundMessage:
+    content: str
+    media_refs: list[InboundWeChatMediaRef]
+    placeholder: bool = False
+
+
 class WeChatBotService:
     """Minimal WeChat runtime adapted from OpenAkita's iLink Bot flow."""
 
@@ -325,6 +387,13 @@ class WeChatBotService:
         dispatch_queue: "DispatchQueue | None",
         transcript_writer: TranscriptWriter,
         settings: Settings,
+        *,
+        runtime_id: str = "primary",
+        runtime_label: str = "主入口账号",
+        static_agent_id: str | None = None,
+        config_store_key: str = WECHAT_CONFIG_KEY,
+        persist_env: bool = True,
+        user_route_recorder: UserRouteRecorder | None = None,
     ) -> None:
         self._store = store
         self._session_manager = session_manager
@@ -332,6 +401,13 @@ class WeChatBotService:
         self._inbound_aggregation: InboundAggregationService | None = None
         self._transcript_writer = transcript_writer
         self._settings = settings
+        self._media_store: WeChatMediaStore | None = None
+        self._runtime_id = runtime_id
+        self._runtime_label = runtime_label
+        self._static_agent_id = static_agent_id
+        self._config_store_key = config_store_key
+        self._persist_env_enabled = persist_env
+        self._user_route_recorder = user_route_recorder
 
         self._config = WeChatRuntimeConfig(
             token=settings.wechat_token or "",
@@ -361,9 +437,12 @@ class WeChatBotService:
     def attach_inbound_aggregation(self, inbound_aggregation: "InboundAggregationService") -> None:
         self._inbound_aggregation = inbound_aggregation
 
+    def attach_media_store(self, media_store: WeChatMediaStore) -> None:
+        self._media_store = media_store
+
     async def initialize(self) -> None:
         try:
-            raw = await self._store.hgetall(WECHAT_CONFIG_KEY)
+            raw = await self._store.hgetall(self._config_store_key)
         except Exception as exc:
             self._last_error = f"Redis unavailable during WeChat init: {exc}"
             logger.warning("wechat-bot: Redis unavailable during init, falling back to .env token: %s", exc)
@@ -397,11 +476,12 @@ class WeChatBotService:
 
     async def connect(self, token: str, base_url: str, *, enable_polling: bool = True) -> WeChatStatusResponse:
         self._config = WeChatRuntimeConfig(token=token, base_url=base_url.rstrip("/"))
-        self._settings.wechat_token = self._config.token
-        self._settings.wechat_base_url = self._config.base_url
+        if self._persist_env_enabled:
+            self._settings.wechat_token = self._config.token
+            self._settings.wechat_base_url = self._config.base_url
         self._persist_runtime_config()
         await self._store.hset_many(
-            WECHAT_CONFIG_KEY,
+            self._config_store_key,
             {"token": self._config.token, "base_url": self._config.base_url},
         )
         if enable_polling:
@@ -411,10 +491,11 @@ class WeChatBotService:
     async def disconnect(self) -> WeChatStatusResponse:
         await self.stop_polling()
         self._config = WeChatRuntimeConfig(token="", base_url=self._config.base_url)
-        self._settings.wechat_token = ""
-        self._settings.wechat_base_url = self._config.base_url
+        if self._persist_env_enabled:
+            self._settings.wechat_token = ""
+            self._settings.wechat_base_url = self._config.base_url
         self._persist_runtime_config()
-        await self._store.hset_many(WECHAT_CONFIG_KEY, {"token": "", "base_url": self._config.base_url})
+        await self._store.hset_many(self._config_store_key, {"token": "", "base_url": self._config.base_url})
         return await self.get_status()
 
     async def start_polling(self) -> None:
@@ -741,6 +822,8 @@ class WeChatBotService:
             self._typing_start_time.pop(user_id, None)
 
     def _persist_runtime_config(self) -> None:
+        if not self._persist_env_enabled:
+            return
         env_path = Path(".env")
         existing_lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
         updates = {
@@ -835,6 +918,16 @@ class WeChatBotService:
         if ret in (None, 0) and errcode in (None, 0):
             return response
         if self._is_session_timeout(ret=ret, errcode=errcode, errmsg=errmsg):
+            logger.warning(
+                "wechat-bot: session_timeout_detected runtime_id=%s runtime_label=%s base_url=%s ret=%s errcode=%s errmsg=%s next_poll_timeout_ms=%s",
+                self._runtime_id,
+                self._runtime_label,
+                self._config.base_url,
+                ret,
+                errcode,
+                errmsg,
+                self._next_poll_timeout_ms,
+            )
             raise WeChatSessionExpiredError(
                 "WeChat 会话已过期，请重新扫码或手动重新连接。"
             )
@@ -858,15 +951,20 @@ class WeChatBotService:
         user_id = raw.get("from_user_id") or ""
         if not user_id:
             return
+        if self._user_route_recorder is not None:
+            self._user_route_recorder(user_id, self._runtime_id)
 
         context_token = raw.get("context_token") or ""
         if context_token:
             self._context_tokens[user_id] = context_token
 
-        text = self._extract_text(raw.get("item_list") or [])
-        if not text:
+        parsed = await self._parse_inbound_message(
+            raw.get("item_list") or [],
+            wechat_message_id=str(message_id or ""),
+        )
+        if parsed is None:
             return
-        normalized_text = text.strip().lower()
+        normalized_text = parsed.content.strip().lower()
         if normalized_text in SWITCH_COMMANDS:
             await self._handle_switch_command(user_id=user_id, context_token=context_token)
             self._received_messages += 1
@@ -875,18 +973,37 @@ class WeChatBotService:
             "[wechat] inbound user_id=%s message_id=%s preview=%s",
             user_id,
             message_id,
-            self._preview_text(text),
+            self._preview_text(parsed.content),
         )
+        metadata = {
+            "context_token": context_token,
+            "wechat_message_id": str(message_id or ""),
+            "wechat_session_id": str(raw.get("session_id") or ""),
+            "wechat_runtime_id": self._runtime_id,
+            "wechat_runtime_label": self._runtime_label,
+        }
+        if parsed.media_refs:
+            metadata["wechat_media_ids_json"] = json.dumps(
+                [
+                    {
+                        "media_id": item.media_id,
+                        "kind": item.kind,
+                        "mime_type": item.mime_type,
+                        "filename": item.filename,
+                    }
+                    for item in parsed.media_refs
+                ],
+                ensure_ascii=False,
+            )
+            metadata["wechat_media_kind"] = "image"
+            metadata["wechat_media_placeholder"] = str(parsed.placeholder).lower()
 
         payload = InboundMessageRequest(
             channel="wechat",
             user_id=user_id,
-            content=text,
-            metadata={
-                "context_token": context_token,
-                "wechat_message_id": str(message_id or ""),
-                "wechat_session_id": str(raw.get("session_id") or ""),
-            },
+            content=parsed.content,
+            agent_id=self._static_agent_id,
+            metadata=metadata,
         )
         if self._dispatch_queue is None or self._inbound_aggregation is None:
             raise RuntimeError("WeChat inbound aggregation is not attached")
@@ -896,7 +1013,7 @@ class WeChatBotService:
             session = await self._session_manager.ensure_session(
                 channel="wechat",
                 user_id=user_id,
-                agent_id=self._settings.default_agent_id,
+                agent_id=self._static_agent_id,
             )
             self._transcript_writer.append_event(
                 session_id=session.session_id,
@@ -923,7 +1040,7 @@ class WeChatBotService:
         session = await self._session_manager.ensure_session(
             channel="wechat",
             user_id=user_id,
-            agent_id=self._settings.default_agent_id,
+            agent_id=self._static_agent_id,
         )
         session, detail = await self._dispatch_queue.switch_session_target(
             session.session_id,
@@ -942,11 +1059,107 @@ class WeChatBotService:
             metadata={"system_action": "switch_node"},
         )
 
-    def _extract_text(self, item_list: list[dict[str, Any]]) -> str:
+    async def _parse_inbound_message(
+        self,
+        item_list: list[dict[str, Any]],
+        *,
+        wechat_message_id: str,
+    ) -> ParsedInboundMessage | None:
+        text = self._extract_text(item_list)
+        media_refs: list[InboundWeChatMediaRef] = []
         for item in item_list:
-            if item.get("type") == ITEM_TEXT:
-                return ((item.get("text_item") or {}).get("text") or "").strip()
-        return ""
+            if item.get("type") != ITEM_IMAGE:
+                continue
+            media_ref = await self._cache_inbound_image(item, wechat_message_id=wechat_message_id)
+            if media_ref is not None:
+                media_refs.append(media_ref)
+        if text:
+            return ParsedInboundMessage(content=text, media_refs=media_refs, placeholder=False)
+        if media_refs:
+            return ParsedInboundMessage(
+                content=INBOUND_IMAGE_PLACEHOLDER_TEXT,
+                media_refs=media_refs,
+                placeholder=True,
+            )
+        return None
+
+    def _extract_text(self, item_list: list[dict[str, Any]]) -> str:
+        segments: list[str] = []
+        for item in item_list:
+            if item.get("type") != ITEM_TEXT:
+                continue
+            text = ((item.get("text_item") or {}).get("text") or "").strip()
+            if text:
+                segments.append(text)
+        return "\n".join(segments).strip()
+
+    async def _cache_inbound_image(
+        self,
+        item: dict[str, Any],
+        *,
+        wechat_message_id: str,
+    ) -> InboundWeChatMediaRef | None:
+        if self._media_store is None:
+            logger.warning("wechat-bot: media store is not attached; inbound image will be skipped")
+            return None
+        try:
+            image_item = item.get("image_item") or {}
+            media = image_item.get("media") or {}
+            encrypt_query_param = str(media.get("encrypt_query_param") or "").strip()
+            if not encrypt_query_param:
+                return None
+            aes_key = self._resolve_inbound_media_key(image_item)
+            content, content_type = await self._download_wechat_cdn_media(
+                encrypt_query_param=encrypt_query_param,
+                aes_key=aes_key,
+            )
+            record = self._media_store.create_image(
+                content=content,
+                wechat_message_id=wechat_message_id,
+                filename="",
+                mime_type=content_type,
+            )
+            return InboundWeChatMediaRef(
+                media_id=record.media_id,
+                kind=record.kind,
+                mime_type=record.mime_type,
+                filename=record.filename,
+            )
+        except (ValueError, WeChatMediaStoreError, httpx.HTTPError) as exc:
+            logger.warning(
+                "wechat-bot: failed to cache inbound image runtime_id=%s message_id=%s error=%s",
+                self._runtime_id,
+                wechat_message_id,
+                exc,
+            )
+            return None
+
+    def _resolve_inbound_media_key(self, image_item: dict[str, Any]) -> bytes | None:
+        aeskey_hex = str(image_item.get("aeskey") or "").strip()
+        if aeskey_hex:
+            return bytes.fromhex(aeskey_hex)
+        media = image_item.get("media") or {}
+        aes_key_b64 = str(media.get("aes_key") or "").strip()
+        return _parse_wechat_media_aes_key(aes_key_b64) if aes_key_b64 else None
+
+    async def _download_wechat_cdn_media(
+        self,
+        *,
+        encrypt_query_param: str,
+        aes_key: bytes | None,
+    ) -> tuple[bytes, str]:
+        client = self._ensure_asset_http()
+        url = (
+            f"{DEFAULT_WECHAT_CDN_BASE_URL}/download"
+            f"?encrypted_query_param={quote(encrypt_query_param, safe='')}"
+        )
+        response = await client.get(url, timeout=30.0)
+        response.raise_for_status()
+        content = response.content
+        if aes_key and len(aes_key) == 16:
+            content = _decrypt_aes_ecb(content, aes_key)
+        content_type = response.headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower()
+        return content, content_type
 
     async def _api_post(self, endpoint: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
         client = self._ensure_api_http()

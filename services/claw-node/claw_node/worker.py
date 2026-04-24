@@ -50,6 +50,7 @@ class Worker:
             settings,
             local_cache=self._local_cache,
             event_callback=self._handle_inference_event,
+            media_downloader=self._gateway.download_media,
         )
         self._discovery = DiscoveryService(settings, self._handle_pair_request)
         self._semaphore = asyncio.Semaphore(settings.max_concurrency)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import patch
 
@@ -229,6 +230,73 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer_2, "你好，我是 Dify")
         self.assertEqual(usage_2["dify_conversation_id"], "conv-s")
         self.assertEqual(requests_seen, ["blocking", "streaming", "streaming"])
+
+    async def test_ask_uploads_wechat_media_and_sends_local_file_specs(self) -> None:
+        chat_payloads: list[dict[str, object]] = []
+        upload_paths: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/files/upload"):
+                upload_paths.append(request.url.path)
+                return httpx.Response(200, json={"id": "upload-1"})
+            payload = json.loads(request.content.decode("utf-8"))
+            chat_payloads.append(payload)
+            return httpx.Response(
+                200,
+                json={
+                    "answer": "看到了",
+                    "conversation_id": "conv-local",
+                    "metadata": {"usage": {"total_tokens": 6}},
+                },
+            )
+
+        settings = NodeSettings(
+            CLAW_MODEL_PROVIDER="dify",
+            CLAW_DIFY_BASE_URL="http://127.0.0.1:3000/v1",
+            CLAW_DIFY_API_KEY="secret",
+        )
+        downloader = AsyncMock(
+            return_value=SimpleNamespace(
+                content=b"png-bytes",
+                content_type="image/png",
+                filename="wechat-image.png",
+            )
+        )
+        client = DifyClient(settings, media_downloader=downloader)
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(
+            base_url=settings.dify_base_url.rstrip("/"),
+            transport=httpx.MockTransport(handler),
+            headers={"Authorization": f"Bearer {settings.dify_api_key}"},
+        )
+
+        answer, usage = await client.ask(
+            session_id="session-local",
+            user_id="user-local",
+            agent_id="agent-local",
+            query="看看图片",
+            context_summary="",
+            recent_messages=[
+                {
+                    "role": "user",
+                    "content": "看看图片",
+                    "metadata": {
+                        "wechat_media_ids_json": '[{"media_id":"wm_1","kind":"image","mime_type":"image/png","filename":"wechat-image.png"}]',
+                        "wechat_media_kind": "image",
+                        "wechat_media_placeholder": "false",
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(answer, "看到了")
+        self.assertEqual(usage["dify_conversation_id"], "conv-local")
+        downloader.assert_awaited_once_with("wm_1")
+        self.assertEqual(upload_paths, ["/v1/files/upload"])
+        self.assertEqual(
+            chat_payloads[0]["files"],
+            [{"type": "image", "transfer_method": "local_file", "upload_file_id": "upload-1"}],
+        )
 
     def test_gateway_client_uses_additional_headers_for_websockets_15(self) -> None:
         from claw_node.gateway_client import GatewayClient

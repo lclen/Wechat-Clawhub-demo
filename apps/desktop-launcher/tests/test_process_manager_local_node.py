@@ -9,6 +9,19 @@ from launcher.process_manager import ProcessManager
 
 
 class ProcessManagerLocalNodeStartTests(unittest.TestCase):
+    def test_detect_external_port_conflict_ignores_managed_gateway_child_listener(self) -> None:
+        manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
+        managed_proc = Mock()
+        managed_proc.pid = 1200
+        managed_proc.poll.return_value = None
+        manager._processes["gateway"] = managed_proc
+        manager._find_listening_port_owner = Mock(return_value={"pid": 1201, "command_line": "python -m launcher.main run-gateway --port 8300"})  # type: ignore[method-assign]
+        manager._is_process_descendant = Mock(return_value=True)  # type: ignore[method-assign]
+
+        conflict = manager._detect_external_port_conflict(8300, "gateway")
+
+        self.assertIsNone(conflict)
+
     def test_reinstall_local_node_uses_managed_reinstall_path(self) -> None:
         manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
         profile = LauncherProfile(workdir="D:/wechat-claw-hub")

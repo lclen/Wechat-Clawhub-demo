@@ -183,7 +183,8 @@ export function useQuickSetupOperations(options: UseQuickSetupOperationsOptions)
     return next;
   }, [onRefreshSystemStatus, refreshGatewaySummarySnapshot, shouldUseLocalGatewayApi]);
 
-  const runGatewaySetup = useCallback(async () => {
+  const runGatewaySetup = useCallback(async (options?: { showResultScreen?: boolean; successNotice?: string }) => {
+    const showResultScreen = options?.showResultScreen ?? true;
     try {
       const payload: GatewaySetupSaveRequest = {
         config: gatewaySetup,
@@ -194,12 +195,14 @@ export function useQuickSetupOperations(options: UseQuickSetupOperationsOptions)
         () => requestJson<GatewaySetupSaveResponse>("/api/setup/gateway/save", { method: "POST", body: JSON.stringify(payload) }),
       );
       setSetupTask(result.task);
-      setSetupMode("result");
+      if (showResultScreen) {
+        setSetupMode("result");
+      }
       if (gatewaySetup.wechat_base_url) setWechatBaseUrl(gatewaySetup.wechat_base_url);
       if (gatewaySetup.wechat_token) setManualToken(gatewaySetup.wechat_token);
       await refreshSetupProfile();
       await applyLauncherPolicyForRole("gateway_host");
-      setNotice(result.task.summary);
+      setNotice(options?.successNotice || result.task.summary);
     } catch (error) {
       setNotice(`保存网关配置失败：${(error as Error).message}`);
     }

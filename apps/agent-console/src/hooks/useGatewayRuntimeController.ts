@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { applyGatewaySummaryToState, resolvePreferredGatewayBaseUrl } from "../appBootstrap";
 import { resolveInitialWorkspace } from "../roleWorkspace";
@@ -20,6 +20,12 @@ import type {
 } from "../types";
 
 type RequestJson = <T>(input: string, init?: RequestInit) => Promise<T>;
+type RefreshGatewaySummaryOptions = {
+  force?: boolean;
+  minIntervalMs?: number;
+};
+
+const GATEWAY_SUMMARY_MIN_INTERVAL_MS = 8000;
 
 type UseGatewayRuntimeControllerOptions = {
   initialUiState: AppUiStateCache;
@@ -81,13 +87,41 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
     setupCompleted,
     retryPollMs,
   } = options;
+  const gatewaySummaryRequestRef = useRef<Promise<GatewaySummaryResponse | null> | null>(null);
+  const lastGatewaySummaryAtRef = useRef(0);
+  const latestGatewaySummaryRef = useRef<GatewaySummaryResponse | null>(null);
 
-  async function refreshGatewaySummarySnapshot() {
+  const refreshGatewaySummarySnapshot = useCallback(async (options?: RefreshGatewaySummaryOptions) => {
     const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
-    if (usesRemoteGateway) {
-      if (!remoteGateway) return null;
-      const summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`);
+    const force = options?.force ?? false;
+    const minIntervalMs = options?.minIntervalMs ?? GATEWAY_SUMMARY_MIN_INTERVAL_MS;
+
+    if (!force) {
+      if (gatewaySummaryRequestRef.current) {
+        return gatewaySummaryRequestRef.current;
+      }
+      if (
+        latestGatewaySummaryRef.current
+        && Date.now() - lastGatewaySummaryAtRef.current < minIntervalMs
+      ) {
+        return latestGatewaySummaryRef.current;
+      }
+    }
+
+    const request = (async () => {
+      let summary: GatewaySummaryResponse | null = null;
+      if (usesRemoteGateway) {
+        if (!remoteGateway) return null;
+        summary = await requestJson<GatewaySummaryResponse>(`${remoteGateway}/api/system/summary`);
+      } else if (localGatewayManaged !== false) {
+        summary = await requestJson<GatewaySummaryResponse>("/api/system/summary");
+      }
+      if (!summary) {
+        return null;
+      }
+      lastGatewaySummaryAtRef.current = Date.now();
+      latestGatewaySummaryRef.current = summary;
       applyGatewaySummaryToState(summary, {
         setSystemStatus: (next) => setSystemStatus(next),
         setWechatStatus: (next) => setWechatStatus(next),
@@ -95,19 +129,30 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
         syncNodeStateView,
       });
       return summary;
+    })().finally(() => {
+      gatewaySummaryRequestRef.current = null;
+    });
+
+    gatewaySummaryRequestRef.current = request;
+
+    if (usesRemoteGateway) {
+      return request;
     }
     if (localGatewayManaged === false) {
       return null;
     }
-    const summary = await requestJson<GatewaySummaryResponse>("/api/system/summary");
-    applyGatewaySummaryToState(summary, {
-      setSystemStatus: (next) => setSystemStatus(next),
-      setWechatStatus: (next) => setWechatStatus(next),
-      setWechatBaseUrl,
-      syncNodeStateView,
-    });
-    return summary;
-  }
+    return request;
+  }, [
+    currentRoleIsConsole,
+    currentRoleIsWorker,
+    localGatewayManaged,
+    requestJson,
+    sessionRemoteGatewayBaseUrl,
+    setSystemStatus,
+    setWechatBaseUrl,
+    setWechatStatus,
+    syncNodeStateView,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -158,7 +203,7 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
           }
         }
 
-        const summaryPromise = requestJson<GatewaySummaryResponse>("/api/system/summary").catch(() => null);
+        const summaryPromise = refreshGatewaySummarySnapshot({ force: true, minIntervalMs: 0 }).catch(() => null);
         const profile = await requestJson<SetupProfileResponse>("/api/setup/profile");
         if (cancelled) return;
 
@@ -188,12 +233,6 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
 
         const summary = await summaryPromise;
         if (!cancelled && summary) {
-          applyGatewaySummaryToState(summary, {
-            setSystemStatus: (next) => setSystemStatus(next),
-            setWechatStatus: (next) => setWechatStatus(next),
-            setWechatBaseUrl,
-            syncNodeStateView,
-          });
           setWorkerSetup((current) => ({
             ...current,
             gateway_base_url: resolveWorkerGatewayBaseUrl(current.gateway_base_url, profile, summary.system),

@@ -23,6 +23,7 @@ param(
     [string]$OpenAISearchStrategy = "turbo",
     [string]$OpenAIEnableSearchExtension = "false",
     [string]$OpenAIMultimodalEnabled = "true",
+    [int]$ChannelCapacity = 0,
     [Parameter(Mandatory = $true)][int]$MaxConcurrency,
     [Parameter(Mandatory = $true)][string]$InstallDir,
     [string]$BundlePath = "",
@@ -82,6 +83,28 @@ function Write-InstallState([string]$Path, [hashtable]$State) {
 function Write-Utf8NoBomFile([string]$Path, [string]$Content) {
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+function Read-EnvKeyValueFile([string]$Path) {
+    $values = @{}
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $values
+    }
+    foreach ($line in Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue) {
+        $trimmed = [string]$line
+        if ([string]::IsNullOrWhiteSpace($trimmed) -or $trimmed.TrimStart().StartsWith("#")) {
+            continue
+        }
+        $separatorIndex = $trimmed.IndexOf("=")
+        if ($separatorIndex -le 0) {
+            continue
+        }
+        $key = $trimmed.Substring(0, $separatorIndex).Trim()
+        $value = $trimmed.Substring($separatorIndex + 1).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($key)) {
+            $values[$key] = $value
+        }
+    }
+    return $values
 }
 
 function Test-ServiceInstalled([string]$Name) {
@@ -145,6 +168,22 @@ function Copy-ItemWithRetry([string]$Source, [string]$Destination, [int]$Attempt
         }
     }
 }
+function Stop-ServiceWithWinSW([string]$ExecutablePath) {
+    if (-not (Test-Path -LiteralPath $ExecutablePath)) {
+        return
+    }
+    try {
+        $null = & $ExecutablePath stopwait 2>$null
+        return
+    }
+    catch {
+    }
+    try {
+        $null = & $ExecutablePath stop 2>$null
+    }
+    catch {
+    }
+}
 function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
     if (-not (Test-ServiceInstalled $Name)) {
         if (Test-Path -LiteralPath $ExecutablePath) {
@@ -153,6 +192,7 @@ function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
         return
     }
     Write-Step "Existing service detected; stopping it before replacing files"
+    Stop-ServiceWithWinSW -ExecutablePath $ExecutablePath
     $null = & sc.exe stop $Name 2>$null
     for ($attempt = 0; $attempt -lt 20; $attempt++) {
         try {
@@ -595,6 +635,10 @@ $OpenAIEnableSearchExtensionBool = Convert-ToBoolean $OpenAIEnableSearchExtensio
 $OpenAIMultimodalEnabledBool = Convert-ToBoolean $OpenAIMultimodalEnabled $true
 $OpenAIStopEscaped = $OpenAIStop.Replace("`r", "\r").Replace("`n", "\n")
 $LocalDirectAuthBool = Convert-ToBoolean $LocalDirectAuth $false
+$ResolvedChannelCapacity = $ChannelCapacity
+if ($ResolvedChannelCapacity -le 0) {
+    $ResolvedChannelCapacity = [Math]::Max(1, $MaxConcurrency * 2)
+}
 if ($NodeKind.Trim().ToLowerInvariant() -eq "local") {
     $DiscoveryEnabledBool = $false
     Write-Step "Local node mode detected; disabling UDP discovery listener"
@@ -618,6 +662,22 @@ $LogDir = Join-Path $InstallDir "logs"
 Ensure-Directory $ConfigDir
 Ensure-Directory $DiagnosticsDir
 Ensure-Directory $LogDir
+
+$ExistingEnvValues = Read-EnvKeyValueFile -Path $EnvPath
+if ($MaxConcurrency -le 1 -and $ExistingEnvValues.ContainsKey("CLAW_MAX_CONCURRENCY")) {
+    $existingMaxConcurrency = 0
+    if ([int]::TryParse([string]$ExistingEnvValues["CLAW_MAX_CONCURRENCY"], [ref]$existingMaxConcurrency) -and $existingMaxConcurrency -gt 1) {
+        $MaxConcurrency = $existingMaxConcurrency
+        Write-Step "Preserved existing max concurrency: $MaxConcurrency"
+    }
+}
+if ($ChannelCapacity -le 0 -and $ExistingEnvValues.ContainsKey("CLAW_CHANNEL_CAPACITY")) {
+    $existingChannelCapacity = 0
+    if ([int]::TryParse([string]$ExistingEnvValues["CLAW_CHANNEL_CAPACITY"], [ref]$existingChannelCapacity) -and $existingChannelCapacity -gt 0) {
+        $ResolvedChannelCapacity = $existingChannelCapacity
+        Write-Step "Preserved existing channel capacity: $ResolvedChannelCapacity"
+    }
+}
 
 $EnvContent = @(
     "CLAW_NODE_ID=$NodeId"
@@ -651,6 +711,7 @@ $EnvContent = @(
     "CLAW_OPENAI_SEARCH_STRATEGY=$OpenAISearchStrategy"
     "CLAW_OPENAI_ENABLE_SEARCH_EXTENSION=$OpenAIEnableSearchExtensionBool"
     "CLAW_OPENAI_MULTIMODAL_ENABLED=$OpenAIMultimodalEnabledBool"
+    "CLAW_CHANNEL_CAPACITY=$ResolvedChannelCapacity"
     "CLAW_MAX_CONCURRENCY=$MaxConcurrency"
     "CLAW_PULL_INTERVAL_MS=1500"
     "CLAW_HEARTBEAT_INTERVAL_SECONDS=5"
@@ -707,10 +768,21 @@ if (-not (Test-Path $ServiceExeSource)) {
     throw "WinSW executable not found in bundle. Put WinSW-x64.exe or WinSW.exe under infra/windows/winsw before building the bundle."
 }
 
-if (Test-Path -LiteralPath $ServiceExeTarget) {
-    Wait-ForFileRelease -Path $ServiceExeTarget
+$ShouldCopyServiceExe = $true
+if ((Test-Path -LiteralPath $ServiceExeTarget) -and (Test-Path -LiteralPath $ServiceExeSource)) {
+    $existingServiceExeHash = Get-FileSha256 $ServiceExeTarget
+    $sourceServiceExeHash = Get-FileSha256 $ServiceExeSource
+    if ($existingServiceExeHash -and $existingServiceExeHash -eq $sourceServiceExeHash) {
+        $ShouldCopyServiceExe = $false
+        Write-Step "WinSW wrapper unchanged; reusing existing service executable"
+    }
 }
-Copy-ItemWithRetry -Source $ServiceExeSource -Destination $ServiceExeTarget
+if ($ShouldCopyServiceExe) {
+    if (Test-Path -LiteralPath $ServiceExeTarget) {
+        Wait-ForFileRelease -Path $ServiceExeTarget
+    }
+    Copy-ItemWithRetry -Source $ServiceExeSource -Destination $ServiceExeTarget
+}
 Write-Utf8NoBomFile -Path $ServiceXmlTarget -Content $Rendered
 
 $ExistingServiceExecutablePath = Get-ServiceExecutablePath $ServiceName

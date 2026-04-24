@@ -96,12 +96,14 @@ type ConnectionWorkspaceProps = {
   roleSections: {
     showGatewayOverview: boolean;
     showWeChatAccess: boolean;
+    showPublicEntryProfile: boolean;
     showRemoteNodeInventory: boolean;
     showLocalNodePanel: boolean;
   };
   roleActions: {
     canManageGateway: boolean;
     canManageWeChat: boolean;
+    canManagePublicEntry: boolean;
     canManageNodes: boolean;
   };
   connectionConsolePresentation: ConnectionConsolePresentation;
@@ -139,6 +141,23 @@ type ConnectionWorkspaceProps = {
   pollStatus: string;
   wechatBaseUrl: string;
   manualToken: string;
+  publicEntryProfile: {
+    enabled: boolean;
+    baseUrl: string;
+    displayName: string;
+    contactHint: string;
+    notes: string;
+    accessUrl: string;
+    accessQrImageSrc: string | null;
+    stats: {
+      pendingQr: number;
+      waitingConfirm: number;
+      bound: number;
+      expired: number;
+      failed: number;
+      activeBindings: number;
+    };
+  };
   modelCheckText: string | null;
   wechatLastError: string | null;
   wechatStatus: WeChatStatus | null;
@@ -148,6 +167,17 @@ type ConnectionWorkspaceProps = {
   onRefreshAllStatus: () => void;
   onWechatBaseUrlChange: (value: string) => void;
   onManualTokenChange: (value: string) => void;
+  onUpdatePublicEntryProfile: (
+    key:
+      | "public_entry_enabled"
+      | "public_entry_base_url"
+      | "public_entry_display_name"
+      | "public_entry_contact_hint"
+      | "public_entry_notes",
+    value: boolean | string,
+  ) => void;
+  onSavePublicEntryProfile: () => void;
+  onCopyPublicEntryUrl: () => void;
   onStartQrFlow: () => void;
   onPollQrStatus: () => void;
   onConnectManualToken: () => void;
@@ -183,10 +213,12 @@ type ConnectionWorkspaceProps = {
 export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
   const showOverview = props.roleSections.showGatewayOverview;
   const showWeChat = props.roleSections.showWeChatAccess;
+  const showPublicEntryProfile = props.roleSections.showPublicEntryProfile;
   const showInventory = props.roleSections.showRemoteNodeInventory;
   const showLocalNodePanel = props.roleSections.showLocalNodePanel;
   const showNodeOnboarding = props.roleActions.canManageNodes;
   const showGatewayControls = props.roleActions.canManageGateway;
+  const canManagePublicEntry = props.roleActions.canManagePublicEntry;
   const localNodeConsoleRef = useRef<HTMLDivElement | null>(null);
   const localConsoleHint = showLocalNodePanel
     ? {
@@ -228,16 +260,23 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 />
               ) : null}
 
-              {showWeChat ? (
+              {showWeChat || showPublicEntryProfile ? (
                 <WeChatConfigCard
+                  showLoginSection={showWeChat}
+                  showPublicEntrySection={showPublicEntryProfile}
+                  canManagePublicEntry={canManagePublicEntry}
                   statusRows={props.wechatStatusRows}
                   qrImageSrc={props.qrImageSrc}
                   pollStatus={props.pollStatus}
                   wechatBaseUrl={props.wechatBaseUrl}
                   manualToken={props.manualToken}
+                  publicEntryProfile={props.publicEntryProfile}
                   busyKey={props.busyKey}
                   onWechatBaseUrlChange={props.onWechatBaseUrlChange}
                   onManualTokenChange={props.onManualTokenChange}
+                  onUpdatePublicEntryProfile={props.onUpdatePublicEntryProfile}
+                  onSavePublicEntryProfile={props.onSavePublicEntryProfile}
+                  onCopyPublicEntryUrl={props.onCopyPublicEntryUrl}
                   onStartQrFlow={props.onStartQrFlow}
                   onPollQrStatus={props.onPollQrStatus}
                   onConnectManualToken={props.onConnectManualToken}

@@ -19,6 +19,12 @@ import type {
 } from "../types";
 
 const MAX_CHANNEL_ASSESSMENT_ROUNDS = 999;
+const LOCAL_NODE_STATUS_MIN_INTERVAL_MS = 15000;
+
+type RefreshLocalNodeOptions = {
+  force?: boolean;
+  minIntervalMs?: number;
+};
 
 type RequestJson = <T>(input: string, init?: RequestInit) => Promise<T>;
 type WithBusy = <T>(key: string, task: () => Promise<T>) => Promise<T>;
@@ -65,6 +71,9 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
   } = options;
   const localNodeModelDirtyRef = useRef(localNodeModelDirty);
   const refreshLauncherStatusRef = useRef(refreshLauncherStatus);
+  const localNodeStatusRef = useRef(localNodeStatus);
+  const localNodeStatusRequestRef = useRef<Promise<LocalNodeStatusResponse | null> | null>(null);
+  const lastLocalNodeStatusRefreshAtRef = useRef(0);
 
   useEffect(() => {
     localNodeModelDirtyRef.current = localNodeModelDirty;
@@ -74,16 +83,48 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     refreshLauncherStatusRef.current = refreshLauncherStatus;
   }, [refreshLauncherStatus]);
 
-  const refreshLocalNodeStatus = useCallback(async () => {
+  useEffect(() => {
+    localNodeStatusRef.current = localNodeStatus;
+  }, [localNodeStatus]);
+
+  const refreshLocalNodeStatus = useCallback(async (options?: RefreshLocalNodeOptions) => {
     if (!launcherAvailable) return;
-    try {
-      const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
-      setLocalNodeStatus(status);
-      if (!localNodeModelDirtyRef.current) {
-        setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(status));
+    const force = options?.force ?? false;
+    const minIntervalMs = options?.minIntervalMs ?? LOCAL_NODE_STATUS_MIN_INTERVAL_MS;
+    const now = Date.now();
+    if (!force) {
+      if (localNodeStatusRequestRef.current) {
+        return localNodeStatusRequestRef.current;
       }
+      if (
+        localNodeStatusRef.current
+        && now - lastLocalNodeStatusRefreshAtRef.current < minIntervalMs
+      ) {
+        return localNodeStatusRef.current;
+      }
+    }
+    const request = (async () => {
+      try {
+        const status = await requestJson<LocalNodeStatusResponse>("/local/node/status");
+        lastLocalNodeStatusRefreshAtRef.current = Date.now();
+        localNodeStatusRef.current = status;
+        setLocalNodeStatus(status);
+        if (!localNodeModelDirtyRef.current) {
+          setLocalNodeModelDraft(buildLocalNodeModelDraftFromStatus(status));
+        }
+        return status;
+      } catch {
+        // local diagnostics are best-effort
+        return null;
+      } finally {
+        localNodeStatusRequestRef.current = null;
+      }
+    })();
+    localNodeStatusRequestRef.current = request;
+    try {
+      return await request;
     } catch {
-      // local diagnostics are best-effort
+      return null;
     }
   }, [launcherAvailable, requestJson, setLocalNodeModelDraft, setLocalNodeStatus]);
 
@@ -92,7 +133,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     if (localNodeStatus?.channel_assessment?.status !== "running") return undefined;
     const timer = window.setTimeout(() => {
       void requestJson<LocalNodeChannelAssessmentResult>("/local/node/channel-assessment")
-        .then(() => refreshLocalNodeStatus())
+        .then(() => refreshLocalNodeStatus({ force: true }))
         .catch(() => undefined);
     }, 1800);
     return () => window.clearTimeout(timer);
@@ -108,8 +149,8 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
     }
   }, [launcherAvailable, requestJson, setLocalNodeLogs]);
 
-  const refreshLocalNodeDiagnostics = useCallback(async () => {
-    await Promise.all([refreshLocalNodeStatus(), refreshLocalNodeLogs()]);
+  const refreshLocalNodeDiagnostics = useCallback(async (options?: RefreshLocalNodeOptions) => {
+    await Promise.all([refreshLocalNodeStatus(options), refreshLocalNodeLogs()]);
   }, [refreshLocalNodeLogs, refreshLocalNodeStatus]);
 
   const refreshRuntimeLogs = useCallback(async (options?: { silent?: boolean }) => {
@@ -223,7 +264,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
       );
       setLocalNodeStatus(result.status);
       await refreshLauncherStatusRef.current();
-      await refreshLocalNodeDiagnostics();
+      await refreshLocalNodeDiagnostics({ force: true });
       setNotice(result.detail || "本机节点已重启。");
     } catch (error) {
       setNotice(`重启本机节点失败：${(error as Error).message}`);
@@ -238,7 +279,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
       );
       setLocalNodeStatus(result.status);
       await refreshLauncherStatusRef.current();
-      await refreshLocalNodeDiagnostics();
+      await refreshLocalNodeDiagnostics({ force: true });
       setNotice(result.detail || "已重装并升级当前机器节点。");
     } catch (error) {
       setNotice(`重装并升级当前机器节点失败：${(error as Error).message}`);
@@ -253,7 +294,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
       );
       setLocalNodeStatus(result.status);
       await refreshLauncherStatusRef.current();
-      await refreshLocalNodeDiagnostics();
+      await refreshLocalNodeDiagnostics({ force: true });
       setNotice(result.detail || "本机节点已启动。");
     } catch (error) {
       setNotice(`启动本机节点失败：${(error as Error).message}`);
@@ -270,7 +311,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
         }),
       );
       await refreshLauncherStatusRef.current();
-      await refreshLocalNodeDiagnostics();
+      await refreshLocalNodeDiagnostics({ force: true });
       setNotice("本机节点已停止，可以开始执行通道评估。");
     } catch (error) {
       setNotice(`停止本机节点失败：${(error as Error).message}`);
@@ -321,7 +362,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
         }),
       );
       await refreshLauncherStatusRef.current();
-      await refreshLocalNodeDiagnostics();
+      await refreshLocalNodeDiagnostics({ force: true });
       setLocalNodeModelDirty(false);
       setNotice(result.task?.summary || "已重置本机节点身份与凭据。");
     } catch (error) {
@@ -341,7 +382,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
           body: JSON.stringify(payload),
         }),
       );
-      await refreshLocalNodeStatus();
+      await refreshLocalNodeStatus({ force: true });
       if (result.status === "blocked") {
         setNotice(result.blocking_reason || result.summary || "当前节点不满足通道评估前置条件。");
         return result;
@@ -366,7 +407,7 @@ export function useLocalNodeController(options: UseLocalNodeControllerOptions) {
       );
       setLocalNodeStatus(result.status);
       await refreshLauncherStatusRef.current();
-      await refreshLocalNodeDiagnostics();
+      await refreshLocalNodeDiagnostics({ force: true });
       setNotice(result.detail || "已应用通道评估建议。");
       return result;
     } catch (error) {
