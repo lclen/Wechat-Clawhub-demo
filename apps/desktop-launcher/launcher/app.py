@@ -4,6 +4,7 @@ import contextlib
 import asyncio
 import inspect
 import json
+import logging
 import subprocess
 import time
 import zipfile
@@ -53,6 +54,7 @@ from launcher.runtime import ensure_repo_pythonpath, resource_root
 
 ensure_repo_pythonpath()
 _WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+logger = logging.getLogger(__name__)
 
 
 def create_app() -> FastAPI:
@@ -1077,6 +1079,7 @@ def create_app() -> FastAPI:
         apply_state_path = _local_node_apply_state_path(install_dir)
         if not config_path.exists():
             raise HTTPException(status_code=404, detail="Local node config file was not found. Install the local node first.")
+        payload = _normalize_local_node_model_config_payload(_read_local_node_model_config(config_path), payload)
         _validate_local_node_model_config(payload)
         current_apply_task = getattr(app.state, "local_node_apply_task", None)
         if payload.restart_service and current_apply_task is not None and not current_apply_task.done():
@@ -1522,6 +1525,26 @@ def _write_local_node_apply_state(
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _normalize_local_node_model_config_payload(
+    current_config: LocalNodeModelConfig,
+    payload: LocalNodeModelConfigRequest,
+) -> LocalNodeModelConfigRequest:
+    normalized = payload.model_copy(deep=True)
+    if (
+        not normalized.clear_openai_api_key
+        and not normalized.openai_api_key.strip()
+        and current_config.openai_api_key_configured
+    ):
+        normalized.preserve_openai_api_key = True
+    if (
+        not normalized.clear_dify_api_key
+        and not normalized.dify_api_key.strip()
+        and current_config.dify_api_key_configured
+    ):
+        normalized.preserve_dify_api_key = True
+    return normalized
+
+
 def _validate_local_node_model_config(payload: LocalNodeModelConfigRequest) -> None:
     provider = (payload.model_provider or "auto").strip().lower()
     if provider == "openai":
@@ -1763,8 +1786,6 @@ def _update_local_node_model_config(path: Path, payload: LocalNodeModelConfigReq
         values["CLAW_OPENAI_API_KEY"] = ""
     elif payload.openai_api_key.strip():
         values["CLAW_OPENAI_API_KEY"] = payload.openai_api_key.strip()
-    elif not payload.preserve_openai_api_key:
-        values["CLAW_OPENAI_API_KEY"] = ""
     values["CLAW_OPENAI_MODEL"] = payload.openai_model.strip()
     values["CLAW_OPENAI_ENABLE_THINKING"] = "true" if payload.openai_enable_thinking else "false"
     values["CLAW_OPENAI_TEMPERATURE"] = str(payload.openai_temperature)
@@ -1783,8 +1804,6 @@ def _update_local_node_model_config(path: Path, payload: LocalNodeModelConfigReq
         values["CLAW_DIFY_API_KEY"] = ""
     elif payload.dify_api_key.strip():
         values["CLAW_DIFY_API_KEY"] = payload.dify_api_key.strip()
-    elif not payload.preserve_dify_api_key:
-        values["CLAW_DIFY_API_KEY"] = ""
     _write_env_file(path, values)
 
 
@@ -2018,6 +2037,8 @@ async def _run_local_node_channel_assessment_task(
     diagnostics_dir: Path,
     max_rounds: int,
 ) -> None:
+    import claw_node.channel_assessment as channel_assessment_module
+    import claw_node.diagnostics as diagnostics_module
     from claw_node.channel_assessment import run_channel_assessment
     from claw_node.diagnostics import NodeDiagnostics
 
@@ -2037,6 +2058,12 @@ async def _run_local_node_channel_assessment_task(
         )
 
     try:
+        logger.info(
+            "[channel-assessment] launcher_runtime_sources channel_assessment=%s diagnostics=%s config=%s",
+            getattr(channel_assessment_module, "__file__", "<unknown>"),
+            getattr(diagnostics_module, "__file__", "<unknown>"),
+            config_path,
+        )
         result = await run_channel_assessment(
             settings,
             max_rounds=max_rounds,

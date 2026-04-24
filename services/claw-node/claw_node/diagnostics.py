@@ -369,12 +369,24 @@ class NodeDiagnostics:
         self._snapshot["channel_assessment"] = normalized
         if emit_event:
             status = str(normalized.get("status", "unknown") or "unknown")
+            latest_round = self._latest_channel_assessment_round(normalized)
+            latest_first_error = ""
+            latest_failure_count = ""
+            latest_timeout_count = ""
+            latest_round_index = ""
+            if latest_round is not None:
+                latest_first_error = str(latest_round.get("first_error") or "").strip()
+                latest_failure_count = self._stringify_optional_metric(latest_round.get("failure_count"))
+                latest_timeout_count = self._stringify_optional_metric(latest_round.get("timeout_count"))
+                latest_round_index = self._stringify_optional_metric(latest_round.get("round_index"))
             message = (
                 str(normalized.get("summary", "") or "").strip()
                 or str(normalized.get("blocking_reason", "") or "").strip()
                 or str(normalized.get("stage", "") or "").strip()
                 or status
             )
+            if latest_first_error:
+                message = f"{message} 首个错误：{latest_first_error}"
             level = "error" if status in {"failed", "blocked"} else "info"
             self.record_event(
                 category="channel_assessment",
@@ -383,6 +395,10 @@ class NodeDiagnostics:
                 metadata={
                     "recommended_channel_capacity": str(normalized.get("recommended_channel_capacity") or ""),
                     "recommended_max_concurrency": str(normalized.get("recommended_max_concurrency") or ""),
+                    "latest_round_index": latest_round_index,
+                    "latest_round_failure_count": latest_failure_count,
+                    "latest_round_timeout_count": latest_timeout_count,
+                    "latest_round_first_error": latest_first_error,
                 },
                 level=level,
             )
@@ -510,6 +526,8 @@ class NodeDiagnostics:
             "current_max_concurrency": int(self._settings.max_concurrency),
             "recommended_channel_capacity": None,
             "recommended_max_concurrency": None,
+            "balanced_channel_capacity": None,
+            "balanced_max_concurrency": None,
             "summary": "",
             "rounds": [],
             "risk_level": "unknown",
@@ -521,6 +539,20 @@ class NodeDiagnostics:
             "active_task_count": 0,
             "last_error": "",
         }
+
+    def _latest_channel_assessment_round(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        rounds = payload.get("rounds")
+        if not isinstance(rounds, list) or not rounds:
+            return None
+        for round_payload in reversed(rounds):
+            if isinstance(round_payload, dict):
+                return round_payload
+        return None
+
+    def _stringify_optional_metric(self, value: object) -> str:
+        if value is None:
+            return ""
+        return str(value)
 
     def _default_latest_task(self) -> dict[str, Any]:
         return {

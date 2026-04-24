@@ -8,13 +8,14 @@ from fastapi import HTTPException
 
 from launcher.app import (
     _local_node_apply_state_path,
+    _normalize_local_node_model_config_payload,
     _read_local_node_apply_state,
     _read_local_node_model_config,
     _update_local_node_model_config,
     _validate_local_node_model_config,
     _write_local_node_apply_state,
 )
-from launcher.models import LocalNodeModelConfigRequest
+from launcher.models import LocalNodeModelConfig, LocalNodeModelConfigRequest
 
 
 class LocalNodeModelConfigTests(unittest.TestCase):
@@ -158,7 +159,7 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     openai_base_url="",
                     openai_api_key="",
                     preserve_openai_api_key=False,
-                    clear_openai_api_key=False,
+                    clear_openai_api_key=True,
                     openai_model="",
                     openai_enable_thinking=False,
                     openai_temperature=0.3,
@@ -175,7 +176,7 @@ class LocalNodeModelConfigTests(unittest.TestCase):
                     dify_base_url="",
                     dify_api_key="",
                     preserve_dify_api_key=False,
-                    clear_dify_api_key=False,
+                    clear_dify_api_key=True,
                     restart_service=False,
                 ),
             )
@@ -272,6 +273,72 @@ class LocalNodeModelConfigTests(unittest.TestCase):
             updated = env_path.read_text(encoding="utf-8")
             self.assertIn("CLAW_OPENAI_API_KEY=existing-openai-key", updated)
             self.assertIn("CLAW_DIFY_API_KEY=existing-dify-key", updated)
+
+    def test_update_local_node_model_config_preserves_existing_keys_by_default(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            env_path = Path(temp_dir) / "node.env"
+            env_path.write_text(
+                "\n".join(
+                    [
+                        "CLAW_NODE_TOKEN=node-token",
+                        "CLAW_PAIRING_KEY=123456",
+                        "CLAW_GATEWAY_BASE_URL=http://gateway.local:8300",
+                        "CLAW_OPENAI_API_KEY=existing-openai-key",
+                        "CLAW_DIFY_API_KEY=existing-dify-key",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            _update_local_node_model_config(
+                env_path,
+                LocalNodeModelConfigRequest(
+                    model_provider="dify",
+                    dify_base_url="https://dify.example.com/v1",
+                    dify_api_key="",
+                    preserve_dify_api_key=False,
+                    clear_dify_api_key=False,
+                    openai_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                    openai_api_key="",
+                    preserve_openai_api_key=False,
+                    clear_openai_api_key=False,
+                    openai_model="qwen3.5-plus",
+                    restart_service=False,
+                ),
+            )
+
+            updated = env_path.read_text(encoding="utf-8")
+            self.assertIn("CLAW_NODE_TOKEN=node-token", updated)
+            self.assertIn("CLAW_PAIRING_KEY=123456", updated)
+            self.assertIn("CLAW_GATEWAY_BASE_URL=http://gateway.local:8300", updated)
+            self.assertIn("CLAW_OPENAI_API_KEY=existing-openai-key", updated)
+            self.assertIn("CLAW_DIFY_API_KEY=existing-dify-key", updated)
+
+    def test_normalize_local_node_model_config_payload_preserves_existing_keys(self) -> None:
+        current = LocalNodeModelConfig()
+        current.openai_api_key_configured = True
+        current.dify_api_key_configured = True
+
+        normalized = _normalize_local_node_model_config_payload(
+            current,
+            LocalNodeModelConfigRequest(
+                model_provider="dify",
+                dify_base_url="https://dify.example.com/v1",
+                dify_api_key="",
+                preserve_dify_api_key=False,
+                clear_dify_api_key=False,
+                openai_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+                openai_api_key="",
+                preserve_openai_api_key=False,
+                clear_openai_api_key=False,
+                openai_model="qwen3.5-plus",
+                restart_service=False,
+            ),
+        )
+
+        self.assertTrue(normalized.preserve_openai_api_key)
+        self.assertTrue(normalized.preserve_dify_api_key)
 
 
 if __name__ == "__main__":

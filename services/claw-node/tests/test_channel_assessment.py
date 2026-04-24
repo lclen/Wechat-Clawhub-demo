@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from claw_node.channel_assessment import _latency_growth_limit_ms, _resolve_round_steps, _select_balanced_round, run_channel_assessment
+from claw_node.channel_assessment import _latency_growth_limit_ms, _resolve_round_steps, _run_round, _select_balanced_round, run_channel_assessment
 from claw_node.config import NodeSettings
 
 
@@ -135,6 +136,55 @@ class ChannelAssessmentTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["max_concurrency"], 24)
         self.assertEqual(result["channel_capacity"], 48)
+
+    async def test_run_round_records_failure_details_for_exceptions(self) -> None:
+        fake_client = AsyncMock()
+        fake_client.ask = AsyncMock(side_effect=[
+            ("OK", {}),
+            RuntimeError("remote 429"),
+            ValueError("bad payload"),
+        ])
+
+        result = await _run_round(
+            fake_client,
+            concurrency=3,
+            round_index=9,
+            baseline_latency_ms=1500,
+        )
+
+        self.assertEqual(result["success_count"], 1)
+        self.assertEqual(result["failure_count"], 2)
+        self.assertEqual(result["timeout_count"], 0)
+        self.assertEqual(result["stop_reason"], "出现 2 次失败")
+        self.assertEqual(result["first_error"], "probe=1 RuntimeError: remote 429")
+        self.assertEqual(
+            result["failure_details"],
+            [
+                "probe=1 RuntimeError: remote 429",
+                "probe=2 ValueError: bad payload",
+            ],
+        )
+
+    async def test_run_round_records_timeout_failure_detail(self) -> None:
+        async def slow_ask(**_: object) -> tuple[str, dict[str, object]]:
+            await asyncio.sleep(60)
+            return ("OK", {})
+
+        fake_client = AsyncMock()
+        fake_client.ask = AsyncMock(side_effect=slow_ask)
+
+        result = await _run_round(
+            fake_client,
+            concurrency=1,
+            round_index=4,
+            baseline_latency_ms=1000,
+        )
+
+        self.assertEqual(result["success_count"], 0)
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(result["timeout_count"], 1)
+        self.assertEqual(result["first_error"], "probe=0 timeout after 45s")
+        self.assertEqual(result["failure_details"], ["probe=0 timeout after 45s"])
 
 
 if __name__ == "__main__":

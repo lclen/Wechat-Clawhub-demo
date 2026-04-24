@@ -9,11 +9,14 @@ import type {
 } from "./types";
 
 export function buildLocalNodeModelDraftFromStatus(status: LocalNodeStatusResponse | null): LocalNodeModelConfigRequest {
+  const openaiApiKeyConfigured = Boolean(status?.model_settings?.openai_api_key_configured);
+  const difyApiKeyConfigured = Boolean(status?.model_settings?.dify_api_key_configured);
+
   return {
     model_provider: status?.model_settings?.model_provider || "auto",
     openai_base_url: status?.model_settings?.openai_base_url || "",
     openai_api_key: status?.model_settings?.openai_api_key || "",
-    preserve_openai_api_key: false,
+    preserve_openai_api_key: openaiApiKeyConfigured,
     clear_openai_api_key: false,
     openai_model: status?.model_settings?.openai_model || "",
     openai_enable_thinking: Boolean(status?.model_settings?.openai_enable_thinking),
@@ -30,7 +33,7 @@ export function buildLocalNodeModelDraftFromStatus(status: LocalNodeStatusRespon
     openai_multimodal_enabled: status?.model_settings?.openai_multimodal_enabled !== false,
     dify_base_url: status?.model_settings?.dify_base_url || "",
     dify_api_key: status?.model_settings?.dify_api_key || "",
-    preserve_dify_api_key: false,
+    preserve_dify_api_key: difyApiKeyConfigured,
     clear_dify_api_key: false,
     restart_service: true,
   };

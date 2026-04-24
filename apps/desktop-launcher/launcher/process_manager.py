@@ -271,6 +271,8 @@ class ProcessManager:
         install_dir.mkdir(parents=True, exist_ok=True)
         log_path = Path(layout.log_dir) / "local-node-install.log"
         script_path = self._repo_root / "scripts" / "install-claw-node.ps1"
+        if self._query_windows_service(self._local_node_service_name(profile)) is not None:
+            self._stop_local_node_service(profile, layout)
         self._stop_conflicting_local_node_services(self._local_node_service_name(profile))
         command = [
             "powershell",
@@ -284,7 +286,7 @@ class ProcessManager:
             "-GatewayBaseUrl",
             gateway_base_url,
             "-NodeToken",
-            "",
+            existing_config.get("CLAW_NODE_TOKEN", "").strip(),
             "-LocalDirectAuth",
             "true" if node_spec["local_direct_auth"] else "false",
             "-NodeKind",
@@ -354,6 +356,7 @@ class ProcessManager:
                 "LAUNCHER_PYTHON_CANDIDATES": os.pathsep.join(python_candidates),
             },
         )
+        self._verify_local_node_runtime_install(profile, layout, install_dir)
         self._statuses["local-node"] = self.local_node_service_status(profile, layout)
 
     def _stop_conflicting_local_node_services(self, active_service_name: str) -> list[str]:
@@ -520,6 +523,8 @@ class ProcessManager:
         venv_status = self._local_node_virtualenv_status_for_install_dir(runtime_install_dir)
         if venv_status != "ready":
             return "Python 环境损坏或缺失，需要重装。"
+        if self._is_local_node_bundle_outdated(runtime_install_dir):
+            return "本机节点 bundle 版本落后于当前仓库，需要重装并升级。"
 
         runtime_config = self._read_local_node_runtime_config(profile, layout)
         expected_node_id = str(node_spec.get("node_id", "") or "").strip()
@@ -547,6 +552,8 @@ class ProcessManager:
     def _stop_local_node_service(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         service_name = self._local_node_service_name(profile)
         service = self._query_windows_service(service_name)
+        if service is None:
+            return
         install_dir = self._extract_windows_service_install_dir(str((service or {}).get("path_name", "") or ""))
         if install_dir is None:
             install_dir = self._local_node_install_dir(layout)
@@ -558,15 +565,31 @@ class ProcessManager:
             check=False,
             creationflags=self._WINDOWS_NO_WINDOW,
         )
-        if result.returncode == 0 or not exe_path.exists():
-            return
-        subprocess.run(  # noqa: S603
-            [str(exe_path), "stop"],
-            capture_output=True,
-            text=True,
-            check=False,
-            creationflags=self._WINDOWS_NO_WINDOW,
-        )
+        sc_output = (result.stdout or result.stderr or "").strip()
+        self._service_query_cache.pop(service_name, None)
+        wrapper_result = None
+        wrapper_output = ""
+        if exe_path.exists():
+            wrapper_result = subprocess.run(  # noqa: S603
+                [str(exe_path), "stop"],
+                capture_output=True,
+                text=True,
+                check=False,
+                creationflags=self._WINDOWS_NO_WINDOW,
+            )
+            wrapper_output = (wrapper_result.stdout or wrapper_result.stderr or "").strip()
+
+        self._wait_for_local_node_service_stop(service_name)
+        if exe_path.exists():
+            self._wait_for_file_release(exe_path)
+        if result.returncode != 0 and (wrapper_result is None or wrapper_result.returncode != 0):
+            combined_output = "\n".join(part for part in (sc_output, wrapper_output) if part).strip()
+            if self._looks_like_windows_access_denied(combined_output):
+                raise PermissionError(
+                    "停止本机节点服务失败：当前会话没有停止 Windows 服务的权限，请以管理员身份启动桌面端或手动停止该服务。"
+                )
+            if combined_output:
+                raise RuntimeError(f"停止本机节点服务失败：{combined_output}")
 
     def _start_existing_local_node_service(self, profile: LauncherProfile, layout: LauncherWorkdirLayout) -> None:
         service_name = self._local_node_service_name(profile)
@@ -605,6 +628,79 @@ class ProcessManager:
     def _looks_like_windows_access_denied(self, output: str) -> bool:
         normalized = output.lower()
         return "access is denied" in normalized or "openservice failed 5" in normalized or "拒绝访问" in output
+
+    def _wait_for_local_node_service_stop(self, service_name: str, *, timeout_seconds: float = 12.0) -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            service = self._query_windows_service(service_name)
+            if service is None or str(service.get("state", "")).strip().lower() == "stopped":
+                return
+            self._service_query_cache.pop(service_name, None)
+            time.sleep(0.5)
+        service = self._query_windows_service(service_name)
+        state = str((service or {}).get("state", "") or "").strip() or "unknown"
+        raise RuntimeError(f"停止本机节点服务超时：{service_name} 当前状态仍为 {state}")
+
+    def _wait_for_file_release(self, path: Path, *, timeout_seconds: float = 12.0) -> None:
+        if not path.exists():
+            return
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            handle = None
+            try:
+                handle = path.open("ab")
+                return
+            except OSError:
+                time.sleep(0.5)
+            finally:
+                if handle is not None:
+                    handle.close()
+        raise RuntimeError(f"等待节点服务文件释放超时：{path}")
+
+    def _verify_local_node_runtime_install(self, profile: LauncherProfile, layout: LauncherWorkdirLayout, install_dir: Path) -> None:
+        service_name = self._local_node_service_name(profile)
+        exe_path = install_dir / f"{service_name}.exe"
+        xml_path = install_dir / f"{service_name}.xml"
+        config_path = install_dir / "config" / "node.env"
+        if not exe_path.exists() or not xml_path.exists() or not config_path.exists():
+            raise RuntimeError("本机节点重装后缺少服务包装器、服务定义或节点配置，安装结果不完整。")
+        if self._is_local_node_bundle_outdated(install_dir):
+            raise RuntimeError("本机节点重装后仍未更新到当前仓库 bundle，请检查服务是否被旧进程锁定。")
+
+    def _is_local_node_bundle_outdated(self, install_dir: Path) -> bool:
+        current_bundle_hash = self._current_claw_node_bundle_hash()
+        if not current_bundle_hash:
+            return False
+        installed_bundle_hash = self._installed_local_node_bundle_hash(install_dir)
+        if not installed_bundle_hash:
+            return False
+        return installed_bundle_hash != current_bundle_hash
+
+    def _installed_local_node_bundle_hash(self, install_dir: Path) -> str:
+        state = self._read_install_state(install_dir / "install-state.json")
+        return str(state.get("bundle_sha256", "") or "").strip().lower()
+
+    def _current_claw_node_bundle_hash(self) -> str:
+        return self._sha256_for_file(self._repo_root / "dist" / "claw-node-bundle.zip")
+
+    def _read_install_state(self, path: Path) -> dict[str, Any]:
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+
+    def _sha256_for_file(self, path: Path) -> str:
+        if not path.exists():
+            return ""
+        import hashlib
+
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def _query_windows_service(self, service_name: str) -> dict[str, Any] | None:
         cached = self._service_query_cache.get(service_name)

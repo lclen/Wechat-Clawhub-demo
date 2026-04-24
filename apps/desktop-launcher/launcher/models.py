@@ -227,7 +227,7 @@ class LocalNodeModelConfigRequest(BaseModel):
     model_provider: str = "auto"
     openai_base_url: str = ""
     openai_api_key: str = ""
-    preserve_openai_api_key: bool = False
+    preserve_openai_api_key: bool = True
     clear_openai_api_key: bool = False
     openai_model: str = ""
     openai_enable_thinking: bool = False
@@ -244,7 +244,7 @@ class LocalNodeModelConfigRequest(BaseModel):
     openai_multimodal_enabled: bool = True
     dify_base_url: str = ""
     dify_api_key: str = ""
-    preserve_dify_api_key: bool = False
+    preserve_dify_api_key: bool = True
     clear_dify_api_key: bool = False
     restart_service: bool = True
 

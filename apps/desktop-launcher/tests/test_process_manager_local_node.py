@@ -54,6 +54,97 @@ class ProcessManagerLocalNodeStartTests(unittest.TestCase):
 
         manager._start_existing_local_node_service.assert_called_once_with(profile, layout)
 
+    def test_reinstall_local_node_stops_current_service_before_install(self) -> None:
+        manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
+        profile = LauncherProfile(workdir="D:/wechat-claw-hub")
+        layout = LauncherWorkdirLayout(root="D:/wechat-claw-hub")
+
+        manager._resolved_local_node_spec = Mock(
+            return_value={
+                "node_id": "agent-1",
+                "gateway_base_url": "",
+                "local_direct_auth": False,
+                "node_kind": "remote",
+                "discovery_enabled": True,
+            }
+        )  # type: ignore[method-assign]
+        manager._read_local_node_runtime_config = Mock(
+            return_value={
+                "CLAW_MODEL_PROVIDER": "dify",
+                "CLAW_MAX_CONCURRENCY": "8",
+                "CLAW_NODE_TOKEN": "token-1",
+            }
+        )  # type: ignore[method-assign]
+        manager._managed_local_node_install_dir = Mock(return_value=Path("C:/wechat-claw-node"))  # type: ignore[method-assign]
+        manager._local_node_service_name = Mock(return_value="wechat-claw-node-agent-1")  # type: ignore[method-assign]
+        manager._query_windows_service = Mock(return_value={"state": "running"})  # type: ignore[method-assign]
+        manager._stop_local_node_service = Mock()  # type: ignore[method-assign]
+        manager._stop_conflicting_local_node_services = Mock()  # type: ignore[method-assign]
+        manager._python_bootstrap_candidates = Mock(return_value=[])  # type: ignore[method-assign]
+        manager._run_sync_command = Mock()  # type: ignore[method-assign]
+        manager._verify_local_node_runtime_install = Mock()  # type: ignore[method-assign]
+
+        manager._install_or_restart_local_node(profile, layout)
+
+        manager._stop_local_node_service.assert_called_once_with(profile, layout)
+
+    def test_reinstall_local_node_passes_channel_capacity_only_once(self) -> None:
+        manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
+        profile = LauncherProfile(workdir="D:/wechat-claw-hub")
+        layout = LauncherWorkdirLayout(root="D:/wechat-claw-hub")
+
+        manager._resolved_local_node_spec = Mock(
+            return_value={
+                "node_id": "agent-1",
+                "gateway_base_url": "",
+                "local_direct_auth": False,
+                "node_kind": "remote",
+                "discovery_enabled": True,
+            }
+        )  # type: ignore[method-assign]
+        manager._read_local_node_runtime_config = Mock(
+            return_value={
+                "CLAW_MODEL_PROVIDER": "dify",
+                "CLAW_MAX_CONCURRENCY": "8",
+                "CLAW_CHANNEL_CAPACITY": "16",
+                "CLAW_NODE_TOKEN": "token-1",
+            }
+        )  # type: ignore[method-assign]
+        manager._managed_local_node_install_dir = Mock(return_value=Path("C:/wechat-claw-node"))  # type: ignore[method-assign]
+        manager._local_node_service_name = Mock(return_value="wechat-claw-node-agent-1")  # type: ignore[method-assign]
+        manager._query_windows_service = Mock(return_value=None)  # type: ignore[method-assign]
+        manager._stop_local_node_service = Mock()  # type: ignore[method-assign]
+        manager._stop_conflicting_local_node_services = Mock()  # type: ignore[method-assign]
+        manager._python_bootstrap_candidates = Mock(return_value=[])  # type: ignore[method-assign]
+        manager._run_sync_command = Mock()  # type: ignore[method-assign]
+        manager._verify_local_node_runtime_install = Mock()  # type: ignore[method-assign]
+
+        manager._install_or_restart_local_node(profile, layout)
+
+        command = manager._run_sync_command.call_args.args[0]
+        self.assertEqual(command.count("-ChannelCapacity"), 1)
+
+    def test_bundle_mismatch_requires_reinstall(self) -> None:
+        manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
+        profile = LauncherProfile(workdir="D:/wechat-claw-hub", local_node_id="agent-1")
+        layout = LauncherWorkdirLayout(root="D:/wechat-claw-hub")
+
+        manager.local_node_runtime_install_dir = Mock(return_value=Path("C:/wechat-claw-node"))  # type: ignore[method-assign]
+        manager._local_node_install_dir = Mock(return_value=Path("D:/wechat-claw-hub/runtime/local-node-service"))  # type: ignore[method-assign]
+        manager._local_node_service_name = Mock(return_value="wechat-claw-node-agent-1")  # type: ignore[method-assign]
+        manager._local_node_virtualenv_status_for_install_dir = Mock(return_value="ready")  # type: ignore[method-assign]
+        manager._read_local_node_runtime_config = Mock(return_value={"CLAW_NODE_ID": "agent-1", "CLAW_GATEWAY_BASE_URL": "http://x"})  # type: ignore[method-assign]
+        manager._is_local_node_bundle_outdated = Mock(return_value=True)  # type: ignore[method-assign]
+
+        with patch("pathlib.Path.exists", return_value=True):
+            reason = manager._local_node_service_repair_reason(
+                profile,
+                layout,
+                {"node_id": "agent-1", "gateway_base_url": "http://x", "local_direct_auth": False, "node_kind": "remote"},
+            )
+
+        self.assertIn("bundle 版本落后", reason)
+
     @patch("launcher.process_manager.subprocess.run")
     def test_start_existing_local_node_service_prefers_sc_start(self, run_mock: Mock) -> None:
         manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
@@ -110,14 +201,26 @@ class ProcessManagerLocalNodeStartTests(unittest.TestCase):
                 "path_name": str(install_dir / "wechat-claw-node-agent-1.exe"),
             }
         )  # type: ignore[method-assign]
+        manager._wait_for_local_node_service_stop = Mock()  # type: ignore[method-assign]
+        manager._wait_for_file_release = Mock()  # type: ignore[method-assign]
 
-        run_mock.return_value = Mock(returncode=0, stdout="", stderr="")
+        run_mock.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),
+            Mock(returncode=0, stdout="", stderr=""),
+        ]
 
-        manager._stop_local_node_service(profile, layout)
+        with patch("pathlib.Path.exists", return_value=True):
+            manager._stop_local_node_service(profile, layout)
 
-        run_mock.assert_called_once()
-        self.assertEqual(run_mock.call_args.args[0], ["sc.exe", "stop", "wechat-claw-node-agent-1"])
-        self.assertEqual(run_mock.call_args.kwargs["creationflags"], manager._WINDOWS_NO_WINDOW)
+        self.assertEqual(run_mock.call_count, 2)
+        self.assertEqual(run_mock.call_args_list[0].args[0], ["sc.exe", "stop", "wechat-claw-node-agent-1"])
+        self.assertEqual(run_mock.call_args_list[0].kwargs["creationflags"], manager._WINDOWS_NO_WINDOW)
+        self.assertEqual(
+            run_mock.call_args_list[1].args[0],
+            [str(install_dir / "wechat-claw-node-agent-1.exe"), "stop"],
+        )
+        manager._wait_for_local_node_service_stop.assert_called_once_with("wechat-claw-node-agent-1")
+        manager._wait_for_file_release.assert_called_once_with(install_dir / "wechat-claw-node-agent-1.exe")
 
     @patch("launcher.process_manager.subprocess.run")
     def test_stop_local_node_service_falls_back_to_current_wrapper_only(self, run_mock: Mock) -> None:
@@ -133,6 +236,8 @@ class ProcessManagerLocalNodeStartTests(unittest.TestCase):
                 "path_name": str(install_dir / "wechat-claw-node-agent-1.exe"),
             }
         )  # type: ignore[method-assign]
+        manager._wait_for_local_node_service_stop = Mock()  # type: ignore[method-assign]
+        manager._wait_for_file_release = Mock()  # type: ignore[method-assign]
         run_mock.side_effect = [
             Mock(returncode=1, stdout="", stderr="sc failed"),
             Mock(returncode=0, stdout="", stderr=""),
@@ -149,6 +254,31 @@ class ProcessManagerLocalNodeStartTests(unittest.TestCase):
             [str(install_dir / "wechat-claw-node-agent-1.exe"), "stop"],
         )
         self.assertEqual(run_mock.call_args_list[1].kwargs["creationflags"], manager._WINDOWS_NO_WINDOW)
+
+    @patch("launcher.process_manager.time.sleep")
+    @patch("launcher.process_manager.subprocess.run")
+    def test_stop_local_node_service_waits_for_stopped_and_file_release(self, run_mock: Mock, sleep_mock: Mock) -> None:
+        manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
+        profile = LauncherProfile(workdir="D:/wechat-claw-hub", local_node_id="agent-1")
+        layout = LauncherWorkdirLayout(root="D:/wechat-claw-hub")
+        install_dir = Path("D:/wechat-claw-hub/runtime/local-node-service")
+
+        manager._local_node_service_name = Mock(return_value="wechat-claw-node-agent-1")  # type: ignore[method-assign]
+        manager._query_windows_service = Mock(side_effect=[
+            {"state": "running", "path_name": str(install_dir / "wechat-claw-node-agent-1.exe")},
+            {"state": "running", "path_name": str(install_dir / "wechat-claw-node-agent-1.exe")},
+            {"state": "stopped", "path_name": str(install_dir / "wechat-claw-node-agent-1.exe")},
+        ])  # type: ignore[method-assign]
+        manager._wait_for_file_release = Mock()  # type: ignore[method-assign]
+        run_mock.side_effect = [
+            Mock(returncode=0, stdout="", stderr=""),
+            Mock(returncode=0, stdout="", stderr=""),
+        ]
+
+        with patch("pathlib.Path.exists", return_value=True):
+            manager._stop_local_node_service(profile, layout)
+
+        manager._wait_for_file_release.assert_called_once_with(install_dir / "wechat-claw-node-agent-1.exe")
 
 
 if __name__ == "__main__":

@@ -198,6 +198,31 @@ function Stop-ServiceIfInstalled([string]$Name, [string]$ExecutablePath) {
         try {
             $service = Get-Service -Name $Name -ErrorAction Stop
             if ($service.Status -eq "Stopped") {
+                break
+            }
+        }
+        catch {
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    try {
+        $service = Get-Service -Name $Name -ErrorAction Stop
+        if ($service.Status -ne "Stopped" -and (Test-Path -LiteralPath $ExecutablePath)) {
+            Write-Step "Primary service stop did not finish; trying WinSW wrapper stop"
+            & $ExecutablePath stop 2>$null
+        }
+    }
+    catch {
+        return
+    }
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        try {
+            $service = Get-Service -Name $Name -ErrorAction Stop
+            if ($service.Status -eq "Stopped") {
+                if (Test-Path -LiteralPath $ExecutablePath) {
+                    Wait-ForFileRelease -Path $ExecutablePath
+                }
                 return
             }
         }
@@ -724,6 +749,9 @@ $EnvContent = @(
     "CLAW_SERVICE_MODE=$ServiceMode"
     "CLAW_SERVICE_NAME=$ServiceName"
 ) -join [Environment]::NewLine
+if ($ChannelCapacity -gt 0) {
+    $EnvContent += [Environment]::NewLine + "CLAW_CHANNEL_CAPACITY=$ChannelCapacity"
+}
 
 Write-Step "Writing fixed node config file: $EnvPath"
 Write-Utf8NoBomFile -Path $EnvPath -Content ($EnvContent + [Environment]::NewLine)

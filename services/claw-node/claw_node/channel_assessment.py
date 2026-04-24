@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import time
 from datetime import UTC, datetime
 from typing import Any, Awaitable, Callable
@@ -13,6 +14,8 @@ from claw_node.inference import create_inference_client
 
 AssessmentCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 
+logger = logging.getLogger(__name__)
+
 _ROUND_TIMEOUT_SECONDS = 45.0
 _STABLE_LATENCY_THRESHOLD_MS = 20_000
 _RECOMMENDED_LATENCY_THRESHOLD_MS = 6_000
@@ -22,6 +25,7 @@ _LATENCY_GROWTH_RATIO = 3.5
 _ROUND_STEPS = (1, 2, 3, 4, 5, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48, 56)
 _PROBE_MESSAGE = "Reply with OK only."
 _MAX_CHANNEL_ASSESSMENT_ROUNDS = 999
+_FAILURE_DETAIL_LIMIT = 5
 
 
 async def run_channel_assessment(
@@ -71,6 +75,13 @@ async def run_channel_assessment(
         )
 
         for round_index, concurrency in enumerate(step_values, start=1):
+            logger.info(
+                "[channel-assessment] round_started round=%s concurrency=%s baseline_latency_ms=%s timeout_s=%s",
+                round_index,
+                concurrency,
+                baseline_latency_ms if baseline_latency_ms is not None else "-",
+                int(_ROUND_TIMEOUT_SECONDS),
+            )
             round_result = await _run_round(
                 inference_client,
                 concurrency=concurrency,
@@ -78,6 +89,20 @@ async def run_channel_assessment(
                 baseline_latency_ms=baseline_latency_ms,
             )
             rounds.append(round_result)
+            logger.info(
+                "[channel-assessment] round_completed round=%s concurrency=%s success=%s/%s failures=%s timeouts=%s avg_ms=%s max_ms=%s stable=%s stop_reason=%s first_error=%s",
+                round_index,
+                concurrency,
+                round_result["success_count"],
+                round_result["request_count"],
+                round_result["failure_count"],
+                round_result["timeout_count"],
+                round_result["average_latency_ms"],
+                round_result["max_latency_ms"],
+                round_result["stable"],
+                round_result["stop_reason"] or "-",
+                round_result.get("first_error") or "-",
+            )
             if round_result["stable"]:
                 stable_round = round_result
                 if baseline_latency_ms is None and round_result["average_latency_ms"] > 0:
@@ -195,6 +220,14 @@ async def _run_round(
     success_count = 0
     failure_count = 0
     timeout_count = 0
+    failure_details: list[str] = []
+
+    def remember_failure(detail: str) -> None:
+        if len(failure_details) < _FAILURE_DETAIL_LIMIT:
+            failure_details.append(detail)
+
+    def failure_sample(detail: str) -> str:
+        return detail if len(detail) <= 240 else f"{detail[:237]}..."
 
     async def probe_call(probe_index: int) -> None:
         nonlocal success_count, failure_count, timeout_count
@@ -214,9 +247,28 @@ async def _run_round(
         except asyncio.TimeoutError:
             timeout_count += 1
             failure_count += 1
+            detail = f"probe={probe_index} timeout after {int(_ROUND_TIMEOUT_SECONDS)}s"
+            remember_failure(detail)
+            logger.warning(
+                "[channel-assessment] probe_failed round=%s concurrency=%s probe=%s kind=timeout detail=%s",
+                round_index,
+                concurrency,
+                probe_index,
+                detail,
+            )
             return
-        except Exception:
+        except Exception as exc:
             failure_count += 1
+            detail = f"probe={probe_index} {type(exc).__name__}: {exc}"
+            remember_failure(failure_sample(detail))
+            logger.warning(
+                "[channel-assessment] probe_failed round=%s concurrency=%s probe=%s kind=error error_type=%s detail=%s",
+                round_index,
+                concurrency,
+                probe_index,
+                type(exc).__name__,
+                failure_sample(str(exc) or type(exc).__name__),
+            )
             return
         success_count += 1
         latencies.append(max(1, int((time.perf_counter() - started) * 1000)))
@@ -268,6 +320,8 @@ async def _run_round(
         "stable": stable,
         "stop_reason": stop_reason,
         "summary": summary,
+        "first_error": failure_details[0] if failure_details else "",
+        "failure_details": failure_details,
     }
 
 
