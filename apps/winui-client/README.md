@@ -18,6 +18,13 @@
 .\scripts\build-winui-client.ps1
 ```
 
+默认会执行自包含发布，输出包内携带 .NET Desktop Runtime，目标电脑不需要单独安装 .NET。
+如需生成更小的依赖型包，可以显式传入：
+
+```powershell
+.\scripts\build-winui-client.ps1 -SelfContained $false
+```
+
 构建顺序：
 
 1. `apps/agent-console` 执行 `npm run build`。

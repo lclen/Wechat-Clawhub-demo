@@ -1,7 +1,7 @@
 # Graph Report - D:\wechat-claw-hub  (2026-04-28)
 
 ## Corpus Check
-- 224 files · ~702,805 words
+- 224 files · ~703,516 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -520,9 +520,9 @@ Nodes (0):
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `PublicEntryService` connect `Community 7` to `Community 8`, `Community 0`, `Community 9`?**
-  _High betweenness centrality (0.112) - this node is a cross-community bridge._
+  _High betweenness centrality (0.083) - this node is a cross-community bridge._
 - **Why does `Settings` connect `Community 0` to `Community 1`, `Community 3`, `Community 4`, `Community 6`, `Community 7`, `Community 9`, `Community 15`, `Community 18`?**
-  _High betweenness centrality (0.108) - this node is a cross-community bridge._
+  _High betweenness centrality (0.079) - this node is a cross-community bridge._
 - **Are the 31 inferred relationships involving `SetupService` (e.g. with `Remove node from Redis active set only, keeping pairing token intact.     The n` and `GatewaySummaryBuildError`) actually correct?**
   _`SetupService` has 31 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 104 inferred relationships involving `Settings` (e.g. with `OutboundMarkdownSegment` and `WeChatSessionExpiredError`) actually correct?**

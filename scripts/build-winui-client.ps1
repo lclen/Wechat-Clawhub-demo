@@ -1,7 +1,8 @@
 param(
     [string]$Configuration = "Release",
     [string]$Runtime = "win-x64",
-    [string]$OutputDir = ""
+    [string]$OutputDir = "",
+    [bool]$SelfContained = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,11 +34,12 @@ Write-Host "Building embedded desktop launcher..."
 Invoke-Checked { & (Join-Path $ScriptDir "build-desktop-launcher.ps1") -OutputDir $LauncherOutput } "build-desktop-launcher.ps1"
 
 Write-Host "Publishing WinUI client..."
+$SelfContainedArg = if ($SelfContained) { "true" } else { "false" }
 Invoke-Checked {
     dotnet publish $ClientProject `
         -c $Configuration `
         -r $Runtime `
-        --self-contained false `
+        --self-contained $SelfContainedArg `
         -p:WindowsPackageType=None `
         -p:WindowsAppSDKSelfContained=true `
         -o $OutputDir
