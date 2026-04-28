@@ -147,6 +147,7 @@ type ConnectionWorkspaceProps = {
     displayName: string;
     contactHint: string;
     notes: string;
+    greetingMessage: string;
     accessUrl: string;
     accessQrImageSrc: string | null;
     stats: {
@@ -173,7 +174,8 @@ type ConnectionWorkspaceProps = {
       | "public_entry_base_url"
       | "public_entry_display_name"
       | "public_entry_contact_hint"
-      | "public_entry_notes",
+      | "public_entry_notes"
+      | "public_entry_greeting_message",
     value: boolean | string,
   ) => void;
   onSavePublicEntryProfile: () => void;

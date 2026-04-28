@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEFAULT_BUILTIN_MODEL_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _DEFAULT_BUILTIN_MODEL_NAME = "qwen3.5-plus"
+DEFAULT_PUBLIC_ENTRY_GREETING_MESSAGE = "你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。"
 
 
 class Settings(BaseSettings):
@@ -43,6 +44,7 @@ class Settings(BaseSettings):
     public_entry_qr_url: str = ""
     public_entry_contact_hint: str = ""
     public_entry_notes: str = ""
+    public_entry_greeting_message: str = DEFAULT_PUBLIC_ENTRY_GREETING_MESSAGE
     dify_base_url: str = ""
     dify_api_key: str = ""
     wechat_token: str = ""

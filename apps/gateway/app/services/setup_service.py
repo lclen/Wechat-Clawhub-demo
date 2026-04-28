@@ -172,6 +172,7 @@ class SetupService:
             public_entry_qr_url=self._settings.public_entry_qr_url,
             public_entry_contact_hint=self._settings.public_entry_contact_hint,
             public_entry_notes=self._settings.public_entry_notes,
+            public_entry_greeting_message=self._settings.public_entry_greeting_message,
             dify_base_url=self._settings.dify_base_url,
             dify_api_key=self._settings.dify_api_key,
             builtin_model_base_url=self._settings.builtin_model_base_url,
@@ -231,6 +232,7 @@ class SetupService:
             qr_url=self._settings.public_entry_qr_url,
             contact_hint=self._settings.public_entry_contact_hint,
             notes=self._settings.public_entry_notes,
+            greeting_message=self._settings.public_entry_greeting_message,
             access_url=access_url,
             stats=stats or PublicEntryTicketStats(),
         )
@@ -1463,6 +1465,7 @@ class SetupService:
             "WCH_PUBLIC_ENTRY_QR_URL": normalized_config.public_entry_qr_url,
             "WCH_PUBLIC_ENTRY_CONTACT_HINT": normalized_config.public_entry_contact_hint,
             "WCH_PUBLIC_ENTRY_NOTES": normalized_config.public_entry_notes,
+            "WCH_PUBLIC_ENTRY_GREETING_MESSAGE": normalized_config.public_entry_greeting_message,
             "WCH_DIFY_BASE_URL": normalized_config.dify_base_url,
             "WCH_DIFY_API_KEY": normalized_config.dify_api_key,
             "WCH_BUILTIN_MODEL_BASE_URL": normalized_config.builtin_model_base_url,
@@ -1494,6 +1497,7 @@ class SetupService:
             "public_entry_qr_url",
             "public_entry_contact_hint",
             "public_entry_notes",
+            "public_entry_greeting_message",
             "dify_base_url",
             "dify_api_key",
             "builtin_model_base_url",
@@ -1523,6 +1527,7 @@ class SetupService:
         self._settings.public_entry_qr_url = normalized_config.public_entry_qr_url
         self._settings.public_entry_contact_hint = normalized_config.public_entry_contact_hint
         self._settings.public_entry_notes = normalized_config.public_entry_notes
+        self._settings.public_entry_greeting_message = normalized_config.public_entry_greeting_message
         self._settings.dify_base_url = normalized_config.dify_base_url
         self._settings.dify_api_key = normalized_config.dify_api_key
         self._settings.builtin_model_base_url = normalized_config.builtin_model_base_url
@@ -1568,6 +1573,7 @@ class SetupService:
         public_entry_qr_url = config.public_entry_qr_url.strip()
         public_entry_contact_hint = config.public_entry_contact_hint.strip()
         public_entry_notes = config.public_entry_notes.strip()
+        public_entry_greeting_message = config.public_entry_greeting_message.strip()
         dify_base_url = config.dify_base_url.strip()
         dify_api_key = config.dify_api_key.strip() or self._preserve_secret(
             task,
@@ -1601,6 +1607,7 @@ class SetupService:
                     "public_entry_qr_url": public_entry_qr_url,
                     "public_entry_contact_hint": public_entry_contact_hint,
                     "public_entry_notes": public_entry_notes,
+                    "public_entry_greeting_message": public_entry_greeting_message,
                     "dify_base_url": dify_base_url,
                     "dify_api_key": dify_api_key,
                     "builtin_model_base_url": builtin_model_base_url,
@@ -1639,6 +1646,7 @@ class SetupService:
                 "public_entry_qr_url": public_entry_qr_url,
                 "public_entry_contact_hint": public_entry_contact_hint,
                 "public_entry_notes": public_entry_notes,
+                "public_entry_greeting_message": public_entry_greeting_message,
                 "dify_base_url": "",
                 "dify_api_key": "",
                 "builtin_model_base_url": fallback_base_url,

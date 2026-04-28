@@ -10,6 +10,8 @@ from launcher.runtime import ensure_repo_pythonpath, resource_root
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="wechat-claw-hub-launcher")
+    parser.add_argument("--host", default=None, help="Launcher bind host. Defaults to 0.0.0.0.")
+    parser.add_argument("--port", type=int, default=None, help="Launcher bind port. Defaults to profile launcher_port.")
     subparsers = parser.add_subparsers(dest="command")
 
     gateway_parser = subparsers.add_parser("run-gateway")
@@ -24,7 +26,7 @@ def main() -> None:
     if args.command == "run-node":
         run_node()
         return
-    run_launcher()
+    run_launcher(args.host, args.port)
 
 
 def run_gateway(port: int) -> None:
@@ -44,14 +46,14 @@ def run_node() -> None:
     node_main()
 
 
-def run_launcher() -> None:
+def run_launcher(host: str | None = None, port: int | None = None) -> None:
     ensure_repo_pythonpath()
     from launcher.app import create_app
     from launcher.profile_store import load_profile
 
     profile = load_profile()
     app = create_app()
-    uvicorn.run(app, host="0.0.0.0", port=profile.launcher_port or 8765, log_level="info")
+    uvicorn.run(app, host=host or "0.0.0.0", port=port or profile.launcher_port or 8765, log_level="info")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.core.config import DEFAULT_PUBLIC_ENTRY_GREETING_MESSAGE
+
 
 PublicEntryTicketStatus = Literal["pending_qr", "waiting_confirm", "bound", "expired", "failed"]
 
@@ -41,5 +43,6 @@ class PublicEntrySummaryResponse(BaseModel):
     display_name: str = ""
     contact_hint: str = ""
     notes: str = ""
+    greeting_message: str = DEFAULT_PUBLIC_ENTRY_GREETING_MESSAGE
     access_url: str = ""
     stats: PublicEntryTicketStats = Field(default_factory=PublicEntryTicketStats)

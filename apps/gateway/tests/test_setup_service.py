@@ -69,6 +69,7 @@ def build_gateway_config() -> GatewaySetupConfig:
         public_entry_qr_url="",
         public_entry_contact_hint="",
         public_entry_notes="",
+        public_entry_greeting_message="你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。",
         dify_base_url="https://api.dify.ai/v1",
         dify_api_key="test-key",
         builtin_model_base_url="",
@@ -181,6 +182,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.settings.public_entry_qr_url = "https://example.com/clawbot.png"
         self.settings.public_entry_contact_hint = "扫码添加后直接发送问题"
         self.settings.public_entry_notes = "对外统一入口"
+        self.settings.public_entry_greeting_message = "你好，扫码添加成功。"
 
         profile = self.service.get_public_entry_profile()
 
@@ -190,6 +192,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.qr_url, "https://example.com/clawbot.png")
         self.assertEqual(profile.contact_hint, "扫码添加后直接发送问题")
         self.assertEqual(profile.notes, "对外统一入口")
+        self.assertEqual(profile.greeting_message, "你好，扫码添加成功。")
 
     async def test_gateway_console_setup_partial_failure_keeps_gateway_config(self) -> None:
         self.service._probe_console_gateway = AsyncMock(side_effect=RuntimeError("gateway unreachable"))
@@ -452,6 +455,7 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
                 "public_entry_qr_url": "https://example.com/entry.png",
                 "public_entry_contact_hint": "添加后发送问题即可开始对话",
                 "public_entry_notes": "固定公共入口资料",
+                "public_entry_greeting_message": "你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。",
             }
         )
 
@@ -465,11 +469,16 @@ class SetupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(profile.gateway.public_entry_qr_url, "https://example.com/entry.png")
         self.assertEqual(profile.gateway.public_entry_contact_hint, "添加后发送问题即可开始对话")
         self.assertEqual(profile.gateway.public_entry_notes, "固定公共入口资料")
+        self.assertEqual(
+            profile.gateway.public_entry_greeting_message,
+            "你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。",
+        )
         env_text = self.service._gateway_env_path.read_text(encoding="utf-8")
         self.assertIn("WCH_PUBLIC_ENTRY_ENABLED=true", env_text)
         self.assertIn("WCH_PUBLIC_ENTRY_BASE_URL=https://entry.example.com", env_text)
         self.assertIn('WCH_PUBLIC_ENTRY_DISPLAY_NAME="ClawBot 统一入口"', env_text)
         self.assertIn("WCH_PUBLIC_ENTRY_QR_URL=https://example.com/entry.png", env_text)
+        self.assertIn('WCH_PUBLIC_ENTRY_GREETING_MESSAGE="你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。"', env_text)
 
     async def test_save_gateway_config_defaults_to_builtin_model_when_model_fields_empty(self) -> None:
         gateway_config = GatewaySetupConfig(

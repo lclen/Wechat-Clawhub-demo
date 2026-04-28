@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.core.config import DEFAULT_PUBLIC_ENTRY_GREETING_MESSAGE
 from app.models.public_entry import PublicEntryTicketStats
 
 
@@ -30,6 +31,7 @@ class GatewaySetupConfig(BaseModel):
     public_entry_qr_url: str = ""
     public_entry_contact_hint: str = ""
     public_entry_notes: str = ""
+    public_entry_greeting_message: str = DEFAULT_PUBLIC_ENTRY_GREETING_MESSAGE
     dify_base_url: str = ""
     dify_api_key: str = ""
     builtin_model_base_url: str = ""
@@ -126,6 +128,7 @@ class PublicEntryProfileResponse(BaseModel):
     qr_url: str = ""
     contact_hint: str = ""
     notes: str = ""
+    greeting_message: str = DEFAULT_PUBLIC_ENTRY_GREETING_MESSAGE
     access_url: str = ""
     stats: PublicEntryTicketStats = Field(default_factory=PublicEntryTicketStats)
 

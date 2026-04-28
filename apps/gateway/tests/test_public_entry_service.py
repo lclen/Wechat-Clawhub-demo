@@ -52,6 +52,7 @@ class PublicEntryServiceTests(unittest.IsolatedAsyncioTestCase):
             public_entry_display_name="ClawBot 公共入口",
             public_entry_contact_hint="完成确认后返回微信发送问题即可",
             public_entry_notes="固定公共入口页",
+            public_entry_greeting_message="你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。",
             runtime_root=root / "runtime",
         )
         self.user_data_store = UserDataStore(
@@ -60,6 +61,7 @@ class PublicEntryServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.wechat_bot = AsyncMock()
         self.wechat_bot.add_managed_account = AsyncMock()
+        self.wechat_bot.send_text = AsyncMock(return_value="greeting-client-id")
         self.service = PublicEntryService(
             settings=self.settings,
             wechat_bot=self.wechat_bot,
@@ -100,6 +102,10 @@ class PublicEntryServiceTests(unittest.IsolatedAsyncioTestCase):
         assert resolved.bound_agent_id is not None
         self.assertTrue(resolved.bound_agent_id.startswith("wechat-openclaw-"))
         self.wechat_bot.add_managed_account.assert_awaited_once()
+        self.wechat_bot.send_text.assert_awaited_once_with(
+            user_id="wx-user-1",
+            text="你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。",
+        )
         binding = self.user_data_store.load_external_binding("wx-user-1")
         assert binding is not None
         self.assertEqual(binding["bound_agent_id"], resolved.bound_agent_id)
@@ -143,6 +149,86 @@ class PublicEntryServiceTests(unittest.IsolatedAsyncioTestCase):
         call = self.wechat_bot.add_managed_account.await_args
         self.assertEqual(call.kwargs["account_id"], "entry-existing")
         self.assertEqual(call.kwargs["bound_agent_id"], "stable-agent-id")
+        self.wechat_bot.send_text.assert_awaited_once_with(
+            user_id="wx-user-2",
+            text="你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。",
+        )
+
+    async def test_confirmed_with_empty_greeting_does_not_send_greeting(self) -> None:
+        self.settings.public_entry_greeting_message = "   "
+        created = await self.service.create_or_restore_ticket("client-empty-greeting")
+        FakeWeChatOnboardService.responses[created.qrcode] = {
+            "status": "confirmed",
+            "token": "bot-token-empty-greeting",
+            "base_url": "https://ilink.example.com",
+            "user_id": "wx-user-empty-greeting",
+            "bot_id": "bot-entry-empty-greeting",
+        }
+
+        resolved = await self.service.get_ticket(created.ticket_id)
+
+        self.assertEqual(resolved.status, "bound")
+        self.wechat_bot.send_text.assert_not_awaited()
+
+    async def test_greeting_failure_keeps_confirmed_binding_bound(self) -> None:
+        self.wechat_bot.send_text = AsyncMock(side_effect=RuntimeError("wechat send failed"))
+        created = await self.service.create_or_restore_ticket("client-greeting-failure")
+        FakeWeChatOnboardService.responses[created.qrcode] = {
+            "status": "confirmed",
+            "token": "bot-token-greeting-failure",
+            "base_url": "https://ilink.example.com",
+            "user_id": "wx-user-greeting-failure",
+            "bot_id": "bot-entry-greeting-failure",
+        }
+
+        resolved = await self.service.get_ticket(created.ticket_id)
+
+        self.assertEqual(resolved.status, "bound")
+        self.assertIsNotNone(self.user_data_store.load_external_binding("wx-user-greeting-failure"))
+        self.wechat_bot.add_managed_account.assert_awaited_once()
+        self.wechat_bot.send_text.assert_awaited_once()
+
+    async def test_reconfirmed_user_receives_greeting_each_time(self) -> None:
+        first = await self.service.create_or_restore_ticket("client-first")
+        FakeWeChatOnboardService.responses[first.qrcode] = {
+            "status": "confirmed",
+            "token": "bot-token-reconfirm-1",
+            "base_url": "https://ilink.example.com",
+            "user_id": "wx-user-reconfirm",
+            "bot_id": "bot-entry-reconfirm",
+        }
+        first_resolved = await self.service.get_ticket(first.ticket_id)
+
+        second = await self.service.create_or_restore_ticket("client-second")
+        FakeWeChatOnboardService.responses[second.qrcode] = {
+            "status": "confirmed",
+            "token": "bot-token-reconfirm-2",
+            "base_url": "https://ilink.example.com",
+            "user_id": "wx-user-reconfirm",
+            "bot_id": "bot-entry-reconfirm",
+        }
+        second_resolved = await self.service.get_ticket(second.ticket_id)
+
+        self.assertEqual(first_resolved.status, "bound")
+        self.assertEqual(second_resolved.status, "bound")
+        self.assertEqual(self.wechat_bot.send_text.await_count, 2)
+        self.assertEqual(first_resolved.bound_agent_id, second_resolved.bound_agent_id)
+
+    async def test_confirmed_without_token_does_not_persist_external_binding(self) -> None:
+        created = await self.service.create_or_restore_ticket("client-missing-token")
+        FakeWeChatOnboardService.responses[created.qrcode] = {
+            "status": "confirmed",
+            "base_url": "https://ilink.example.com",
+            "user_id": "wx-user-missing-token",
+            "bot_id": "bot-entry-missing-token",
+        }
+
+        resolved = await self.service.get_ticket(created.ticket_id)
+
+        self.assertEqual(resolved.status, "failed")
+        self.assertIsNone(self.user_data_store.load_external_binding("wx-user-missing-token"))
+        self.assertEqual(self.user_data_store.list_external_bindings(), [])
+        self.wechat_bot.add_managed_account.assert_not_awaited()
 
     async def test_get_public_summary_reports_access_url_and_binding_count(self) -> None:
         self.user_data_store.persist_external_binding(

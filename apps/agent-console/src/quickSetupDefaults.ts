@@ -32,6 +32,7 @@ export const DEFAULT_GATEWAY_SETUP: GatewaySetupConfig = {
   public_entry_qr_url: "",
   public_entry_contact_hint: "",
   public_entry_notes: "",
+  public_entry_greeting_message: "你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。",
   dify_base_url: "",
   dify_api_key: "",
   builtin_model_base_url: "",

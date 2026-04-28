@@ -12,6 +12,8 @@ runtime/
 config/
 diagnostics/
 build/
+bin/
+obj/
 *.log
 *.spec
 *.egg-info/

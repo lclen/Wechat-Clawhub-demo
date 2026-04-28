@@ -96,6 +96,7 @@ class PublicEntryService:
             display_name=self._settings.public_entry_display_name,
             contact_hint=self._settings.public_entry_contact_hint,
             notes=self._settings.public_entry_notes,
+            greeting_message=self._settings.public_entry_greeting_message,
             access_url=self.build_access_url(base_url),
             stats=self.get_stats(),
         )
@@ -1308,11 +1309,6 @@ class PublicEntryService:
             )
             return
 
-        binding = self._user_data_store.load_external_binding(external_account_id) or {}
-        bound_agent_id = self._user_data_store.resolve_or_create_external_bound_agent_id(external_account_id)
-        account_id = str(binding.get("account_id") or self._derive_account_id(external_account_id))
-        label = (self._settings.public_entry_display_name or "OpenClaw 专属入口").strip()
-        base_url = str(payload.get("base_url") or self._settings.wechat_base_url).rstrip("/")
         token = str(payload.get("token") or "").strip()
         if not token:
             self._set_ticket_status(
@@ -1324,6 +1320,12 @@ class PublicEntryService:
                 external_account_id=self._mask_value(external_account_id, keep=12),
             )
             return
+
+        binding = self._user_data_store.load_external_binding(external_account_id) or {}
+        bound_agent_id = self._user_data_store.resolve_or_create_external_bound_agent_id(external_account_id)
+        account_id = str(binding.get("account_id") or self._derive_account_id(external_account_id))
+        label = (self._settings.public_entry_display_name or "OpenClaw 专属入口").strip()
+        base_url = str(payload.get("base_url") or self._settings.wechat_base_url).rstrip("/")
 
         self._log_ticket_event(
             "ticket_bind_started",
@@ -1370,6 +1372,38 @@ class PublicEntryService:
             external_account_id=self._mask_value(external_account_id, keep=12),
             account_id=account_id,
             bound_agent_id=bound_agent_id,
+        )
+        await self._send_greeting_message(ticket, external_account_id=external_account_id)
+
+    async def _send_greeting_message(self, ticket: PublicEntryTicketState, *, external_account_id: str) -> None:
+        greeting_message = self._settings.public_entry_greeting_message.strip()
+        if not greeting_message:
+            self._log_ticket_event("ticket_greeting_skipped", ticket=ticket, reason="empty_message")
+            return
+        try:
+            client_id = await self._wechat_bot.send_text(user_id=external_account_id, text=greeting_message)
+        except Exception as exc:
+            logger.exception(
+                "public-entry: ticket_greeting_failed ticket_id=%s external_account_id=%s error=%s",
+                ticket.ticket_id,
+                self._mask_value(external_account_id, keep=12),
+                exc,
+            )
+            self._log_ticket_event(
+                "ticket_greeting_failed",
+                ticket=ticket,
+                level=logging.WARNING,
+                external_account_id=self._mask_value(external_account_id, keep=12),
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+            )
+            return
+        self._log_ticket_event(
+            "ticket_greeting_sent",
+            ticket=ticket,
+            external_account_id=self._mask_value(external_account_id, keep=12),
+            client_id=client_id,
+            text_len=len(greeting_message),
         )
 
     async def _ensure_ticket_qrcode_image(self, ticket: PublicEntryTicketState) -> None:

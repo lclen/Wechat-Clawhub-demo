@@ -8,12 +8,15 @@ import {
   InfoList,
 } from "../../shared/ConsolePrimitives";
 
+const DEFAULT_PUBLIC_ENTRY_URL = "http://121.41.47.90:5014/entry";
+
 type PublicEntryProfile = {
   enabled: boolean;
   baseUrl: string;
   displayName: string;
   contactHint: string;
   notes: string;
+  greetingMessage: string;
   accessUrl: string;
   accessQrImageSrc: string | null;
   stats: {
@@ -45,7 +48,8 @@ type WeChatConfigCardProps = {
       | "public_entry_base_url"
       | "public_entry_display_name"
       | "public_entry_contact_hint"
-      | "public_entry_notes",
+      | "public_entry_notes"
+      | "public_entry_greeting_message",
     value: boolean | string,
   ) => void;
   onSavePublicEntryProfile: () => void;
@@ -77,6 +81,8 @@ export function WeChatConfigCard({
   onConnectManualToken,
   onDisconnectWeChat,
 }: WeChatConfigCardProps) {
+  const publicEntryUrl = publicEntryProfile.accessUrl || DEFAULT_PUBLIC_ENTRY_URL;
+
   return (
     <SurfaceCard className="wechat-command-surface" tone="strong">
       <SectionHeader
@@ -204,9 +210,10 @@ export function WeChatConfigCard({
         {showPublicEntrySection ? (
           <section className="wechat-split-section">
             <SectionHeader
+              className="public-entry-section-header"
               kicker="公共入口资料"
               title="给外部用户的固定入口资料"
-              description="这里维护的是系统托管的固定公共入口。外部用户先扫公共页二维码，再领取自己的专属 OpenClaw 配对二维码。"
+              description="这里维护的是系统托管的固定公共入口。外部用户点击公共入口按钮进入页面，再领取自己的专属 OpenClaw 配对二维码。"
               actions={
                 <div className="inline-actions">
                   {publicEntryProfile.accessUrl ? (
@@ -247,11 +254,12 @@ export function WeChatConfigCard({
                 </label>
 
                 <CommandBar
+                  className="public-entry-share-bar"
                   label="固定分享入口"
-                  detail="填写外部用户真正能访问到的公网基址，系统会自动在后面拼上 /entry 并生成固定公共二维码。"
+                  detail="填写外部用户真正能访问到的公网基址，系统会自动在后面拼上 /entry。"
                 >
                   <div className="public-entry-url-line">
-                    <code>{publicEntryProfile.accessUrl || "等待网关生成公开入口 URL"}</code>
+                    <code>{publicEntryUrl}</code>
                   </div>
                 </CommandBar>
 
@@ -294,6 +302,15 @@ export function WeChatConfigCard({
                     />
                   </label>
                   <label className="connection-full-span">
+                    <span>扫码后问候语</span>
+                    <textarea
+                      value={publicEntryProfile.greetingMessage}
+                      readOnly={!canManagePublicEntry}
+                      onChange={(event) => onUpdatePublicEntryProfile("public_entry_greeting_message", event.target.value)}
+                      placeholder="你好，已成功连接到专属 Claw。你可以直接发送问题，我会在这里回复你。"
+                    />
+                  </label>
+                  <label className="connection-full-span">
                     <span>备注</span>
                     <textarea
                       value={publicEntryProfile.notes}
@@ -307,14 +324,17 @@ export function WeChatConfigCard({
 
               <aside className="public-entry-preview">
                 <div className="public-entry-preview-frame">
-                  {publicEntryProfile.accessQrImageSrc ? (
-                    <img
-                      src={publicEntryProfile.accessQrImageSrc}
-                      alt={publicEntryProfile.displayName || "公共入口二维码"}
-                    />
-                  ) : (
-                    <div className="public-entry-preview-empty">等待网关生成固定公共入口二维码</div>
-                  )}
+                  <a
+                    className="public-entry-open-button"
+                    href={publicEntryUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    打开公共入口
+                  </a>
+                  <div className="public-entry-preview-empty">
+                    进入 {publicEntryUrl} 后，外部用户再扫码连接自己的专属 Claw。
+                  </div>
                 </div>
                 <div className="public-entry-preview-copy">
                   <div className="public-entry-preview-heading">

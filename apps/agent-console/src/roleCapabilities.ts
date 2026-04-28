@@ -291,7 +291,7 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
       label: "会话观察台",
       kicker: "Session Control",
       description: "",
-      heroTitle: "会话轨与详情工作台",
+      heroTitle: "会话列表与聊天",
       heroDescription: "",
       primaryActionLabel: "绑定节点",
     },
@@ -337,7 +337,7 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
       label: "会话观察台",
       kicker: "Console Focus",
       description: "",
-      heroTitle: "会话轨与详情工作台",
+      heroTitle: "会话列表与聊天",
       heroDescription: "",
       primaryActionLabel: "查看会话",
     };
@@ -348,7 +348,7 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
       label: "会话控制台",
       kicker: "Node Session",
       description: "",
-      heroTitle: "会话轨与详情工作台",
+      heroTitle: "会话列表与聊天",
       heroDescription: "",
       primaryActionLabel: "查看会话",
     };

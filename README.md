@@ -56,10 +56,12 @@ wechat-claw-hub/
 - `apps/gateway`：主网关 FastAPI 骨架、会话、节点、分发接口
 - `apps/agent-console`：React 控制台，可检测模型连通性、生成微信二维码并做连接测试
 - `apps/desktop-launcher`：Windows 一体化桌面启动器，负责本地控制面 API、下载 Redis、选择单一工作目录并一键拉起核心组件
+- `apps/winui-client`：WinUI 3 + WebView2 Windows 客户端壳，内置并监控桌面启动器，承载现有 React 控制台
 - `services/claw-node`：Windows 工作节点 Python 服务骨架
 - `scripts/build-claw-node-bundle.ps1`：子节点打包脚本
 - `scripts/install-claw-node.ps1`：Windows 子节点安装脚本
 - `scripts/build-desktop-launcher.ps1`：桌面启动器 EXE 打包脚本
+- `scripts/build-winui-client.ps1`：Windows 客户端构建脚本，按前端、launcher、WinUI 顺序产出本机客户端
 - `docs/windows-node-dispatch-implementation.md`：主从分发与部署实施说明
 
 当前已打通的关键链路：

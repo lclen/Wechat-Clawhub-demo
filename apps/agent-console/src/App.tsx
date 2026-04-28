@@ -371,6 +371,7 @@ export function App() {
   const sessionMessageCacheRef = useRef<Map<string, SessionMessageCacheEntry>>(new Map());
   const restoredSessionScrollRef = useRef(initialUiState.session_scroll);
   const nodeDiagnosticsCacheRef = useRef<Map<string, NodeDiagnosticsRecord>>(new Map());
+  const conversationTestAutoRefreshKeyRef = useRef("");
   const publicEntryProfileRequestRef = useRef<Promise<PublicEntryProfileResponse | null> | null>(null);
   const publicEntryProfileEndpointRef = useRef("");
   const publicEntryProfileLastLoadedAtRef = useRef(0);
@@ -562,6 +563,29 @@ export function App() {
     refreshRuntimeLogs,
     launcherStatusKey: JSON.stringify(launcherStatus?.components ?? []),
   });
+
+  useEffect(() => {
+    if (workspace !== "conversation_test" || !launcherAvailable) {
+      conversationTestAutoRefreshKeyRef.current = "";
+      return;
+    }
+    if (localNodeStatus) {
+      return;
+    }
+    const autoRefreshKey = `${runtimeMachineRole}:${launcherStatus?.profile.launcher_port ?? "unknown"}`;
+    if (conversationTestAutoRefreshKeyRef.current === autoRefreshKey) {
+      return;
+    }
+    conversationTestAutoRefreshKeyRef.current = autoRefreshKey;
+    void refreshLocalNodeDiagnostics({ minIntervalMs: 0 });
+  }, [
+    launcherAvailable,
+    launcherStatus?.profile.launcher_port,
+    localNodeStatus,
+    refreshLocalNodeDiagnostics,
+    runtimeMachineRole,
+    workspace,
+  ]);
 
   useEffect(() => {
     saveUiStateCache(
@@ -2175,6 +2199,7 @@ export function App() {
               displayName: gatewaySetup.public_entry_display_name,
               contactHint: gatewaySetup.public_entry_contact_hint,
               notes: gatewaySetup.public_entry_notes,
+              greetingMessage: gatewaySetup.public_entry_greeting_message,
               accessUrl: publicEntryProfileState?.access_url || "",
               accessQrImageSrc: publicEntryQrImageSrc,
               stats: {

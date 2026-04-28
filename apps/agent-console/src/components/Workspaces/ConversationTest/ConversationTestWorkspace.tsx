@@ -78,13 +78,24 @@ export function ConversationTestWorkspace({
 
   return (
     <section className="workspace-frame conversation-test-workspace">
-      <div className="workspace-heading">
+      <div className="workspace-heading conversation-test-heading">
         <div>
           <div className="section-kicker">
             {currentRoleIsWorker ? "节点测试" : "端到端模型测试"}
           </div>
           <h2>{title}</h2>
           {description ? <div className="workspace-caption">{description}</div> : null}
+        </div>
+        <div className="conversation-test-status-row">
+          <SignalBadge tone={launcherAvailable ? "good" : "warn"}>
+            Launcher {launcherAvailable ? "在线" : "未就绪"}
+          </SignalBadge>
+          <SignalBadge tone={localNodeStatus?.inference_ready ? "good" : "neutral"}>
+            推理库 {localNodeStatus?.inference_ready ? "就绪" : "待同步"}
+          </SignalBadge>
+          <SignalBadge tone={localNodeModelDirty ? "warn" : "good"}>
+            配置 {localNodeModelDirty ? "待应用" : "已同步"}
+          </SignalBadge>
         </div>
       </div>
 
@@ -115,7 +126,7 @@ export function ConversationTestWorkspace({
           </div>
         </SurfaceCard>
       ) : (
-        <div className="conversation-test-layout" style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr", gap: 16, alignItems: "start" }}>
+        <div className="conversation-test-layout">
           {/* 左侧：测试指令面板 */}
           <SurfaceCard className="conversation-command-shell" tone="accent">
             <SectionHeader
@@ -145,7 +156,6 @@ export function ConversationTestWorkspace({
 
             <MetricStrip
               className="conversation-test-metrics"
-              style={{ marginTop: 12, marginBottom: 12 }}
               items={[
                 { label: "生效后端", value: activeProvider },
                 { label: "配置后端", value: configuredProvider },
@@ -154,15 +164,11 @@ export function ConversationTestWorkspace({
             />
 
             {localNodeModelDirty ? (
-              <div
-                className="inline-tip conversation-test-warning"
-                style={{ backgroundColor: "rgba(255, 120, 0, 0.05)", border: "1px solid rgba(255, 120, 0, 0.2)", padding: 12, borderRadius: 6, margin: "12px 0", fontSize: "0.9em" }}
-              >
-                <div style={{ color: "var(--warn)" }}>当前节点有未应用的修改。</div>
+              <div className="inline-tip conversation-test-warning">
+                <div>当前节点有未应用的修改。</div>
                 <button
                   type="button"
-                  className="ghost-button"
-                  style={{ marginTop: 8, height: 28 }}
+                  className="ghost-button conversation-test-save-button"
                   onClick={onSaveLocalNodeModelConfig}
                   disabled={busyKey !== null}
                 >
@@ -171,7 +177,11 @@ export function ConversationTestWorkspace({
               </div>
             ) : null}
 
-            <div className="console-section-copy" style={{ marginTop: 20, marginBottom: 12 }}>
+            {heroDescription ? (
+              <div className="conversation-test-hero-note">{heroDescription}</div>
+            ) : null}
+
+            <div className="console-section-copy conversation-route-copy">
               <span className="section-kicker">链路路由</span>
               <h4>后端 Provider 覆盖</h4>
             </div>
@@ -194,29 +204,18 @@ export function ConversationTestWorkspace({
               ))}
             </div>
 
-            <div className="conversation-test-editor-wrap" style={{ marginTop: 24 }}>
-              <div className="console-section-copy" style={{ marginBottom: 12 }}>
+            <div className="conversation-test-editor-wrap">
+              <div className="console-section-copy conversation-editor-copy">
                 <span className="section-kicker">消息正文</span>
                 <h4>输入测试 Prompt</h4>
               </div>
               <textarea
-                style={{
-                  width: "100%",
-                  minHeight: 120,
-                  backgroundColor: "var(--app-bg)",
-                  border: "1px solid var(--line)",
-                  borderRadius: 6,
-                  padding: 12,
-                  color: "inherit",
-                  fontSize: "14px",
-                  lineHeight: "1.5",
-                  resize: "vertical"
-                }}
+                className="conversation-test-textarea"
                 value={message}
                 onChange={(event) => setMessage(event.target.value)}
                 placeholder="在此输入你想让 AI 回答测试消息"
               />
-              <div style={{ fontSize: "11px", opacity: 0.5, marginTop: 8 }}>
+              <div className="conversation-test-editor-hint">
                 提示：短文本更有利于快速验证连通性。模型回复可能受网络和配置影响。
               </div>
             </div>
@@ -227,25 +226,14 @@ export function ConversationTestWorkspace({
             <SectionHeader kicker="工作详情" title="本次对话回执" />
 
             {errorText ? (
-              <div
-                className="conversation-test-error"
-                style={{
-                  backgroundColor: "rgba(220, 38, 38, 0.05)",
-                  border: "1px solid rgba(220, 38, 38, 0.2)",
-                  padding: 16,
-                  borderRadius: 8,
-                  marginTop: 16,
-                }}
-              >
-                <strong style={{ color: "var(--danger)", display: "block", marginBottom: 4 }}>
-                  请求出现异常
-                </strong>
-                <div style={{ fontSize: "14px", whiteSpace: "pre-wrap" }}>{errorText}</div>
+              <div className="conversation-test-error">
+                <strong>请求出现异常</strong>
+                <div>{errorText}</div>
               </div>
             ) : null}
 
             {result ? (
-              <div className="conversation-test-result" style={{ marginTop: 12 }}>
+              <div className="conversation-test-result">
                 <MetricStrip
                   className="conversation-result-metrics"
                   items={[
@@ -258,7 +246,7 @@ export function ConversationTestWorkspace({
                   ]}
                 />
 
-                <div style={{ marginTop: 20 }}>
+                <div className="conversation-result-details">
                   <InfoList
                     items={[
                       { label: "接口说明", value: result.detail || "暂无回执详情" },
@@ -270,42 +258,20 @@ export function ConversationTestWorkspace({
                   />
                 </div>
 
-                <div className="snippet-block" style={{ marginTop: 20 }}>
-                  <div className="snippet-label" style={{ marginBottom: 8, fontSize: "12px", opacity: 0.6 }}>AI 模型回复</div>
-                  <pre
-                    style={{
-                      backgroundColor: "rgba(0,0,0,0.2)",
-                      padding: 16,
-                      borderRadius: 8,
-                      fontSize: "13px",
-                      lineHeight: "1.6",
-                      whiteSpace: "pre-wrap",
-                      wordBreak: "break-word",
-                      border: "1px solid var(--line)"
-                    }}
-                  >
+                <div className="snippet-block conversation-reply-section">
+                  <div className="snippet-label">AI 模型回复</div>
+                  <pre className="conversation-reply-block">
                     {result.reply || "后端接口返回 200，但模型推理内容为空。可能由于 API 设置或参数不匹配导致。"}
                   </pre>
                 </div>
 
-                <div className="snippet-block" style={{ marginTop: 16 }}>
-                  <div className="snippet-label" style={{ marginBottom: 8, fontSize: "11px", opacity: 0.4 }}>Token Usage</div>
-                  <pre
-                    style={{
-                      backgroundColor: "transparent",
-                      padding: 12,
-                      borderRadius: 6,
-                      fontSize: "12px",
-                      opacity: 0.8,
-                      border: "1px dashed var(--line)"
-                    }}
-                  >
-                    {usageText}
-                  </pre>
+                <div className="snippet-block conversation-usage-section">
+                  <div className="snippet-label">Token Usage</div>
+                  <pre className="conversation-usage-block">{usageText}</pre>
                 </div>
               </div>
             ) : !errorText ? (
-              <div className="console-empty-state" style={{ marginTop: 40, padding: "60px 0" }}>
+              <div className="console-empty-state conversation-result-empty">
                 <span>暂无待处理回执。成功向后端发起请求后，这里将展示完整的 AI 响应正文与推理开销细节。</span>
               </div>
             ) : null}
