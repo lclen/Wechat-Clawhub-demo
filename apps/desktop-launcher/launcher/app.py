@@ -521,10 +521,11 @@ def create_app() -> FastAPI:
                     diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
             apply_state = _read_local_node_apply_state(apply_state_path)
             node_kind = str(diagnostics.get("node_kind", "") or "").strip() or _read_local_node_kind(config_path)
-            _sync_node_model_config_from_gateway_env(
+            _sync_node_model_config_for_runtime(
                 config_path=config_path,
                 gateway_env_path=gateway_env_path,
                 node_kind=node_kind,
+                machine_role=str(derive_runtime_model(profile).machine_role),
             )
             env_values = _read_env_file(config_path)
             persisted_assessment = _read_local_node_channel_assessment_state(
@@ -582,7 +583,8 @@ def create_app() -> FastAPI:
                 and (datetime.now(UTC) - diagnostics_last_heartbeat_at.astimezone(UTC)).total_seconds() <= 30
             ):
                 inferred_runtime_state = diagnostics_runtime_state
-                inferred_detail = "本机内置节点已注册到当前目标网关，并处于在线状态。"
+                node_label = "本机内置节点" if (node_kind or "").strip().lower() == "local" else "当前工作节点"
+                inferred_detail = f"{node_label}已注册到当前目标网关，并处于在线状态。"
                 inferred_register_result = str(diagnostics.get("last_register_result", "") or "succeeded").strip() or "succeeded"
                 inferred_register_error = str(diagnostics.get("last_error", "") or "").strip()
                 inferred_register_at_raw = diagnostics.get("last_heartbeat_at") or diagnostics.get("last_register_at")
@@ -709,10 +711,11 @@ def create_app() -> FastAPI:
         current_status = await asyncio.to_thread(app.state.manager.local_node_service_status, profile, layout)
         node_spec = await asyncio.to_thread(app.state.manager._resolved_local_node_spec, profile)  # type: ignore[attr-defined]
         repair_reason = await asyncio.to_thread(app.state.manager.local_node_service_repair_reason, profile, layout, node_spec)
-        _sync_node_model_config_from_gateway_env(
+        _sync_node_model_config_for_runtime(
             config_path=config_path,
             gateway_env_path=gateway_env_path,
             node_kind=_read_local_node_kind(config_path),
+            machine_role=str(derive_runtime_model(profile).machine_role),
         )
         model_settings = _read_local_node_model_config(config_path)
         if str(current_status.state) == "running":
@@ -984,6 +987,29 @@ def create_app() -> FastAPI:
         script_path = app.state.repo_root / "scripts" / "install-claw-node.ps1"
         if not script_path.exists():
             return JSONResponse({"task": {"status": "failed", "summary": f"未找到安装脚本：{script_path}", "logs": [], "kind": "node_install", "title": f"安装工作节点 {node_id}"}})
+        existing_config = _read_env_file(Path(install_dir) / "config" / "node.env")
+
+        def text_config(config_key: str, env_key: str, default: str = "", *, prefer_existing: bool = False) -> str:
+            existing = str(existing_config.get(env_key, "") or "").strip()
+            if prefer_existing and existing:
+                return existing
+            incoming = str(config.get(config_key, "") or "").strip()
+            if incoming:
+                return incoming
+            return existing or default
+
+        def bool_config(config_key: str, env_key: str, default: bool = False) -> str:
+            existing = str(existing_config.get(env_key, "") or "").strip()
+            if existing:
+                return "true" if existing.lower() in {"1", "true", "yes", "y", "$true"} else "false"
+            return "true" if config.get(config_key, default) else "false"
+
+        def int_config(config_key: str, env_key: str, default: int = 0) -> str:
+            existing = str(existing_config.get(env_key, "") or "").strip()
+            if existing:
+                return existing
+            return str(config.get(config_key, default))
+
         command = [
             "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path),
             "-NodeId", node_id,
@@ -992,12 +1018,24 @@ def create_app() -> FastAPI:
             "-LocalDirectAuth", "false",
             "-NodeKind", "remote",
             "-PairingKey", str(config.get("pairing_key", "")),
-            "-DifyBaseUrl", str(config.get("dify_base_url", "")),
-            "-DifyApiKey", str(config.get("dify_api_key", "")),
-            "-OpenAIBaseUrl", str(config.get("openai_base_url", "")),
-            "-OpenAIApiKey", str(config.get("openai_api_key", "")),
-            "-OpenAIModel", str(config.get("openai_model", "")),
-            "-OpenAIEnableThinking", "true" if config.get("openai_enable_thinking") else "false",
+            "-ModelProvider", text_config("model_provider", "CLAW_MODEL_PROVIDER", "auto"),
+            "-DifyBaseUrl", text_config("dify_base_url", "CLAW_DIFY_BASE_URL"),
+            "-DifyApiKey", text_config("dify_api_key", "CLAW_DIFY_API_KEY"),
+            "-OpenAIBaseUrl", text_config("openai_base_url", "CLAW_OPENAI_BASE_URL"),
+            "-OpenAIApiKey", text_config("openai_api_key", "CLAW_OPENAI_API_KEY"),
+            "-OpenAIModel", text_config("openai_model", "CLAW_OPENAI_MODEL"),
+            "-OpenAIEnableThinking", bool_config("openai_enable_thinking", "CLAW_OPENAI_ENABLE_THINKING"),
+            "-OpenAITemperature", text_config("openai_temperature", "CLAW_OPENAI_TEMPERATURE", "0.3", prefer_existing=True),
+            "-OpenAITopP", text_config("openai_top_p", "CLAW_OPENAI_TOP_P", "1.0", prefer_existing=True),
+            "-OpenAIMaxTokens", int_config("openai_max_tokens", "CLAW_OPENAI_MAX_TOKENS", 0),
+            "-OpenAISeed", int_config("openai_seed", "CLAW_OPENAI_SEED", 0),
+            "-OpenAIThinkingBudget", int_config("openai_thinking_budget", "CLAW_OPENAI_THINKING_BUDGET", 0),
+            "-OpenAIStop", text_config("openai_stop", "CLAW_OPENAI_STOP", prefer_existing=True),
+            "-OpenAIEnableSearch", bool_config("openai_enable_search", "CLAW_OPENAI_ENABLE_SEARCH"),
+            "-OpenAISearchForced", bool_config("openai_search_forced", "CLAW_OPENAI_SEARCH_FORCED"),
+            "-OpenAISearchStrategy", text_config("openai_search_strategy", "CLAW_OPENAI_SEARCH_STRATEGY", "turbo", prefer_existing=True),
+            "-OpenAIEnableSearchExtension", bool_config("openai_enable_search_extension", "CLAW_OPENAI_ENABLE_SEARCH_EXTENSION"),
+            "-OpenAIMultimodalEnabled", bool_config("openai_multimodal_enabled", "CLAW_OPENAI_MULTIMODAL_ENABLED", True),
             "-MaxConcurrency", str(config.get("max_concurrency", 1)),
             "-InstallDir", install_dir,
             "-DiscoveryEnabled", "true" if config.get("discovery_enabled", True) else "false",
@@ -1269,10 +1307,12 @@ def create_app() -> FastAPI:
         # Try to serve the exact file first (assets, etc.)
         candidate = dist_dir / full_path
         if candidate.exists() and candidate.is_file():
+            if candidate.name == "index.html":
+                return FileResponse(candidate, headers={"Cache-Control": "no-store, max-age=0"})
             return FileResponse(candidate)
         index = dist_dir / "index.html"
         if index.exists():
-            return FileResponse(index)
+            return FileResponse(index, headers={"Cache-Control": "no-store, max-age=0"})
         raise HTTPException(status_code=404, detail="Frontend not built. Run: npm run build in apps/agent-console")
 
     # Mount static assets (js/css/images) — must come after API routes
@@ -1431,6 +1471,28 @@ def _sync_node_model_config_from_gateway_env(
             node_kind=node_kind,
         )
     return _migrate_worker_model_config_from_gateway_env(
+        config_path=config_path,
+        gateway_env_path=gateway_env_path,
+        node_kind=node_kind,
+    )
+
+
+def _sync_node_model_config_for_runtime(
+    *,
+    config_path: Path,
+    gateway_env_path: Path,
+    node_kind: str,
+    machine_role: str,
+) -> bool:
+    # Worker machines own their node.env. Never let a stale CLAW_NODE_KIND=local
+    # make the worker inherit or overwrite model settings from the gateway env.
+    if (machine_role or "").strip().lower() == "node":
+        return _migrate_worker_model_config_from_gateway_env(
+            config_path=config_path,
+            gateway_env_path=gateway_env_path,
+            node_kind="remote",
+        )
+    return _sync_node_model_config_from_gateway_env(
         config_path=config_path,
         gateway_env_path=gateway_env_path,
         node_kind=node_kind,

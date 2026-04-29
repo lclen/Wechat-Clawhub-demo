@@ -113,6 +113,8 @@ type ConnectionWorkspaceProps = {
   setupProfileConsoleGatewayBaseUrl: string;
   gatewaySetupDispatchModeEnabled: boolean;
   workerSetup: WorkerNodeSetupConfig;
+  displayedWorkerNodeId: string;
+  displayedWorkerGatewayBaseUrl: string;
   manualPair: ManualPairDraft;
   discoveredNodes: DiscoveredNodeRecord[];
   pairingSecrets: Record<string, string>;
@@ -459,7 +461,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   onSave={props.onSaveLocalNodeModelConfig}
                   onExport={props.onExportLocalNodeDiagnostics}
                   onReset={props.onResetLocalNodeCredentials}
-                  onRepair={props.onRunWorkerSetup}
+                  onRepair={props.onRepairCurrentMachineNode}
                   onRunConversationTest={props.onRunLocalNodeConversationTest}
                 />
               </div>
@@ -489,14 +491,14 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   />
                   <MetricCard
                     label="节点 ID"
-                    value={props.workerSetup.node_id || "未填写"}
+                    value={props.displayedWorkerNodeId || "未填写"}
                     detail={props.localNodeStatus?.node_kind === "local" ? "网关内置节点" : "远端工作节点"}
                     tone="accent"
                   />
                 </div>
                 <div className="prep-strip-list worker-node-prep-list">
                   <PrepStrip label="节点配置" detail={props.setupCompletedRoles.has("worker_node") ? "当前机器节点已完成配置" : "尚未完成节点配置"} tone={props.setupCompletedRoles.has("worker_node") ? "good" : "warn"} />
-                  <PrepStrip label="目标网关地址" detail={props.workerSetup.gateway_base_url || "未填写局域网网关地址"} tone={props.workerSetup.gateway_base_url ? "good" : "warn"} />
+                  <PrepStrip label="目标网关地址" detail={props.displayedWorkerGatewayBaseUrl || "未填写局域网网关地址"} tone={props.displayedWorkerGatewayBaseUrl ? "good" : "warn"} />
                   <PrepStrip label="发现响应" detail={props.workerSetup.discovery_enabled ? `已启用 UDP ${props.workerSetup.discovery_port}` : "当前已关闭"} tone={props.workerSetup.discovery_enabled ? "good" : "warn"} />
                   <PrepStrip
                     label="Token 状态"
@@ -778,8 +780,16 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   </div>
                 </details>
                 <div className="inline-actions worker-node-install-actions">
-                  <button type="button" onClick={props.onRunWorkerSetup} disabled={props.busyKey !== null}>
-                    {props.busyKey === "setup-worker" ? "重装升级中..." : "重装并升级当前机器节点"}
+                  <button
+                    type="button"
+                    onClick={props.setupCompletedRoles.has("worker_node") ? props.onRepairCurrentMachineNode : props.onRunWorkerSetup}
+                    disabled={props.busyKey !== null}
+                  >
+                    {props.busyKey === "setup-worker" || props.busyKey === "local-node-reinstall"
+                      ? "重装升级中..."
+                      : props.setupCompletedRoles.has("worker_node")
+                        ? "重装并升级当前机器节点"
+                        : "安装当前机器节点"}
                   </button>
                   <button type="button" className="ghost-button" onClick={props.onProbeWorkerGateway} disabled={props.busyKey !== null}>
                     {props.busyKey === "setup-gateway-probe" ? "检测中..." : "检测目标网关"}

@@ -13,7 +13,7 @@ namespace WechatClawHub.WinUI;
 public sealed partial class MainWindow : Window
 {
     private readonly LauncherSupervisor launcherSupervisor = new();
-    private readonly Uri consoleUri = new("http://127.0.0.1:8765/");
+    private readonly Uri consoleBaseUri = new("http://127.0.0.1:8765/");
     private CancellationTokenSource startupCancellation = new();
     private Grid titleBarDragRegion = null!;
     private Grid webViewHost = null!;
@@ -64,7 +64,7 @@ public sealed partial class MainWindow : Window
                     await webView.EnsureCoreWebView2Async();
                 }
 
-                webView.CoreWebView2?.Reload();
+                webView.Source = BuildConsoleUri();
                 return;
             }
             catch (Exception exception)
@@ -117,7 +117,7 @@ public sealed partial class MainWindow : Window
             AppLog.Info("Initializing WebView2.");
             WebView2 webView = EnsureConsoleWebView();
             await webView.EnsureCoreWebView2Async();
-            webView.Source = consoleUri;
+            webView.Source = BuildConsoleUri();
             webView.Visibility = Visibility.Visible;
             startupOverlay.Visibility = Visibility.Collapsed;
             AppLog.Info("WebView2 ready.");
@@ -187,6 +187,11 @@ public sealed partial class MainWindow : Window
         };
         webViewHost.Children.Add(consoleWebView);
         return consoleWebView;
+    }
+
+    private Uri BuildConsoleUri()
+    {
+        return new Uri(consoleBaseUri, $"?client=winui&v={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}");
     }
 
     private void EnqueueOnUi(Action action)

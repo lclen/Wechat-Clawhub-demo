@@ -125,7 +125,12 @@ export function launcherRoleUsesLocalNode(machineRole: LauncherMachineRole) {
 }
 
 export function resolveWorkerNodeId(currentValue: string, launcherProfile?: LauncherProfile | null) {
-  const candidate = safeTrim(currentValue) || launcherProfile?.local_node_id || "";
+  const profileNodeId = safeTrim(launcherProfile?.local_node_id);
+  const currentNodeId = safeTrim(currentValue);
+  const candidate =
+    launcherProfile?.enable_gateway === false && profileNodeId
+      ? profileNodeId
+      : currentNodeId || profileNodeId || "";
   if (LEGACY_WORKER_NODE_IDS.has(candidate)) {
     return DEFAULT_REMOTE_WORKER_NODE_ID;
   }

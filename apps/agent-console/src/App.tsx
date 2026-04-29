@@ -239,6 +239,18 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function diagnosticString(status: LocalNodeStatusResponse | null, key: string) {
+  const value = status?.diagnostics?.[key];
+  return typeof value === "string" ? safeTrim(value) : "";
+}
+
+function nodeIdFromLocalNodeStatus(status: LocalNodeStatusResponse | null) {
+  const diagnosticNodeId = diagnosticString(status, "node_id");
+  if (diagnosticNodeId) return diagnosticNodeId;
+  const serviceName = safeTrim(status?.service_name);
+  return serviceName.startsWith("wechat-claw-node-") ? serviceName.slice("wechat-claw-node-".length) : "";
+}
+
 export function App() {
   const initialDraft = loadSetupDraft();
   const initialUiState = useMemo(() => loadUiStateCache(), []);
@@ -412,14 +424,86 @@ export function App() {
   const shouldUseLocalGatewayApi = shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
   const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
   const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
+  const authoritativeWorkerNodeId = currentRoleIsWorker
+    ? (
+        nodeIdFromLocalNodeStatus(localNodeStatus)
+        || safeTrim(launcherStatus?.profile.local_node_id)
+        || safeTrim(workerSetup.node_id)
+      )
+    : "";
+  const authoritativeWorkerGatewayBaseUrl = currentRoleIsWorker
+    ? (
+        diagnosticString(localNodeStatus, "gateway_base_url")
+        || safeTrim(launcherStatus?.profile.gateway_base_url)
+        || safeTrim(workerSetup.gateway_base_url)
+      )
+    : "";
   const sessionRemoteGatewayBaseUrl = currentRoleIsWorker
-    ? safeTrim(workerSetup.gateway_base_url)
+    ? authoritativeWorkerGatewayBaseUrl
     : currentRoleIsConsole
       ? (safeTrim(consoleSetup.gateway_base_url) || setupProfile?.console.gateway_base_url || "")
       : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");
-  const sessionRemoteNodeId = currentRoleIsWorker ? safeTrim(workerSetup.node_id) : "";
+  const sessionRemoteNodeId = currentRoleIsWorker ? authoritativeWorkerNodeId : "";
+  const displayedWorkerNodeId = authoritativeWorkerNodeId || safeTrim(workerSetup.node_id);
+  const displayedWorkerGatewayBaseUrl = authoritativeWorkerGatewayBaseUrl || safeTrim(workerSetup.gateway_base_url);
   const currentNodeLanIp = launcherStatus?.local_lan_ip || setupTask?.metadata.lan_ip || "";
   const currentGatewayBaseUrl = consoleSetup.gateway_base_url || window.location.origin;
+
+  useEffect(() => {
+    if (!currentRoleIsWorker) return;
+    const runtimeNodeId = authoritativeWorkerNodeId;
+    const runtimeGatewayBaseUrl =
+      authoritativeWorkerGatewayBaseUrl
+      || safeTrim(setupProfile?.preferred_gateway_base_url)
+      || safeTrim(setupProfile?.console.gateway_base_url);
+    const runtimeInstallDir = safeTrim(localNodeStatus?.install_dir);
+    setWorkerSetup((current) => {
+      const next = {
+        ...current,
+        node_id: runtimeNodeId || current.node_id,
+        gateway_base_url: runtimeGatewayBaseUrl || current.gateway_base_url,
+        install_dir: runtimeInstallDir || current.install_dir,
+        node_token: "",
+      };
+      return (
+        next.node_id === current.node_id
+        && next.gateway_base_url === current.gateway_base_url
+        && next.install_dir === current.install_dir
+        && next.node_token === current.node_token
+      )
+        ? current
+        : next;
+    });
+  }, [
+    authoritativeWorkerGatewayBaseUrl,
+    authoritativeWorkerNodeId,
+    currentRoleIsWorker,
+    localNodeStatus?.install_dir,
+    setWorkerSetup,
+    setupProfile?.console.gateway_base_url,
+    setupProfile?.preferred_gateway_base_url,
+  ]);
+
+  useEffect(() => {
+    if (!currentRoleIsWorker) return;
+    setWorkerGatewayProbeTask((current) => {
+      if (!current || current.kind !== "gateway_probe") return current;
+      const taskGatewayBaseUrl = safeTrim(current.metadata.gateway_base_url);
+      const taskNodeId = safeTrim(current.metadata.node_id);
+      if (displayedWorkerGatewayBaseUrl && taskGatewayBaseUrl && taskGatewayBaseUrl !== displayedWorkerGatewayBaseUrl) {
+        return null;
+      }
+      if (displayedWorkerNodeId && taskNodeId && taskNodeId !== displayedWorkerNodeId) {
+        return null;
+      }
+      return current;
+    });
+  }, [
+    currentRoleIsWorker,
+    displayedWorkerGatewayBaseUrl,
+    displayedWorkerNodeId,
+    setWorkerGatewayProbeTask,
+  ]);
 
   useEffect(() => {
     if (!roleCapabilities.workspace[workspace]?.visible) {
@@ -541,7 +625,7 @@ export function App() {
     launcherAvailable,
     launcherStatus,
     gatewayDispatchModeEnabled: gatewaySetup.dispatch_mode_enabled,
-    workerNodeId: workerSetup.node_id,
+    workerNodeId: displayedWorkerNodeId,
     effectiveRole,
     setNotice,
     setLauncherStatus,
@@ -860,12 +944,8 @@ export function App() {
       .catch(() => setNotice("复制入口链接失败，请手动复制。"));
   }, [publicEntryProfileState?.access_url, setNotice]);
   const repairCurrentMachineNode = useCallback(() => {
-    if (currentRoleIsWorker) {
-      void runWorkerSetup({ showResultScreen: false });
-      return;
-    }
     void reinstallLocalNodeService();
-  }, [currentRoleIsWorker, reinstallLocalNodeService, runWorkerSetup]);
+  }, [reinstallLocalNodeService]);
   const refreshAllConnectionStatus = useCallback(async () => {
     try {
       await withBusy("connection-refresh-all", async () => {
@@ -1042,21 +1122,21 @@ export function App() {
         await refreshLauncherStatus();
         stoppedActions.push("已停止所有本地组件");
       }
-      if ((setupCompletedRoles.has("worker_node") || hasText(workerSetup.node_id)) && hasText(workerSetup.install_dir)) {
+      if ((setupCompletedRoles.has("worker_node") || hasText(displayedWorkerNodeId)) && hasText(workerSetup.install_dir)) {
         const resetUrl = launcherMachineRoleValue(launcherStatus) === "node" ? "/local/node/reset-credentials" : "/api/setup/node/reset-credentials";
         const result = await withBusy(
           "reconfigure-reset-worker-token",
           () => requestJson<SetupTaskEnvelope>(resetUrl, {
             method: "POST",
             body: JSON.stringify({
-              node_id: safeTrim(workerSetup.node_id),
+              node_id: displayedWorkerNodeId,
               install_dir: safeTrim(workerSetup.install_dir),
             } satisfies NodeCredentialResetRequest),
           }),
         );
         setSetupTask(result.task);
         setWorkerSetup((current) => ({ ...current, node_token: "" }));
-        clearNodeDiagnosticsCache(safeTrim(workerSetup.node_id));
+        clearNodeDiagnosticsCache(displayedWorkerNodeId);
         stoppedActions.push("已清空节点配置");
       }
       // 重置后端内存状态（仅网关角色需要）
@@ -1129,14 +1209,29 @@ export function App() {
     });
   }, [selectedSession, sessionBindingOptions]);
   const workerGatewayConnection = useMemo(() => {
-    const gatewayBaseUrl = safeTrim(workerSetup.gateway_base_url);
-    const nodeId = safeTrim(workerSetup.node_id);
+    const gatewayBaseUrl = authoritativeWorkerGatewayBaseUrl || safeTrim(workerSetup.gateway_base_url);
+    const nodeId = authoritativeWorkerNodeId || safeTrim(workerSetup.node_id);
     if (!gatewayBaseUrl || !nodeId) {
       return {
         state: "idle" as WorkerGatewayConnectionState,
         label: "未检测",
         detail: "请先填写目标网关地址和节点 ID。",
         remoteNode: null as NodeInventoryRecord | NodeRecord | null,
+      };
+    }
+    const localStatusNodeId = nodeIdFromLocalNodeStatus(localNodeStatus);
+    if (
+      currentRoleIsWorker
+      && localNodeStatus?.runtime_state === "connected"
+      && (!localStatusNodeId || localStatusNodeId === nodeId)
+    ) {
+      const inventoryNode = nodeInventory.find((item) => item.node_id === nodeId) ?? null;
+      const onlineNode = nodes.find((item) => item.node_id === nodeId) ?? null;
+      return {
+        state: "gateway_reachable_node_connected" as WorkerGatewayConnectionState,
+        label: "网关可达，节点已连接",
+        detail: localNodeStatus.detail || `节点 ${nodeId} 已注册到目标网关。`,
+        remoteNode: inventoryNode ?? onlineNode,
       };
     }
     const task = workerGatewayProbeTask;
@@ -1199,7 +1294,17 @@ export function App() {
       detail: task.summary || `目标网关可访问，但尚未发现节点 ${nodeId}。`,
       remoteNode: inventoryNode,
     };
-  }, [nodeInventory, nodes, workerGatewayProbeTask, workerSetup.gateway_base_url, workerSetup.node_id]);
+  }, [
+    authoritativeWorkerGatewayBaseUrl,
+    authoritativeWorkerNodeId,
+    currentRoleIsWorker,
+    localNodeStatus,
+    nodeInventory,
+    nodes,
+    workerGatewayProbeTask,
+    workerSetup.gateway_base_url,
+    workerSetup.node_id,
+  ]);
   const latestSetupSummary = useMemo(
     () => workerGatewayProbeTask?.summary || setupTask?.summary || setupProfile?.last_task?.summary || (currentRoleIsWorker ? "暂无最近节点安装或回连记录。" : (nodes.length ? `当前有 ${nodes.length} 个在线节点处于纳管范围。` : "暂无最近配置或纳管记录。")),
     [currentRoleIsWorker, nodes.length, setupProfile?.last_task?.summary, setupTask?.summary, workerGatewayProbeTask?.summary],
@@ -1230,7 +1335,7 @@ export function App() {
           title: "节点配置",
           value: setupCompletedRoles.has("worker_node") ? "已完成" : "待配置",
           tone: setupCompletedRoles.has("worker_node") ? "good" : "warn",
-          detail: workerSetup.node_id || "尚未填写节点 ID",
+          detail: displayedWorkerNodeId || "尚未填写节点 ID",
         },
         {
           title: "网关连接状态",
@@ -1298,7 +1403,7 @@ export function App() {
           : localNodeRuntimeSummary.detail,
       },
     ];
-  }, [currentNodeLanIp, currentRoleIsWorker, gatewayRuntimeSummary.detail, gatewayRuntimeSummary.tone, gatewayRuntimeSummary.value, latestSetupSummary, localNodeRuntimeSummary.detail, localNodeRuntimeSummary.label, localNodeRuntimeSummary.tone, nodeInventorySummary.online_total, setupCompletedRoles, setupProfile?.console.gateway_base_url, wechatRuntimeSummary.detail, wechatRuntimeSummary.tone, wechatRuntimeSummary.value, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.state, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.node_id, workerSetup.pairing_key]);
+  }, [currentNodeLanIp, currentRoleIsWorker, displayedWorkerNodeId, gatewayRuntimeSummary.detail, gatewayRuntimeSummary.tone, gatewayRuntimeSummary.value, latestSetupSummary, localNodeRuntimeSummary.detail, localNodeRuntimeSummary.label, localNodeRuntimeSummary.tone, nodeInventorySummary.online_total, setupCompletedRoles, setupProfile?.console.gateway_base_url, wechatRuntimeSummary.detail, wechatRuntimeSummary.tone, wechatRuntimeSummary.value, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.state, workerSetup.discovery_enabled, workerSetup.discovery_port, workerSetup.pairing_key]);
   const reconfigureWarnings = useMemo(() => {
     const warnings: string[] = [];
     if (wechatStatus?.running) warnings.push("微信当前处于轮询中；继续后会先断开微信连接，再进入重新配置。");
@@ -1318,7 +1423,7 @@ export function App() {
         ? "当前机器已完成工作节点配置。"
         : "当前机器还没有完成“工作节点”角色配置，所以这里只能先告诉你查看位置，暂时没有可回显的本机节点凭据。",
     },
-    { label: "节点 ID", value: workerSetup.node_id || "未填写" },
+    { label: "节点 ID", value: displayedWorkerNodeId || "未填写" },
     {
       label: "节点 Token 状态",
       value: "安装阶段不会生成 token；只有配对成功后，网关才会自动签发并写入节点。",
@@ -1329,7 +1434,7 @@ export function App() {
     },
     { label: "网关侧查看位置", value: `配对成功后可在 ${GATEWAY_NODE_TOKEN_LOCATION} 查看` },
     { label: "节点侧查看位置", value: `配对成功后可在 ${workerEnvLocations(workerSetup.install_dir)} 查看` },
-  ]), [setupCompletedRoles, workerSetup.install_dir, workerSetup.node_id, workerSetup.pairing_key]);
+  ]), [displayedWorkerNodeId, setupCompletedRoles, workerSetup.install_dir, workerSetup.pairing_key]);
   const installProgressSummary = useMemo(() => {
     if (!setupTask || setupTask.kind !== "node_install") return "";
     if (setupTask.status === "running") return "正在安装当前节点，日志会持续刷新。";
@@ -1340,8 +1445,8 @@ export function App() {
   const workerConnectionLog = useMemo(() => {
     if (!currentRoleIsWorker) return "";
     const lines: string[] = [
-      `当前节点 ID：${safeTrim(workerSetup.node_id) || "未填写"}`,
-      `目标网关：${safeTrim(workerSetup.gateway_base_url) || "未填写"}`,
+      `当前节点 ID：${displayedWorkerNodeId || "未填写"}`,
+      `目标网关：${displayedWorkerGatewayBaseUrl || "未填写"}`,
       `当前连接状态：${workerGatewayConnection.label}`,
       `状态摘要：${workerGatewayConnection.detail}`,
     ];
@@ -1368,7 +1473,7 @@ export function App() {
       }
     }
     return lines.join("\n");
-  }, [currentRoleIsWorker, setupTask, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.remoteNode, workerGatewayProbeTask, workerSetup.gateway_base_url, workerSetup.node_id]);
+  }, [currentRoleIsWorker, displayedWorkerGatewayBaseUrl, displayedWorkerNodeId, setupTask, workerGatewayConnection.detail, workerGatewayConnection.label, workerGatewayConnection.remoteNode, workerGatewayProbeTask]);
   const localNodeEventPreview = useMemo(() => {
     if (!localNodeLogs?.event_log) return "本机节点最近还没有导出的事件日志。";
     return localNodeLogs.event_log;
@@ -1532,9 +1637,9 @@ export function App() {
         },
         {
           eyebrow: "目标网关",
-          title: workerSetup.gateway_base_url || "未填写局域网网关地址",
+          title: displayedWorkerGatewayBaseUrl || "未填写局域网网关地址",
           detail: currentNodeLanIp ? `当前节点局域网 IP：${currentNodeLanIp}` : "当前节点还没有检测到可用的局域网地址。",
-          tone: workerSetup.gateway_base_url ? "good" : "warn",
+          tone: displayedWorkerGatewayBaseUrl ? "good" : "warn",
         },
         {
           eyebrow: "发现响应",
@@ -1578,6 +1683,7 @@ export function App() {
     availableDispatchNodes,
     currentNodeLanIp,
     currentRoleIsWorker,
+    displayedWorkerGatewayBaseUrl,
     gatewayRuntimeSummary.detail,
     gatewayRuntimeSummary.tone,
     gatewayRuntimeSummary.value,
@@ -1596,7 +1702,6 @@ export function App() {
     workerGatewayConnection.state,
     workerSetup.discovery_enabled,
     workerSetup.discovery_port,
-    workerSetup.gateway_base_url,
   ]);
   const connectionActionTips = useMemo<string[]>(() => {
     if (currentRoleIsWorker) {
@@ -1952,15 +2057,15 @@ export function App() {
           value:
             workerGatewayConnection.state === "gateway_reachable_node_connected"
               ? "已连接"
-              : workerSetup.gateway_base_url
+              : displayedWorkerGatewayBaseUrl
                 ? "可达"
                 : "未填写",
           tone: workerGatewayConnection.state === "gateway_reachable_node_connected" ? "good" : "warn",
         },
         {
           label: "节点",
-          value: workerSetup.node_id || "未配置",
-          tone: workerSetup.node_id ? "good" : "warn",
+          value: displayedWorkerNodeId || "未配置",
+          tone: displayedWorkerNodeId ? "good" : "warn",
         },
         {
           label: "注册状态",
@@ -2165,6 +2270,8 @@ export function App() {
             setupProfileConsoleGatewayBaseUrl={setupProfile?.console.gateway_base_url || ""}
             gatewaySetupDispatchModeEnabled={gatewaySetup.dispatch_mode_enabled}
             workerSetup={workerSetup}
+            displayedWorkerNodeId={displayedWorkerNodeId}
+            displayedWorkerGatewayBaseUrl={displayedWorkerGatewayBaseUrl}
             manualPair={manualPair}
             discoveredNodes={discoveredNodes}
             pairingSecrets={pairingSecrets}
