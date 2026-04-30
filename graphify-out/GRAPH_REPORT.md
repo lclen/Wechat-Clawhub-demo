@@ -1,12 +1,12 @@
-# Graph Report - D:\wechat-clawhub  (2026-04-29)
+# Graph Report - wechat-claw-hub  (2026-04-30)
 
 ## Corpus Check
-- 212 files · ~409,291 words
+- 228 files · ~425,866 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2158 nodes · 6491 edges · 86 communities detected
-- Extraction: 56% EXTRACTED · 44% INFERRED · 0% AMBIGUOUS · INFERRED: 2869 edges (avg confidence: 0.69)
+- 2867 nodes · 8130 edges · 32 communities detected
+- Extraction: 65% EXTRACTED · 35% INFERRED · 0% AMBIGUOUS · INFERRED: 2844 edges (avg confidence: 0.68)
 - Token cost: 0 input · 0 output
 
 ## Community Hubs (Navigation)
@@ -33,10 +33,8 @@
 - [[_COMMUNITY_Community 20|Community 20]]
 - [[_COMMUNITY_Community 21|Community 21]]
 - [[_COMMUNITY_Community 22|Community 22]]
-- [[_COMMUNITY_Community 23|Community 23]]
 - [[_COMMUNITY_Community 24|Community 24]]
 - [[_COMMUNITY_Community 25|Community 25]]
-- [[_COMMUNITY_Community 26|Community 26]]
 - [[_COMMUNITY_Community 27|Community 27]]
 - [[_COMMUNITY_Community 28|Community 28]]
 - [[_COMMUNITY_Community 29|Community 29]]
@@ -44,148 +42,96 @@
 - [[_COMMUNITY_Community 31|Community 31]]
 - [[_COMMUNITY_Community 32|Community 32]]
 - [[_COMMUNITY_Community 33|Community 33]]
-- [[_COMMUNITY_Community 34|Community 34]]
-- [[_COMMUNITY_Community 35|Community 35]]
-- [[_COMMUNITY_Community 36|Community 36]]
-- [[_COMMUNITY_Community 37|Community 37]]
-- [[_COMMUNITY_Community 38|Community 38]]
-- [[_COMMUNITY_Community 39|Community 39]]
-- [[_COMMUNITY_Community 40|Community 40]]
-- [[_COMMUNITY_Community 41|Community 41]]
-- [[_COMMUNITY_Community 42|Community 42]]
-- [[_COMMUNITY_Community 43|Community 43]]
-- [[_COMMUNITY_Community 44|Community 44]]
-- [[_COMMUNITY_Community 45|Community 45]]
-- [[_COMMUNITY_Community 46|Community 46]]
-- [[_COMMUNITY_Community 47|Community 47]]
-- [[_COMMUNITY_Community 48|Community 48]]
-- [[_COMMUNITY_Community 49|Community 49]]
-- [[_COMMUNITY_Community 50|Community 50]]
-- [[_COMMUNITY_Community 51|Community 51]]
-- [[_COMMUNITY_Community 52|Community 52]]
-- [[_COMMUNITY_Community 53|Community 53]]
-- [[_COMMUNITY_Community 54|Community 54]]
-- [[_COMMUNITY_Community 55|Community 55]]
-- [[_COMMUNITY_Community 56|Community 56]]
-- [[_COMMUNITY_Community 57|Community 57]]
-- [[_COMMUNITY_Community 58|Community 58]]
-- [[_COMMUNITY_Community 59|Community 59]]
-- [[_COMMUNITY_Community 60|Community 60]]
-- [[_COMMUNITY_Community 61|Community 61]]
-- [[_COMMUNITY_Community 62|Community 62]]
-- [[_COMMUNITY_Community 63|Community 63]]
-- [[_COMMUNITY_Community 64|Community 64]]
-- [[_COMMUNITY_Community 65|Community 65]]
-- [[_COMMUNITY_Community 66|Community 66]]
-- [[_COMMUNITY_Community 67|Community 67]]
-- [[_COMMUNITY_Community 68|Community 68]]
-- [[_COMMUNITY_Community 69|Community 69]]
-- [[_COMMUNITY_Community 70|Community 70]]
-- [[_COMMUNITY_Community 71|Community 71]]
-- [[_COMMUNITY_Community 72|Community 72]]
-- [[_COMMUNITY_Community 73|Community 73]]
-- [[_COMMUNITY_Community 74|Community 74]]
-- [[_COMMUNITY_Community 75|Community 75]]
-- [[_COMMUNITY_Community 76|Community 76]]
-- [[_COMMUNITY_Community 77|Community 77]]
-- [[_COMMUNITY_Community 78|Community 78]]
-- [[_COMMUNITY_Community 79|Community 79]]
-- [[_COMMUNITY_Community 80|Community 80]]
-- [[_COMMUNITY_Community 81|Community 81]]
-- [[_COMMUNITY_Community 82|Community 82]]
-- [[_COMMUNITY_Community 83|Community 83]]
-- [[_COMMUNITY_Community 84|Community 84]]
-- [[_COMMUNITY_Community 85|Community 85]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `SetupService` - 115 edges
-2. `Settings` - 107 edges
+1. `Settings` - 117 edges
+2. `SetupService` - 115 edges
 3. `Worker` - 100 edges
-4. `ProcessManager` - 85 edges
-5. `WeChatBotService` - 85 edges
-6. `NodeSettings` - 85 edges
-7. `RedisStore` - 81 edges
-8. `DispatchQueue` - 79 edges
-9. `SessionManager` - 77 edges
-10. `DispatchQueueError` - 56 edges
+4. `RedisStore` - 93 edges
+5. `WeChatBotService` - 88 edges
+6. `ProcessManager` - 85 edges
+7. `NodeSettings` - 85 edges
+8. `DispatchQueue` - 81 edges
+9. `SessionManager` - 79 edges
+10. `XamlTypeInfoProvider` - 63 edges
 
 ## Surprising Connections (you probably didn't know these)
+- `ensureClientId()` --calls--> `toString()`  [INFERRED]
+  apps\agent-console\src\components\PublicEntryPage.tsx → runtime\liteapp-qrcode.js
+- `getSessionPollTabId()` --calls--> `toString()`  [INFERRED]
+  apps\agent-console\src\hooks\useSessionWorkspaceEffects.ts → runtime\liteapp-qrcode.js
 - `shouldUseFastPolling()` --calls--> `loadMessages()`  [INFERRED]
-  D:\wechat-clawhub\apps\agent-console\src\selectors\sessionSelectors.ts → D:\wechat-clawhub\apps\agent-console\__snapshots__\app-refactor-start\App.tsx
+  apps\agent-console\src\selectors\sessionSelectors.ts → apps\agent-console\__snapshots__\app-refactor-start\App.tsx
 - `Settings` --uses--> `Minimal OpenAI-compatible client used for connectivity checks and future interna`  [INFERRED]
-  D:\wechat-clawhub\apps\gateway\app\core\config.py → D:\wechat-clawhub\apps\gateway\app\services\openai_compatible_client.py
-- `DispatchTask` --uses--> `Node event stream broker for real-time node-to-gateway communication.`  [INFERRED]
-  D:\wechat-clawhub\apps\gateway\app\models\dispatch.py → D:\wechat-clawhub\apps\gateway\app\services\node_stream.py
-- `DispatchTask` --uses--> `Manages WebSocket connections for node event streams.`  [INFERRED]
-  D:\wechat-clawhub\apps\gateway\app\models\dispatch.py → D:\wechat-clawhub\apps\gateway\app\services\node_stream.py
-- `DispatchTask` --uses--> `Register a node's WebSocket connection.`  [INFERRED]
-  D:\wechat-clawhub\apps\gateway\app\models\dispatch.py → D:\wechat-clawhub\apps\gateway\app\services\node_stream.py
+  apps\gateway\app\core\config.py → D:\wechat-clawhub\apps\gateway\app\services\openai_compatible_client.py
+- `DispatchTask` --uses--> `Receive an event from a node.          Returns a structured receive result so`  [INFERRED]
+  apps\gateway\app\models\dispatch.py → D:\wechat-clawhub\apps\gateway\app\services\node_stream.py
 
 ## Communities
 
 ### Community 0 - "Community 0"
-Cohesion: 0.03
-Nodes (89): Settings, ChannelReleasedRequest, DispatchTask, PullTaskRequest, PullTaskResponse, TaskFailureRequest, TaskResultRequest, InboundAggregationResult (+81 more)
+Cohesion: 0.01
+Nodes (308): launcherManagedComponentsLabel(), buildLauncherStartPayload(), launcherRoleUsesLocalNode(), _summarize_task_stream_event(), $(), $a(), ac, ad() (+300 more)
 
 ### Community 1 - "Community 1"
-Cohesion: 0.03
-Nodes (44): AppLog, BaseSettings, NodeSettings, _default_task_stream_state(), events_path(), NodeDiagnosticEvent, NodeDiagnostics, status_path() (+36 more)
+Cohesion: 0.02
+Nodes (112): OfficialAccountInboundMessage, Raised when the official account integration fails., Raised when the official account configuration is incomplete., Raised when an inbound callback cannot be verified., WeChatOfficialAccountConfigError, WeChatOfficialAccountError, WeChatOfficialAccountValidationError, syncNodeDiagnosticsCache() (+104 more)
 
 ### Community 2 - "Community 2"
 Cohesion: 0.02
-Nodes (137): appendPairingClientError(), applyDispatchMode(), applyGatewaySummaryToState(), applyLauncherPolicyForRole(), applyLauncherStatusState(), applyOverview(), applyPreferredGatewayBaseUrlToWorker(), applySessionMessageEntry() (+129 more)
+Nodes (46): BaseSettings, NodeSettings, _default_task_stream_state(), events_path(), NodeDiagnosticEvent, NodeDiagnostics, status_path(), DifyClient (+38 more)
 
 ### Community 3 - "Community 3"
 Cohesion: 0.03
-Nodes (30): DownloadedGatewayMedia, GatewayClient, identity(), create_inference_client(), _ensure_dify_config(), _ensure_openai_config(), ensure_redis_binary(), RuntimeError (+22 more)
+Nodes (75): BaseModel, detect_environment(), _LocalNodeInferenceSettings, DispatchModeToggleRequest, InstallRedisRequest, LauncherEnvironmentCheck, LauncherEnvironmentStatus, LauncherMachineRole (+67 more)
 
 ### Community 4 - "Community 4"
-Cohesion: 0.04
-Nodes (23): stream_node_tasks(), connect_console_setup(), get_discovery_task(), get_setup_profile(), get_setup_task(), install_worker_node(), probe_worker_gateway(), reset_setup() (+15 more)
+Cohesion: 0.02
+Nodes (142): appendPairingClientError(), applyDispatchMode(), applyGatewaySummaryToState(), applyLauncherPolicyForRole(), applyLauncherStatusState(), applyOverview(), applyPreferredGatewayBaseUrlToWorker(), applySessionMessageEntry() (+134 more)
 
 ### Community 5 - "Community 5"
-Cohesion: 0.04
-Nodes (42): create_app(), _resolve_gateway_proxy_base_url(), apply_runtime_overrides(), detect_provider(), interactive_chat(), load_settings(), main(), mask_secret() (+34 more)
+Cohesion: 0.03
+Nodes (57): apply_runtime_overrides(), detect_provider(), interactive_chat(), load_settings(), main(), mask_secret(), parse_args(), resolve_default_node_env_path() (+49 more)
 
 ### Community 6 - "Community 6"
-Cohesion: 0.04
-Nodes (46): GatewaySummaryResponse, GatewaySummaryBuildError, GatewaySummaryService, Raised when the latest gateway summary truth cannot be assembled., GatewaySummaryStreamBroker, build_node_inventory(), build_node_list_response(), _parse_optional_datetime() (+38 more)
+Cohesion: 0.03
+Nodes (33): get_settings(), resolved_diagnostics_dir(), resolved_env_file_path(), settings_customise_sources(), PublicEntrySummaryResponse, PublicEntryTicketCreateRequest, PublicEntryTicketResponse, create_public_entry_ticket() (+25 more)
 
 ### Community 7 - "Community 7"
 Cohesion: 0.04
-Nodes (24): create_public_entry_ticket(), get_public_entry_page(), get_public_entry_ticket(), PublicEntrySummaryResponse, PublicEntryTicketResponse, PublicEntryService, PublicEntryServiceError, PublicEntryTicketState (+16 more)
+Nodes (55): GatewaySummaryResponse, GatewaySummaryBuildError, GatewaySummaryService, Raised when the latest gateway summary truth cannot be assembled., GatewaySummaryStreamBroker, build_node_inventory(), build_node_list_response(), _parse_optional_datetime() (+47 more)
 
 ### Community 8 - "Community 8"
-Cohesion: 0.05
-Nodes (50): _apply_local_node_model_config_in_background(), _build_local_node_assessment_blocking_result(), _build_local_node_channel_assessment_result(), _build_local_node_inference_settings(), _build_local_node_task_stream_health(), _build_node_model_config_from_gateway_env(), _create_local_node_inference_client(), _escape_env_value() (+42 more)
+Cohesion: 0.03
+Nodes (73): _emit_progress(), _latency_growth_limit_ms(), _resolve_round_steps(), run_channel_assessment(), _run_round(), _select_balanced_round(), _utcnow(), _apply_local_node_model_config_in_background() (+65 more)
 
 ### Community 9 - "Community 9"
-Cohesion: 0.04
-Nodes (29): ensure_redis_available(), _gateway_summary_loop(), ingest_inbound_message(), _known_local_hosts(), NodeAuthService, Validate node credentials against pre-shared tokens., NodeDiagnosticsStreamBroker, NodeDeleteResponse (+21 more)
+Cohesion: 0.02
+Nodes (19): Bl(), cc, dc(), fc, Gi, Ia, ic(), La() (+11 more)
 
 ### Community 10 - "Community 10"
-Cohesion: 0.09
-Nodes (64): _LocalNodeInferenceSettings, BaseModel, detect_environment(), ComponentState, DispatchModeToggleRequest, InstallRedisRequest, LauncherEnvironmentCheck, LauncherEnvironmentStatus (+56 more)
+Cohesion: 0.02
+Nodes (8): App, WechatClawHub.WinUI, WechatClawHub.WinUI.WechatClawHub_WinUI_XamlTypeInfo, XamlMember, XamlMetaDataProvider, XamlSystemBaseType, XamlTypeInfoProvider, XamlUserType
 
 ### Community 11 - "Community 11"
 Cohesion: 0.04
-Nodes (8): App, WechatClawHub.WinUI, WechatClawHub.WinUI.WechatClawHub_WinUI_XamlTypeInfo, XamlMember, XamlMetaDataProvider, XamlSystemBaseType, XamlTypeInfoProvider, XamlUserType
+Nodes (23): Fr(), Qh, sp(), we(), wn, WeChatBotServiceTests, _aes_ecb_padded_size(), _build_asset_label_text() (+15 more)
 
 ### Community 12 - "Community 12"
-Cohesion: 0.08
-Nodes (32): detect_lan_ip(), directed_broadcast_targets(), _extract_rfc1918_ipv4(), IPv4InterfaceRecord, is_preferred_lan_ip(), is_usable_ipv4(), is_virtual_nic_ip(), launcher_cors_origins() (+24 more)
+Cohesion: 0.04
+Nodes (31): ensure_redis_available(), ingest_inbound_message(), _known_local_hosts(), NodeAuthService, Validate node credentials against pre-shared tokens., NodeDeleteResponse, NodeOperationResponse, delete_node() (+23 more)
 
 ### Community 13 - "Community 13"
-Cohesion: 0.09
-Nodes (9): App, Application, IDisposable, LauncherSupervisor, global_exception_handler(), log_requests_middleware(), validation_exception_handler(), MainWindow (+1 more)
+Cohesion: 0.08
+Nodes (33): detect_lan_ip(), directed_broadcast_targets(), _extract_rfc1918_ipv4(), IPv4InterfaceRecord, is_preferred_lan_ip(), is_usable_ipv4(), is_virtual_nic_ip(), launcher_cors_origins() (+25 more)
 
 ### Community 14 - "Community 14"
-Cohesion: 0.07
-Nodes (23): buildLauncherStartPayload(), findLauncherComponent(), isExternalGatewayConflict(), isLauncherGatewayOwned(), launcherMachineRoleLabel(), launcherMachineRoleValue(), launcherRoleUsesLocalNode(), launcherShouldRunGateway() (+15 more)
+Cohesion: 0.08
+Nodes (23): findLauncherComponent(), isExternalGatewayConflict(), isLauncherGatewayOwned(), launcherMachineRoleLabel(), launcherMachineRoleValue(), launcherManagedComponentsLabel(), launcherShouldRunGateway(), launcherShouldRunLocalNode() (+15 more)
 
 ### Community 15 - "Community 15"
-Cohesion: 0.13
-Nodes (1): MultiWeChatBotService
+Cohesion: 0.1
+Nodes (4): WeChatOfficialAccountService, _FakeAsyncClient, _FakeResponse, WeChatOfficialAccountServiceTests
 
 ### Community 16 - "Community 16"
 Cohesion: 0.13
@@ -196,393 +142,97 @@ Cohesion: 0.21
 Nodes (3): WeChatMediaStoreTests, WeChatMediaRecord, WeChatMediaStore
 
 ### Community 18 - "Community 18"
-Cohesion: 0.11
-Nodes (10): NodeStreamBroker, NodeStreamConnection, Node event stream broker for real-time node-to-gateway communication., Receive an event from a node.          Returns a structured receive result so, Get list of currently connected node IDs., Manages WebSocket connections for node event streams., Register a node's WebSocket connection., Unregister a node's WebSocket connection. (+2 more)
+Cohesion: 0.19
+Nodes (2): Window, MainWindow
 
 ### Community 19 - "Community 19"
-Cohesion: 0.19
-Nodes (8): _emit_progress(), _latency_growth_limit_ms(), _resolve_round_steps(), run_channel_assessment(), _run_round(), _select_balanced_round(), _utcnow(), ChannelAssessmentTests
+Cohesion: 0.17
+Nodes (1): sc
 
 ### Community 20 - "Community 20"
-Cohesion: 0.16
-Nodes (12): formatDayLabel(), formatDurationLabel(), formatSessionName(), formatTimeAgo(), getReplyDurationLabel(), getSessionBadgeLabel(), getTypingState(), hasCompletedReplyAfterDispatch() (+4 more)
-
-### Community 21 - "Community 21"
-Cohesion: 0.18
-Nodes (6): get_settings(), resolve_default_node_env_path(), resolved_diagnostics_dir(), resolved_env_file_path(), settings_customise_sources(), NodeSettingsSourcePriorityTests
-
-### Community 22 - "Community 22"
 Cohesion: 0.22
 Nodes (4): buildRoleCapabilities(), withPrimaryWorkspace(), workspacePresentation(), workspacePrimaryActionLabel()
 
-### Community 23 - "Community 23"
+### Community 21 - "Community 21"
+Cohesion: 0.36
+Nodes (2): IDisposable, LauncherSupervisor
+
+### Community 22 - "Community 22"
 Cohesion: 0.33
 Nodes (5): ConnectionHeroCard(), ConnectionSignalCard(), InfoRow(), PrepStrip(), SnippetBlock()
 
 ### Community 24 - "Community 24"
-Cohesion: 0.22
-Nodes (0): 
-
-### Community 25 - "Community 25"
 Cohesion: 0.25
 Nodes (1): claw-node worker package.
 
-### Community 26 - "Community 26"
+### Community 25 - "Community 25"
 Cohesion: 0.38
 Nodes (3): Add-Failure(), Test-DirectoryValue(), Write-Pass()
 
 ### Community 27 - "Community 27"
-Cohesion: 0.29
-Nodes (0): 
+Cohesion: 0.4
+Nodes (3): clearSessionPollOwner(), getSessionPollTabId(), readSessionPollOwner()
 
 ### Community 28 - "Community 28"
-Cohesion: 0.4
-Nodes (2): clearSessionPollOwner(), readSessionPollOwner()
+Cohesion: 0.47
+Nodes (3): App, Program, WechatClawHub.WinUI
 
 ### Community 29 - "Community 29"
-Cohesion: 0.33
-Nodes (3): App, Program, WechatClawHub.WinUI
+Cohesion: 0.4
+Nodes (2): MainWindow, WechatClawHub.WinUI
 
 ### Community 30 - "Community 30"
 Cohesion: 0.4
-Nodes (0): 
+Nodes (2): MainWindow, WechatClawHub.WinUI
 
 ### Community 31 - "Community 31"
 Cohesion: 0.4
-Nodes (2): MainWindow, WechatClawHub.WinUI
+Nodes (2): Application, App
 
 ### Community 32 - "Community 32"
-Cohesion: 0.4
-Nodes (2): MainWindow, WechatClawHub.WinUI
+Cohesion: 0.5
+Nodes (1): WeChatMpRouteTests
 
 ### Community 33 - "Community 33"
 Cohesion: 0.67
-Nodes (0): 
-
-### Community 34 - "Community 34"
-Cohesion: 0.67
-Nodes (0): 
-
-### Community 35 - "Community 35"
-Cohesion: 0.67
-Nodes (2): build_session_id(), Build the canonical session key used across the gateway.
-
-### Community 36 - "Community 36"
-Cohesion: 0.67
 Nodes (2): App, WechatClawHub.WinUI
 
-### Community 37 - "Community 37"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 38 - "Community 38"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 39 - "Community 39"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 40 - "Community 40"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 41 - "Community 41"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 42 - "Community 42"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 43 - "Community 43"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 44 - "Community 44"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 45 - "Community 45"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 46 - "Community 46"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 47 - "Community 47"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 48 - "Community 48"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 49 - "Community 49"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 50 - "Community 50"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 51 - "Community 51"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 52 - "Community 52"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 53 - "Community 53"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 54 - "Community 54"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 55 - "Community 55"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 56 - "Community 56"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 57 - "Community 57"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 58 - "Community 58"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 59 - "Community 59"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 60 - "Community 60"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 61 - "Community 61"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 62 - "Community 62"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 63 - "Community 63"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 64 - "Community 64"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 65 - "Community 65"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 66 - "Community 66"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 67 - "Community 67"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 68 - "Community 68"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 69 - "Community 69"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 70 - "Community 70"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 71 - "Community 71"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 72 - "Community 72"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 73 - "Community 73"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 74 - "Community 74"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 75 - "Community 75"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 76 - "Community 76"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 77 - "Community 77"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 78 - "Community 78"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 79 - "Community 79"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 80 - "Community 80"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 81 - "Community 81"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 82 - "Community 82"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 83 - "Community 83"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 84 - "Community 84"
-Cohesion: 1.0
-Nodes (0): 
-
-### Community 85 - "Community 85"
-Cohesion: 1.0
-Nodes (0): 
-
 ## Knowledge Gaps
-- **13 isolated node(s):** `Thin async Redis wrapper used by gateway services.`, `Build the canonical session key used across the gateway.`, `Raised when cached media cannot be stored or read.`, `Raised when cached media is missing or expired.`, `Raised when WeChat onboarding fails.` (+8 more)
+- **7 isolated node(s):** `Thin async Redis wrapper used by gateway services.`, `Build the canonical session key used across the gateway.`, `Raised when cached media cannot be stored or read.`, `Raised when cached media is missing or expired.`, `Raised when WeChat onboarding fails.` (+2 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **Thin community `Community 37`** (2 nodes): `handleRunTest()`, `ConversationTestWorkspace.tsx`
+- **Thin community `Community 18`** (21 nodes): `MainWindow.xaml.cs`, `Window`, `MainWindow`, `.BuildConsoleUri()`, `.BuildLayout()`, `.BuildTitleBar()`, `.ColorFromHex()`, `.CompleteStartupOnUiAsync()`, `.ConfigureSystemTitleBarColors()`, `.EnqueueOnUi()`, `.EnsureConsoleWebView()`, `.MainWindow_Closed()`, `.RefreshButton_Click()`, `.RestartStartupAsync()`, `.RetryButton_Click()`, `.RetryText_Tapped()`, `.Root_Loaded()`, `.ShowFailure()`, `.ShowStarting()`, `.SolidColorBrush()`, `.StartLocalRuntimeAsync()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 38`** (2 nodes): `LogsWorkspace.tsx`, `LogsWorkspace()`
+- **Thin community `Community 19`** (12 nodes): `sc`, `.constructor()`, `.env()`, `.httpPost()`, `.initAid()`, `.linkedData()`, `.loadPageStackFromStorage()`, `.readLinkedData()`, `.savePageStackToStorage()`, `.serializeLinkedData()`, `.settle()`, `.updateContext()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 39`** (2 nodes): `SessionsWorkspace.tsx`, `systemStatus()`
+- **Thin community `Community 21`** (10 nodes): `LauncherSupervisor.cs`, `IDisposable`, `LauncherSupervisor`, `.Dispose()`, `.EnsureRunningAsync()`, `.IsLauncherHealthyAsync()`, `.ResolveLauncherPath()`, `.StartLauncher()`, `.StopOwnedRuntimeAsync()`, `.WaitForLauncherAsync()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 40`** (2 nodes): `useGatewayRuntimeController.ts`, `useGatewayRuntimeController()`
+- **Thin community `Community 24`** (8 nodes): `__init__.py`, `__init__.py`, `__init__.py`, `__init__.py`, `__init__.py`, `claw-node worker package.`, `__init__.py`, `__init__.py`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 41`** (2 nodes): `useGatewaySummaryEffects.ts`, `useGatewaySummaryEffects()`
+- **Thin community `Community 29`** (6 nodes): `MainWindow.g.cs`, `MainWindow.g.cs`, `MainWindow`, `.Connect()`, `.GetBindingConnector()`, `WechatClawHub.WinUI`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 42`** (2 nodes): `useLocalNodeController.ts`, `useLocalNodeController()`
+- **Thin community `Community 30`** (6 nodes): `MainWindow.g.i.cs`, `MainWindow.g.i.cs`, `MainWindow`, `.InitializeComponent()`, `.UnloadObject()`, `WechatClawHub.WinUI`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 43`** (2 nodes): `useNodeDiagnosticsEffects.ts`, `useNodeDiagnosticsEffects()`
+- **Thin community `Community 31`** (5 nodes): `Application`, `App.xaml.cs`, `App`, `.App_UnhandledException()`, `.OnLaunched()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 44`** (2 nodes): `usePairingDebug.ts`, `usePairingDebug()`
+- **Thin community `Community 32`** (4 nodes): `test_wechat_mp_route.py`, `WeChatMpRouteTests`, `.test_get_callback_returns_verified_echo()`, `.test_post_callback_dispatches_text_message_and_returns_success()`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 45`** (2 nodes): `usePairingOperations.ts`, `usePairingOperations()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 46`** (2 nodes): `useQuickSetupController.ts`, `useQuickSetupController()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 47`** (2 nodes): `useQuickSetupOperations.ts`, `useQuickSetupOperations()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 48`** (2 nodes): `useSetupTaskEffects.ts`, `useSetupTaskEffects()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 49`** (2 nodes): `useWechatOnboarding.ts`, `useWechatOnboarding()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 50`** (2 nodes): `useWorkspacePollingEffects.ts`, `useWorkspacePollingEffects()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 51`** (2 nodes): `install-graphify-codex.ps1`, `Resolve-PythonCommand()`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 52`** (2 nodes): `Invoke-Checked()`, `build-desktop-launcher.ps1`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 53`** (2 nodes): `Invoke-Checked()`, `build-winui-client.ps1`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 54`** (1 nodes): `vite.config.d.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 55`** (1 nodes): `vite.config.js`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 56`** (1 nodes): `vite.config.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 57`** (1 nodes): `check-ui-copy.mjs`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 58`** (1 nodes): `main.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 59`** (1 nodes): `qrcode.d.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 60`** (1 nodes): `quickSetupDefaults.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 61`** (1 nodes): `ConnectionWorkspace.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 62`** (1 nodes): `DiagnosticsConsole.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 63`** (1 nodes): `NodeInventoryPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 64`** (1 nodes): `NodeModelConfigPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 65`** (1 nodes): `OverviewPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 66`** (1 nodes): `PairingStatusModal.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 67`** (1 nodes): `RuntimeLogsPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 68`** (1 nodes): `WeChatConfigCard.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 69`** (1 nodes): `LauncherControlPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 70`** (1 nodes): `QuickSetupConfigStage.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 71`** (1 nodes): `QuickSetupExecutionStage.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 72`** (1 nodes): `QuickSetupRolePanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 73`** (1 nodes): `QuickSetupStatusPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 74`** (1 nodes): `QuickSetupWorkspace.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 75`** (1 nodes): `MessageContent.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 76`** (1 nodes): `index.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 77`** (1 nodes): `index.ts`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 78`** (1 nodes): `NodeModelConfigPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 79`** (1 nodes): `OverviewPanel.tsx`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 80`** (1 nodes): `router.py`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 81`** (1 nodes): `WechatClawHub.WinUI.AssemblyInfo.cs`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 82`** (1 nodes): `WechatClawHub.WinUI.GlobalUsings.g.cs`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 83`** (1 nodes): `LauncherRuntimeState.cs`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 84`** (1 nodes): `LauncherStartResult.cs`
-  Too small to be a meaningful cluster - may be noise or needs more connections extracted.
-- **Thin community `Community 85`** (1 nodes): `build-claw-node-bundle.ps1`
+- **Thin community `Community 33`** (4 nodes): `App`, `WechatClawHub.WinUI`, `App.g.cs`, `App.g.cs`
   Too small to be a meaningful cluster - may be noise or needs more connections extracted.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Settings` connect `Community 0` to `Community 1`, `Community 3`, `Community 4`, `Community 6`, `Community 7`, `Community 9`, `Community 10`, `Community 15`, `Community 21`?**
-  _High betweenness centrality (0.075) - this node is a cross-community bridge._
-- **Why does `PublicEntryService` connect `Community 7` to `Community 0`, `Community 10`, `Community 11`, `Community 15`?**
-  _High betweenness centrality (0.071) - this node is a cross-community bridge._
+- **Why does `Settings` connect `Community 1` to `Community 2`, `Community 3`, `Community 6`, `Community 7`, `Community 11`, `Community 12`, `Community 15`?**
+  _High betweenness centrality (0.053) - this node is a cross-community bridge._
+- **Why does `SetupService` connect `Community 3` to `Community 1`, `Community 12`, `Community 13`, `Community 7`?**
+  _High betweenness centrality (0.043) - this node is a cross-community bridge._
+- **Why does `WeChatBotService` connect `Community 1` to `Community 2`, `Community 3`, `Community 5`, `Community 6`, `Community 7`, `Community 11`, `Community 17`?**
+  _High betweenness centrality (0.039) - this node is a cross-community bridge._
+- **Are the 114 inferred relationships involving `Settings` (e.g. with `OutboundMarkdownSegment` and `WeChatSessionExpiredError`) actually correct?**
+  _`Settings` has 114 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 31 inferred relationships involving `SetupService` (e.g. with `Remove node from Redis active set only, keeping pairing token intact.     The n` and `GatewaySummaryBuildError`) actually correct?**
   _`SetupService` has 31 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 104 inferred relationships involving `Settings` (e.g. with `OutboundMarkdownSegment` and `WeChatSessionExpiredError`) actually correct?**
-  _`Settings` has 104 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 43 inferred relationships involving `Worker` (e.g. with `NodeSettings` and `NodeDiagnostics`) actually correct?**
   _`Worker` has 43 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 23 inferred relationships involving `ProcessManager` (e.g. with `_LocalNodeInferenceSettings` and `ComponentState`) actually correct?**
-  _`ProcessManager` has 23 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `Thin async Redis wrapper used by gateway services.`, `Build the canonical session key used across the gateway.`, `Raised when cached media cannot be stored or read.` to the rest of the system?**
-  _13 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Are the 62 inferred relationships involving `RedisStore` (e.g. with `OutboundMarkdownSegment` and `WeChatSessionExpiredError`) actually correct?**
+  _`RedisStore` has 62 INFERRED edges - model-reasoned connections that need verification._

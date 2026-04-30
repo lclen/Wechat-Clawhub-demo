@@ -38,8 +38,8 @@ logger = logging.getLogger(__name__)
 async def list_sessions(
     store: RedisStore = Depends(get_redis_store),
     manager: SessionManager = Depends(get_session_manager),
-    snapshot_service: SessionOverviewSnapshotService = Depends(get_session_overview_snapshot_service),
     dispatch_queue: DispatchQueue = Depends(get_dispatch_queue),
+    snapshot_service: SessionOverviewSnapshotService = Depends(get_session_overview_snapshot_service),
 ) -> SessionListResponse:
     started = perf_counter()
     try:
