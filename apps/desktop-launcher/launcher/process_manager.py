@@ -707,38 +707,100 @@ class ProcessManager:
         now = time.monotonic()
         if cached and (now - cached[0]) < self._SERVICE_QUERY_TTL_SECONDS:
             return cached[1]
-        result = subprocess.run(  # noqa: S603
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                (
-                    f"$svc = Get-CimInstance Win32_Service -Filter \"Name='{service_name}'\"; "
-                    "if ($null -eq $svc) { exit 1 }; "
-                    "$svc | Select-Object Name,State,Status,ProcessId,PathName | ConvertTo-Json -Compress"
-                ),
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-            encoding="utf-8",
-            errors="ignore",
-        )
-        if result.returncode != 0:
-            self._service_query_cache[service_name] = (now, None)
-            return None
         try:
-            payload = json.loads(result.stdout)
-        except json.JSONDecodeError:
-            self._service_query_cache[service_name] = (now, None)
-            return None
-        service = {
-            "state": str(payload.get("State", "UNKNOWN") or "UNKNOWN"),
-            "pid": int(payload["ProcessId"]) if payload.get("ProcessId") is not None else None,
-            "path_name": str(payload.get("PathName", "") or ""),
-        }
+            result = subprocess.run(  # noqa: S603
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    (
+                        f"$svc = Get-CimInstance Win32_Service -Filter \"Name='{service_name}'\"; "
+                        "if ($null -eq $svc) { exit 1 }; "
+                        "$svc | Select-Object Name,State,Status,ProcessId,PathName | ConvertTo-Json -Compress"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=3,
+                creationflags=self._WINDOWS_NO_WINDOW,
+            )
+            if result.returncode == 0:
+                try:
+                    payload = json.loads(result.stdout)
+                    service = {
+                        "state": str(payload.get("State", "UNKNOWN") or "UNKNOWN"),
+                        "pid": int(payload["ProcessId"]) if payload.get("ProcessId") is not None else None,
+                        "path_name": str(payload.get("PathName", "") or ""),
+                    }
+                    self._service_query_cache[service_name] = (now, service)
+                    return service
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        service = self._query_windows_service_with_sc(service_name)
         self._service_query_cache[service_name] = (now, service)
         return service
+
+    def _query_windows_service_with_sc(self, service_name: str) -> dict[str, Any] | None:
+        try:
+            query_result = subprocess.run(  # noqa: S603
+                ["sc.exe", "queryex", service_name],
+                capture_output=True,
+                text=True,
+                check=False,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=3,
+                creationflags=self._WINDOWS_NO_WINDOW,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        if query_result.returncode != 0:
+            return None
+        state = self._parse_sc_value(query_result.stdout, "STATE")
+        pid_raw = self._parse_sc_value(query_result.stdout, "PID")
+        pid = None
+        try:
+            pid = int(pid_raw) if pid_raw else None
+        except ValueError:
+            pid = None
+        path_name = ""
+        try:
+            config_result = subprocess.run(  # noqa: S603
+                ["sc.exe", "qc", service_name],
+                capture_output=True,
+                text=True,
+                check=False,
+                encoding="utf-8",
+                errors="ignore",
+                timeout=3,
+                creationflags=self._WINDOWS_NO_WINDOW,
+            )
+            if config_result.returncode == 0:
+                path_name = self._parse_sc_value(config_result.stdout, "BINARY_PATH_NAME")
+        except (subprocess.TimeoutExpired, OSError):
+            path_name = ""
+        return {
+            "state": state or "UNKNOWN",
+            "pid": pid,
+            "path_name": path_name,
+        }
+
+    def _parse_sc_value(self, output: str, key: str) -> str:
+        for line in output.splitlines():
+            left, separator, right = line.partition(":")
+            if not separator or left.strip().upper() != key.upper():
+                continue
+            value = right.strip()
+            if key.upper() == "STATE":
+                parts = value.split()
+                return parts[1] if len(parts) > 1 else value
+            return value
+        return ""
 
     def _run_sync_command(self, command: list[str], *, cwd: Path, log_path: Path, env: dict[str, str] | None = None) -> None:
         log_path.parent.mkdir(parents=True, exist_ok=True)

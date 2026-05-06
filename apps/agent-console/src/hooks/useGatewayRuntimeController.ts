@@ -26,6 +26,16 @@ type RefreshGatewaySummaryOptions = {
 };
 
 const GATEWAY_SUMMARY_MIN_INTERVAL_MS = 8000;
+const LOCAL_BOOTSTRAP_TIMEOUT_MS = 3500;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+    promise
+      .then(resolve, reject)
+      .finally(() => window.clearTimeout(timer));
+  });
+}
 
 type UseGatewayRuntimeControllerOptions = {
   initialUiState: AppUiStateCache;
@@ -159,13 +169,44 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
     let retryTimer = 0;
     const init = async () => {
       let launcherSt: LauncherStatusResponse | null = null;
+      const applyLocalProfile = (localProfile: SetupProfileResponse, notice: string) => {
+        setSetupProfile(localProfile);
+        const initialWorkspace = localProfile.setup_completed
+          ? (initialUiState.workspace ?? resolveInitialWorkspace(localProfile))
+          : "quick_setup";
+        setWorkspace(initialWorkspace);
+        setSetupMode(localProfile.setup_completed ? "status" : "role");
+        setLauncherAvailable(true);
+        setNotice(notice);
+      };
       try {
         try {
-          launcherSt = await requestJson<LauncherStatusResponse>("/local/bootstrap/status");
+          launcherSt = await withTimeout(
+            requestJson<LauncherStatusResponse>("/local/bootstrap/status"),
+            LOCAL_BOOTSTRAP_TIMEOUT_MS,
+            "local bootstrap status",
+          );
         } catch {
           // launcher unavailable is allowed here
         }
         if (cancelled) return;
+
+        if (!launcherSt) {
+          try {
+            const localProfile = await withTimeout(
+              requestJson<SetupProfileResponse>("/local/setup/profile"),
+              LOCAL_BOOTSTRAP_TIMEOUT_MS,
+              "local setup profile",
+            );
+            if (!cancelled && (localProfile.setup_completed || localProfile.completed_roles.length)) {
+              applyLocalProfile(localProfile, "已恢复本机角色配置，运行态状态正在后台同步。");
+              return;
+            }
+          } catch {
+            // fall back to gateway bootstrap below
+          }
+          if (cancelled) return;
+        }
 
         if (launcherSt) {
           const launcherProfile = launcherSt.profile;
@@ -181,19 +222,17 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
           if (!gatewayShouldRun) {
             if (runtimeRole === "node") {
               try {
-                const localProfile = await requestJson<SetupProfileResponse>("/local/setup/profile");
+                const localProfile = await withTimeout(
+                  requestJson<SetupProfileResponse>("/local/setup/profile"),
+                  LOCAL_BOOTSTRAP_TIMEOUT_MS,
+                  "local setup profile",
+                );
                 if (!cancelled) {
-                  setSetupProfile(localProfile);
-                  const initialWorkspace = localProfile.setup_completed
-                    ? (initialUiState.workspace ?? resolveInitialWorkspace(localProfile))
-                    : "quick_setup";
-                  setWorkspace(initialWorkspace);
-                  setSetupMode(localProfile.setup_completed ? "status" : "role");
+                  applyLocalProfile(localProfile, "当前为节点角色，网关运行在远端机器上。");
                 }
               } catch {
                 // ignore launcher-only setup bootstrap errors
               }
-              setNotice("当前为节点角色，网关运行在远端机器上。");
             } else {
               setWorkspace(initialUiState.workspace ?? "quick_setup");
               setSetupMode("role");

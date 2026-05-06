@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -279,6 +280,25 @@ class ProcessManagerLocalNodeStartTests(unittest.TestCase):
             manager._stop_local_node_service(profile, layout)
 
         manager._wait_for_file_release.assert_called_once_with(install_dir / "wechat-claw-node-agent-1.exe")
+
+    @patch("launcher.process_manager.subprocess.run")
+    def test_query_windows_service_falls_back_to_sc_when_powershell_times_out(self, run_mock: Mock) -> None:
+        manager = ProcessManager(repo_root=Path("D:/wechat-claw-hub"))
+        run_mock.side_effect = [
+            subprocess.TimeoutExpired(cmd=["powershell"], timeout=3),
+            Mock(returncode=0, stdout="STATE              : 4  RUNNING\nPID                : 1201\n", stderr=""),
+            Mock(returncode=0, stdout="BINARY_PATH_NAME   : C:\\wechat-claw-node\\wechat-claw-node-agent-1.exe\n", stderr=""),
+        ]
+
+        status = manager._query_windows_service("wechat-claw-node-agent-1")
+
+        self.assertEqual(status, {
+            "state": "RUNNING",
+            "pid": 1201,
+            "path_name": "C:\\wechat-claw-node\\wechat-claw-node-agent-1.exe",
+        })
+        self.assertEqual(run_mock.call_args_list[1].args[0], ["sc.exe", "queryex", "wechat-claw-node-agent-1"])
+        self.assertEqual(run_mock.call_args_list[2].args[0], ["sc.exe", "qc", "wechat-claw-node-agent-1"])
 
 
 if __name__ == "__main__":
