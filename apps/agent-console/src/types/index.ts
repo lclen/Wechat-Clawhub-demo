@@ -19,7 +19,7 @@ export type ModelStatus = {
 };
 export type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; gateway_bind_host: string; preferred_lan_ip: string | null; preferred_gateway_base_url: string; timestamp: string };
 export type ModelCheck = { ok: boolean; configured_model: string; available_models: string[]; configured_model_available: boolean };
-export type WeChatStatus = { configured: boolean; running: boolean; base_url: string; has_token: boolean; last_error: string | null; received_messages: number; sent_messages: number };
+export type WeChatStatus = { configured: boolean; running: boolean; base_url: string; has_token: boolean; last_error: string | null; received_messages: number; sent_messages: number; lease_state?: "active" | "standby" | "none" | string; needs_rescan?: boolean; lease_owner_id?: string | null };
 export type SessionStatus = "bot_active" | "handoff_pending" | "human_active" | "closing";
 export type QueueStatus = "none" | "pending" | "inflight";
 export type RoutingMode = "auto" | "manual";

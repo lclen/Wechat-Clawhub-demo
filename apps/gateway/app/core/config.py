@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     wechat_mp_app_secret: str = ""
     wechat_mp_token: str = ""
     wechat_mp_encoding_aes_key: str = ""
+    wechat_mp_http_proxy: str = ""
     builtin_model_base_url: str = ""
     builtin_model_api_key: str = ""
     builtin_model_name: str = ""

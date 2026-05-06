@@ -1444,10 +1444,7 @@ def _sync_local_node_model_config_from_gateway_env(
         return False
     node_values = _read_env_file(config_path)
     local_model_ready = _has_worker_model_config(node_values)
-    gateway_mtime = gateway_env_path.stat().st_mtime if gateway_env_path.exists() else 0.0
-    node_mtime = config_path.stat().st_mtime if config_path.exists() else 0.0
-    gateway_is_newer = gateway_mtime >= node_mtime
-    if local_model_ready and not gateway_is_newer:
+    if local_model_ready:
         return False
     changed = any(node_values.get(key, "") != value for key, value in updates.items())
     if not changed:

@@ -96,8 +96,13 @@ class MultiWeChatBotService:
                 last_error=None,
                 received_messages=0,
                 sent_messages=0,
+                lease_state="none",
+                needs_rescan=False,
+                lease_owner_id=None,
             )
         primary = statuses[0]
+        active_status = next((item for item in statuses if item.lease_state == "active"), None)
+        any_standby = any(item.lease_state == "standby" for item in statuses)
         return WeChatStatusResponse(
             configured=primary.configured or any(item.configured for item in statuses[1:]),
             running=any(item.running for item in statuses),
@@ -106,6 +111,9 @@ class MultiWeChatBotService:
             last_error=primary.last_error or next((item.last_error for item in statuses[1:] if item.last_error), None),
             received_messages=sum(item.received_messages for item in statuses),
             sent_messages=sum(item.sent_messages for item in statuses),
+            lease_state="active" if active_status else "standby" if any_standby else "none",
+            needs_rescan=primary.needs_rescan or any(item.needs_rescan for item in statuses[1:]),
+            lease_owner_id=active_status.lease_owner_id if active_status else None,
         )
 
     async def connect(self, token: str, base_url: str, *, enable_polling: bool = True) -> WeChatStatusResponse:

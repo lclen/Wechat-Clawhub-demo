@@ -86,6 +86,12 @@ export function summarizeWechatRuntime(launcherStatus: LauncherStatusResponse | 
   if (!wechatStatus?.has_token) {
     return { value: "待接入", detail: "当前还没有写入微信 token。", tone: "warn" as const };
   }
+  if (wechatStatus.needs_rescan) {
+    return { value: "需重新扫码", detail: wechatStatus.last_error || "WeChat 会话已过期，请重新扫码。", tone: "warn" as const };
+  }
+  if (wechatStatus.lease_state === "standby") {
+    return { value: "待接管", detail: "已配置，等待主实例释放微信轮询锁。", tone: "warn" as const };
+  }
   if (!wechatStatus.running) {
     return { value: "已配置", detail: wechatStatus.last_error || "token 已保存，但轮询尚未运行。", tone: "warn" as const };
   }

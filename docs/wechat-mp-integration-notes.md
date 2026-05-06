@@ -216,10 +216,33 @@
 - `WCH_WECHAT_MP_APP_SECRET`
 - `WCH_WECHAT_MP_TOKEN`
 - `WCH_WECHAT_MP_ENCODING_AES_KEY`
+- `WCH_WECHAT_MP_HTTP_PROXY`
 
-## 11. 后续继续做时最容易忘的坑
+## 11. frp 部署时的出口 IP 问题
+
+使用 frp 时要区分两条链路：
+
+- 入站链路：`微信服务器 -> 公网服务器/frps -> 本机 frpc -> gateway`
+- 出站链路：`gateway -> api.weixin.qq.com`
+
+frp 只解决入站回调可达，不会自动改变 gateway 调用微信官方 API 的出口 IP。因此 gateway 跑在本机时，获取 stable access token 和发送客服消息仍然会使用本机网络出口；如果这个出口 IP 变化，微信会返回类似：
+
+```text
+40164 invalid ip x.x.x.x, not in whitelist
+```
+
+当前推荐做法是在固定公网 IP 的云服务器上提供一个受认证保护的 HTTP 代理，然后在 gateway 本机 `.env` 中配置：
+
+```bash
+WCH_WECHAT_MP_HTTP_PROXY=http://user:pass@121.41.47.90:3128
+```
+
+同时在公众号后台的接口 IP 白名单中加入该云服务器公网 IP。这样 gateway 仍然可以留在本机运行，微信回调继续走 frp，而调用微信 API 的出站请求会通过固定 IP 发出。
+
+## 12. 后续继续做时最容易忘的坑
 
 - 微信回调 URL 不是内网地址就能用，必须公网可达
+- frp 只保证回调入站，不保证调用微信 API 的出站 IP 固定
 - 开启开发者模式后，公众号原自动回复/部分菜单行为会受影响
 - 公众号回调不是 JSON，是 XML
 - 安全模式不是只验签，还要 AES 解密并校验 appid
@@ -227,7 +250,7 @@
 - 客服消息不是无限期可发，用户互动窗口有限制
 - 当前第一版只有单公众号模型，如果后面接第二个公众号，要把 `appid/account` 纳入 session key 设计
 
-## 12. 官方参考
+## 13. 官方参考
 
 本次主要对照以下官方文档：
 

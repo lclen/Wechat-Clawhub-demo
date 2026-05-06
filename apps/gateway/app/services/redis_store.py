@@ -84,6 +84,27 @@ class RedisStore:
     async def setex(self, key: str, ttl_seconds: int, value: str) -> None:
         await self._client.setex(key, ttl_seconds, value)
 
+    async def set_if_absent_with_ttl(self, key: str, value: str, ttl_seconds: int) -> bool:
+        return bool(await self._client.set(key, value, ex=ttl_seconds, nx=True))
+
+    async def refresh_if_value_matches(self, key: str, value: str, ttl_seconds: int) -> bool:
+        script = """
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call("EXPIRE", KEYS[1], ARGV[2])
+        end
+        return 0
+        """
+        return bool(await self._client.eval(script, 1, key, value, str(ttl_seconds)))
+
+    async def delete_if_value_matches(self, key: str, value: str) -> bool:
+        script = """
+        if redis.call("GET", KEYS[1]) == ARGV[1] then
+            return redis.call("DEL", KEYS[1])
+        end
+        return 0
+        """
+        return bool(await self._client.eval(script, 1, key, value))
+
     async def get(self, key: str) -> str | None:
         return await self._client.get(key)
 

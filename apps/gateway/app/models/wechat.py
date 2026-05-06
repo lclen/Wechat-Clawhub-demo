@@ -17,3 +17,6 @@ class WeChatStatusResponse(BaseModel):
     last_error: str | None = None
     received_messages: int = 0
     sent_messages: int = 0
+    lease_state: str = "none"
+    needs_rescan: bool = False
+    lease_owner_id: str | None = None

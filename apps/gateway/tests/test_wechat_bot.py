@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, Mock
 
@@ -46,11 +47,80 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_poll_loop_stops_when_session_expires(self) -> None:
         self.service._get_updates = AsyncMock(side_effect=WeChatSessionExpiredError("WeChat 会话已过期，请重新扫码或手动重新连接。"))  # type: ignore[method-assign]
         self.service._running = True
+        self.service._lease_state = "active"
+        self.store.delete_if_value_matches.return_value = True
 
         await self.service._poll_loop()
 
         self.assertFalse(self.service._running)
         self.assertEqual(self.service._last_error, "WeChat 会话已过期，请重新扫码或手动重新连接。")
+        self.assertTrue(self.service._needs_rescan)
+        self.store.delete_if_value_matches.assert_awaited_once_with(
+            self.service._lease_key,
+            self.service._lease_owner_id,
+        )
+
+    async def test_start_polling_acquires_lease_before_creating_poll_task(self) -> None:
+        self.service._config.token = "token"
+        self.store.set_if_absent_with_ttl.return_value = True
+        self.service._poll_loop = AsyncMock()  # type: ignore[method-assign]
+
+        await self.service.start_polling()
+
+        self.assertTrue(self.service._running)
+        self.assertEqual(self.service._lease_state, "active")
+        self.assertIsNotNone(self.service._poll_task)
+        self.store.set_if_absent_with_ttl.assert_awaited_once_with(
+            self.service._lease_key,
+            self.service._lease_owner_id,
+            90,
+        )
+        await self.service.stop_polling()
+
+    async def test_start_polling_enters_standby_when_lease_is_held(self) -> None:
+        self.service._config.token = "token"
+        self.store.set_if_absent_with_ttl.return_value = False
+
+        await self.service.start_polling()
+
+        self.assertFalse(self.service._running)
+        self.assertEqual(self.service._lease_state, "standby")
+        self.assertIsNone(self.service._poll_task)
+        self.assertIsNotNone(self.service._standby_task)
+        await self.service.stop_polling()
+
+    async def test_release_polling_lease_checks_owner(self) -> None:
+        self.service._lease_state = "active"
+        self.store.delete_if_value_matches.return_value = False
+
+        await self.service._release_polling_lease()
+
+        self.assertEqual(self.service._lease_state, "none")
+        self.store.delete_if_value_matches.assert_awaited_once_with(
+            self.service._lease_key,
+            self.service._lease_owner_id,
+        )
+
+    async def test_poll_loop_clears_stale_error_after_success(self) -> None:
+        self.service._running = True
+        self.service._lease_state = "active"
+        self.service._last_lease_refresh_at = 0.0
+        self.service._last_error = "old error"
+        self.service._needs_rescan = True
+        self.store.refresh_if_value_matches.return_value = True
+        self.store.delete_if_value_matches.return_value = True
+        self.service._get_updates = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[
+                {"msgs": [], "get_updates_buf": "next"},
+                asyncio.CancelledError(),
+            ]
+        )
+
+        await self.service._poll_loop()
+
+        self.assertIsNone(self.service._last_error)
+        self.assertFalse(self.service._needs_rescan)
+        self.assertEqual(self.service._get_updates_buf, "next")
 
     async def test_handle_raw_message_notifies_user_when_dispatch_enqueue_fails(self) -> None:
         session = Mock(session_id="wechat:user-1")

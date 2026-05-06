@@ -75,6 +75,7 @@ npm run dev
 - `WCH_WECHAT_MP_APP_SECRET`
 - `WCH_WECHAT_MP_TOKEN`
 - `WCH_WECHAT_MP_ENCODING_AES_KEY`
+- `WCH_WECHAT_MP_HTTP_PROXY`
 - `WCH_BUILTIN_MODEL_BASE_URL`
 - `WCH_BUILTIN_MODEL_API_KEY`
 - `WCH_BUILTIN_MODEL_NAME`
@@ -91,4 +92,10 @@ npm run dev
 
 ```json
 ["http://127.0.0.1:5174","http://localhost:5174"]
+```
+
+`WCH_WECHAT_MP_HTTP_PROXY` 只作用于公众号官方接口出站请求，例如获取 stable access token 和发送客服消息。使用 frp 暴露回调地址时，如果本机出口 IP 不在公众号 IP 白名单中，可以把它设置为云服务器上的固定出口 HTTP 代理，例如：
+
+```bash
+WCH_WECHAT_MP_HTTP_PROXY=http://user:pass@121.41.47.90:3128
 ```

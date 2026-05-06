@@ -64,7 +64,8 @@ class WeChatOfficialAccountService:
         self._store = store
         self._transcript_writer = transcript_writer
         self._settings = settings
-        self._client = httpx.AsyncClient(timeout=10.0, trust_env=False)
+        proxy_url = self._settings.wechat_mp_http_proxy.strip() or None
+        self._client = httpx.AsyncClient(timeout=10.0, trust_env=False, proxy=proxy_url)
         self._last_error: str | None = None
         self._received_messages = 0
         self._sent_messages = 0

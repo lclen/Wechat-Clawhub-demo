@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from app.access.wechat_official_account import (
     WeChatOfficialAccountService,
@@ -89,6 +89,35 @@ class WeChatOfficialAccountServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload.user_id, "user-openid")
         self.assertEqual(payload.content, "你好，帮我查一下")
         self.assertEqual(payload.metadata["wechat_mp_msg_id"], "1234567890")
+
+    async def test_http_client_uses_no_proxy_by_default(self) -> None:
+        with patch("app.access.wechat_official_account.httpx.AsyncClient") as async_client:
+            async_client.return_value.aclose = AsyncMock()
+            service = WeChatOfficialAccountService(
+                store=self.store,
+                transcript_writer=self.transcript_writer,
+                settings=self.settings,
+            )
+
+        async_client.assert_called_once_with(timeout=10.0, trust_env=False, proxy=None)
+        await service.shutdown()
+
+    async def test_http_client_uses_configured_proxy(self) -> None:
+        self.settings.wechat_mp_http_proxy = "http://127.0.0.1:3128"
+        with patch("app.access.wechat_official_account.httpx.AsyncClient") as async_client:
+            async_client.return_value.aclose = AsyncMock()
+            service = WeChatOfficialAccountService(
+                store=self.store,
+                transcript_writer=self.transcript_writer,
+                settings=self.settings,
+            )
+
+        async_client.assert_called_once_with(
+            timeout=10.0,
+            trust_env=False,
+            proxy="http://127.0.0.1:3128",
+        )
+        await service.shutdown()
 
     async def test_send_text_uses_cached_token_then_posts_customer_message(self) -> None:
         self.store.get.return_value = '{"access_token":"cached-token","expires_at":9999999999}'

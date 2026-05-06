@@ -10,6 +10,7 @@ import mimetypes
 import os
 import random
 import re
+import socket
 import struct
 import time
 import uuid
@@ -63,6 +64,9 @@ WECHAT_ILINK_APP_ID = os.environ.get("WECHAT_ILINK_APP_ID", "bot")
 CONFIG_CACHE_TTL_S = 86_400
 CONFIG_CACHE_INITIAL_RETRY_S = 2.0
 CONFIG_CACHE_MAX_RETRY_S = 3_600.0
+POLLING_LEASE_TTL_SECONDS = 90
+POLLING_LEASE_REFRESH_SECONDS = 30.0
+POLLING_LEASE_STANDBY_RETRY_SECONDS = 5.0
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
 ITEM_FILE = 4
@@ -417,6 +421,7 @@ class WeChatBotService:
         self._api_http: httpx.AsyncClient | None = None
         self._asset_http: httpx.AsyncClient | None = None
         self._poll_task: asyncio.Task | None = None
+        self._standby_task: asyncio.Task | None = None
         self._get_updates_buf = ""
         self._seen_msg_ids: OrderedDict[int, float] = OrderedDict()
         self._context_tokens: dict[str, str] = {}
@@ -429,6 +434,11 @@ class WeChatBotService:
         self._received_messages = 0
         self._sent_messages = 0
         self._last_error: str | None = None
+        self._lease_owner_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
+        self._lease_key = f"wch:lock:wechat:{self._runtime_id}:polling"
+        self._lease_state = "none"
+        self._last_lease_refresh_at = 0.0
+        self._needs_rescan = False
         self._next_poll_timeout_ms = DEFAULT_LONG_POLL_TIMEOUT_MS
 
     def attach_dispatch_queue(self, dispatch_queue: "DispatchQueue") -> None:
@@ -472,6 +482,9 @@ class WeChatBotService:
             last_error=self._last_error,
             received_messages=self._received_messages,
             sent_messages=self._sent_messages,
+            lease_state=self._lease_state,
+            needs_rescan=self._needs_rescan,
+            lease_owner_id=self._lease_owner_id if self._lease_state == "active" else None,
         )
 
     async def connect(self, token: str, base_url: str, *, enable_polling: bool = True) -> WeChatStatusResponse:
@@ -484,6 +497,7 @@ class WeChatBotService:
             self._config_store_key,
             {"token": self._config.token, "base_url": self._config.base_url},
         )
+        self._needs_rescan = False
         if enable_polling:
             await self.start_polling()
         return await self.get_status()
@@ -491,6 +505,8 @@ class WeChatBotService:
     async def disconnect(self) -> WeChatStatusResponse:
         await self.stop_polling()
         self._config = WeChatRuntimeConfig(token="", base_url=self._config.base_url)
+        self._needs_rescan = False
+        self._lease_state = "none"
         if self._persist_env_enabled:
             self._settings.wechat_token = ""
             self._settings.wechat_base_url = self._config.base_url
@@ -501,14 +517,25 @@ class WeChatBotService:
     async def start_polling(self) -> None:
         if self._running or not self._config.token:
             return
+        if not await self._acquire_polling_lease():
+            self._ensure_standby_task()
+            return
+        self._start_polling_with_active_lease()
+
+    def _start_polling_with_active_lease(self) -> None:
+        if self._running:
+            return
         self._ensure_poll_http()
         self._ensure_api_http()
         self._ensure_asset_http()
         self._running = True
+        self._needs_rescan = False
+        self._last_error = None
         self._poll_task = asyncio.create_task(self._poll_loop(), name="wechat-poll-loop")
 
     async def stop_polling(self) -> None:
         self._running = False
+        await self._cancel_standby_task()
         for user_id, task in list(self._typing_tasks.items()):
             task.cancel()
             try:
@@ -525,6 +552,7 @@ class WeChatBotService:
                 pass
         self._poll_task = None
         await self._close_http_clients()
+        await self._release_polling_lease()
 
     async def send_text(self, *, user_id: str, text: str, context_token: str | None = None) -> str:
         if not self._config.token:
@@ -879,10 +907,108 @@ class WeChatBotService:
                 pass
         await self.clear_typing(user_id=user_id, context_token=context_token)
 
+    async def _acquire_polling_lease(self) -> bool:
+        acquired = await self._store.set_if_absent_with_ttl(
+            self._lease_key,
+            self._lease_owner_id,
+            POLLING_LEASE_TTL_SECONDS,
+        )
+        if acquired:
+            self._lease_state = "active"
+            self._last_lease_refresh_at = time.monotonic()
+            logger.info(
+                "wechat-bot: polling lease acquired runtime_id=%s owner=%s key=%s",
+                self._runtime_id,
+                self._lease_owner_id,
+                self._lease_key,
+            )
+            return True
+        self._lease_state = "standby"
+        logger.info(
+            "wechat-bot: polling lease held by another instance runtime_id=%s key=%s",
+            self._runtime_id,
+            self._lease_key,
+        )
+        return False
+
+    async def _refresh_polling_lease_if_needed(self) -> bool:
+        if self._lease_state != "active":
+            return False
+        now = time.monotonic()
+        if now - self._last_lease_refresh_at < POLLING_LEASE_REFRESH_SECONDS:
+            return True
+        refreshed = await self._store.refresh_if_value_matches(
+            self._lease_key,
+            self._lease_owner_id,
+            POLLING_LEASE_TTL_SECONDS,
+        )
+        if refreshed:
+            self._last_lease_refresh_at = now
+            return True
+        self._lease_state = "standby"
+        self._running = False
+        self._last_error = "WeChat polling lease was lost to another gateway instance."
+        logger.warning(
+            "wechat-bot: polling lease refresh failed runtime_id=%s owner=%s key=%s",
+            self._runtime_id,
+            self._lease_owner_id,
+            self._lease_key,
+        )
+        return False
+
+    async def _release_polling_lease(self) -> None:
+        if self._lease_state != "active":
+            if self._lease_state == "standby" and not self._running:
+                return
+            self._lease_state = "none"
+            return
+        released = await self._store.delete_if_value_matches(self._lease_key, self._lease_owner_id)
+        logger.info(
+            "wechat-bot: polling lease release runtime_id=%s owner=%s released=%s",
+            self._runtime_id,
+            self._lease_owner_id,
+            released,
+        )
+        self._lease_state = "none"
+        self._last_lease_refresh_at = 0.0
+
+    def _ensure_standby_task(self) -> None:
+        if self._standby_task and not self._standby_task.done():
+            return
+        self._standby_task = asyncio.create_task(self._standby_polling_loop(), name=f"wechat-standby-{self._runtime_id}")
+
+    async def _cancel_standby_task(self) -> None:
+        task = self._standby_task
+        self._standby_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _standby_polling_loop(self) -> None:
+        logger.info("wechat-bot: standby polling lease loop started runtime_id=%s", self._runtime_id)
+        while not self._running and self._config.token and not self._needs_rescan:
+            try:
+                if await self._acquire_polling_lease():
+                    self._start_polling_with_active_lease()
+                    break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._lease_state = "standby"
+                self._last_error = f"WeChat polling lease acquire failed: {exc}"
+                logger.warning("wechat-bot: standby lease acquire failed runtime_id=%s error=%s", self._runtime_id, exc)
+            await asyncio.sleep(POLLING_LEASE_STANDBY_RETRY_SECONDS)
+        logger.info("wechat-bot: standby polling lease loop ended runtime_id=%s", self._runtime_id)
+
     async def _poll_loop(self) -> None:
         logger.info("wechat-bot: poll loop started")
         while self._running:
             try:
+                if not await self._refresh_polling_lease_if_needed():
+                    break
                 response = await self._get_updates()
                 if response.get("longpolling_timeout_ms"):
                     self._next_poll_timeout_ms = int(response["longpolling_timeout_ms"])
@@ -892,8 +1018,10 @@ class WeChatBotService:
                 for raw in response.get("msgs") or []:
                     await self._handle_raw_message(raw)
                 self._last_error = None
+                self._needs_rescan = False
             except WeChatSessionExpiredError as exc:
                 self._last_error = str(exc)
+                self._needs_rescan = True
                 self._running = False
                 logger.warning("wechat-bot: polling stopped because session expired: %s", exc)
                 break
@@ -904,6 +1032,9 @@ class WeChatBotService:
                 logger.exception("wechat-bot: poll loop error: %s", exc)
                 await asyncio.sleep(2)
         await self._close_http_clients()
+        await self._release_polling_lease()
+        if self._lease_state == "standby" and self._config.token and not self._needs_rescan:
+            self._ensure_standby_task()
         logger.info("wechat-bot: poll loop ended")
 
     async def _get_updates(self) -> dict[str, Any]:
