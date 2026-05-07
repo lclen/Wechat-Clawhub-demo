@@ -268,9 +268,23 @@ export function useQuickSetupOperations(options: UseQuickSetupOperationsOptions)
 
   const runConsoleSetup = useCallback(async () => {
     try {
+      const remoteGatewayBaseUrl = safeTrim(sessionRemoteGatewayBaseUrl) || safeTrim(consoleSetup.gateway_base_url);
+      const localOrigin = safeTrim(window.location.origin);
+      const shouldUseRemoteEndpoint = Boolean(remoteGatewayBaseUrl) && remoteGatewayBaseUrl !== localOrigin;
+      const endpoint = shouldUseRemoteEndpoint
+        ? `${remoteGatewayBaseUrl}/api/setup/console/connect`
+        : shouldUseLocalGatewayApi
+          ? "/api/setup/console/connect"
+          : remoteGatewayBaseUrl
+            ? `${remoteGatewayBaseUrl}/api/setup/console/connect`
+            : "";
+      if (!endpoint) {
+        setNotice("请先填写可访问的目标网关地址，再执行控制台接入校验。");
+        return;
+      }
       const result = await withBusy(
         "setup-console",
-        () => requestJson<SetupTaskEnvelope>("/api/setup/console/connect", { method: "POST", body: JSON.stringify({ config: consoleSetup }) }),
+        () => requestJson<SetupTaskEnvelope>(endpoint, { method: "POST", body: JSON.stringify({ config: consoleSetup }) }),
       );
       setSetupTask(result.task);
       setSetupMode("result");
@@ -280,7 +294,18 @@ export function useQuickSetupOperations(options: UseQuickSetupOperationsOptions)
     } catch (error) {
       setNotice(`校验控制台连接失败：${(error as Error).message}`);
     }
-  }, [applyLauncherPolicyForRole, consoleSetup, refreshSetupProfile, requestJson, setNotice, setSetupMode, setSetupTask, withBusy]);
+  }, [
+    applyLauncherPolicyForRole,
+    consoleSetup,
+    refreshSetupProfile,
+    requestJson,
+    sessionRemoteGatewayBaseUrl,
+    setNotice,
+    setSetupMode,
+    setSetupTask,
+    shouldUseLocalGatewayApi,
+    withBusy,
+  ]);
 
   const runGatewayConsoleSetup = useCallback(async () => {
     try {

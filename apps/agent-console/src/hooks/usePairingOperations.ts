@@ -21,6 +21,7 @@ type WithBusy = <T>(key: string, task: () => Promise<T>) => Promise<T>;
 type UsePairingOperationsOptions = {
   requestJson: RequestJson;
   withBusy: WithBusy;
+  canManageNodes: boolean;
   workerSetup: WorkerNodeSetupConfig;
   pairingSecrets: Record<string, string>;
   manualPair: ManualPairDraft;
@@ -59,6 +60,7 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
   const {
     requestJson,
     withBusy,
+    canManageNodes,
     workerSetup,
     pairingSecrets,
     manualPair,
@@ -309,6 +311,10 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
   }
 
   async function deletePairedNode(node: NodeInventoryRecord) {
+    if (!canManageNodes) {
+      setNotice("当前角色只能查看节点状态，不能删除节点。");
+      return;
+    }
     const confirmed = window.confirm(`确认从网关删除节点 ${node.node_id} 吗？这会移除配对凭据，并清理当前运行态记录。`);
     if (!confirmed) return;
     try {
@@ -328,6 +334,10 @@ export function usePairingOperations(options: UsePairingOperationsOptions) {
   }
 
   async function disconnectPairedNode(node: NodeInventoryRecord) {
+    if (!canManageNodes) {
+      setNotice("当前角色只能查看节点状态，不能断开节点连接。");
+      return;
+    }
     const confirmed = window.confirm(`确认断开节点 ${node.node_id} 的连接吗？配对凭据保留，节点重启后可自动重连。`);
     if (!confirmed) return;
     try {

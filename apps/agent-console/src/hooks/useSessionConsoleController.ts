@@ -3,7 +3,6 @@ import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "reac
 import type {
   AppUiStateCache,
   GatewaySummaryResponse,
-  LauncherStatusResponse,
   MessageRecord,
   SessionMessageCacheEntry,
   SessionMessagesResponse,
@@ -27,10 +26,8 @@ type UseSessionConsoleControllerOptions = {
   messageHistoryLoading: boolean;
   messageHasMoreBefore: boolean;
   messageHistoryStart: number;
-  currentRoleIsWorker: boolean;
-  currentRoleIsConsole: boolean;
-  launcherStatus: LauncherStatusResponse | null;
   shouldUseLocalGatewayApi: boolean;
+  shouldUseRemoteGatewayApi: boolean;
   sessionRemoteGatewayBaseUrl: string;
   setSessions: Dispatch<SetStateAction<SessionRecord[]>>;
   setSelectedSessionId: Dispatch<SetStateAction<string | null>>;
@@ -58,10 +55,8 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     messageHistoryLoading,
     messageHasMoreBefore,
     messageHistoryStart,
-    currentRoleIsWorker,
-    currentRoleIsConsole,
-    launcherStatus,
     shouldUseLocalGatewayApi,
+    shouldUseRemoteGatewayApi,
     sessionRemoteGatewayBaseUrl,
     setSessions,
     setSelectedSessionId,
@@ -236,7 +231,7 @@ export function useSessionConsoleController(options: UseSessionConsoleController
       return;
     }
     const sessionId = selectedSessionId;
-    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus));
+    const usesRemoteGateway = shouldUseRemoteGatewayApi;
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     if (usesRemoteGateway && !remoteGateway) return;
     if (!usesRemoteGateway && !shouldUseLocalGatewayApi) return;
@@ -274,7 +269,7 @@ export function useSessionConsoleController(options: UseSessionConsoleController
         setMessageHistoryLoading(false);
       }
     }
-  }, [applySessionMessageEntry, currentRoleIsConsole, currentRoleIsWorker, fetchSessionMessages, getSessionMessageCache, launcherStatus, messageHasMoreBefore, messageHistoryLoading, messageHistoryStart, messagesRef, pendingHistoryRestoreRef, selectedSessionId, sessionRemoteGatewayBaseUrl, setMessageHistoryLoading, setNotice, shouldAutoFollowMessagesRef, shouldUseLocalGatewayApi, syncSessionMessageCache]);
+  }, [applySessionMessageEntry, fetchSessionMessages, getSessionMessageCache, messageHasMoreBefore, messageHistoryLoading, messageHistoryStart, messagesRef, pendingHistoryRestoreRef, selectedSessionId, sessionRemoteGatewayBaseUrl, setMessageHistoryLoading, setNotice, shouldAutoFollowMessagesRef, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, syncSessionMessageCache]);
 
   const handleMessageStreamScroll = useCallback(() => {
     shouldAutoFollowMessagesRef.current = isMessageStreamNearBottom();
@@ -308,6 +303,10 @@ export function useSessionConsoleController(options: UseSessionConsoleController
       setNotice("请先选择要绑定的节点。");
       return;
     }
+    const remoteGateway = shouldUseRemoteGatewayApi ? sessionRemoteGatewayBaseUrl.trim() : "";
+    const endpoint = remoteGateway
+      ? `${remoteGateway}/api/sessions/${encodeURIComponent(sessionId)}/switch-node`
+      : `/api/sessions/${encodeURIComponent(sessionId)}/switch-node`;
     try {
       const payload: SessionSwitchRequest = {
         action,
@@ -318,7 +317,7 @@ export function useSessionConsoleController(options: UseSessionConsoleController
       }
       const result = await withBusy(
         "session-switch-node",
-        () => requestJson<SessionSwitchResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/switch-node`, {
+        () => requestJson<SessionSwitchResponse>(endpoint, {
           method: "POST",
           body: JSON.stringify(payload),
         }),
@@ -332,7 +331,7 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     } catch (error) {
       setNotice(`切换会话节点失败：${(error as Error).message}`);
     }
-  }, [refreshGatewaySummarySnapshot, refreshSessionDetail, requestJson, setNotice, upsertSessionInView, withBusy]);
+  }, [refreshGatewaySummarySnapshot, refreshSessionDetail, requestJson, sessionRemoteGatewayBaseUrl, setNotice, shouldUseRemoteGatewayApi, upsertSessionInView, withBusy]);
 
   return {
     scrollMessagesToBottom,
@@ -348,8 +347,4 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     switchSessionNode,
     persistSessionScrollState,
   };
-}
-
-function launcherShouldRunGateway(launcherStatus: LauncherStatusResponse | null) {
-  return Boolean(launcherStatus?.runtime_model.gateway_should_run ?? launcherStatus?.profile.enable_gateway);
 }

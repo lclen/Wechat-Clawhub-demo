@@ -430,9 +430,6 @@ export function App() {
   const activeRoleDescription = useMemo(() => roleVariantDescription(roleCapabilities), [roleCapabilities]);
   const topbarNotice = useMemo(() => normalizeTopbarNotice(notice), [notice]);
   const localGatewayManaged = launcherAvailable ? launcherShouldRunGateway(launcherStatus) : null;
-  const shouldUseLocalGatewayApi = shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
-  const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
-  const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
   const authoritativeWorkerNodeId = currentRoleIsWorker
     ? (
         nodeIdFromLocalNodeStatus(localNodeStatus)
@@ -452,6 +449,15 @@ export function App() {
     : currentRoleIsConsole
       ? (safeTrim(consoleSetup.gateway_base_url) || setupProfile?.console.gateway_base_url || "")
       : (systemStatus?.preferred_gateway_base_url || setupProfile?.preferred_gateway_base_url || "");
+  const localOrigin = safeTrim(window.location.origin);
+  const consoleUsesExplicitRemoteGateway = currentRoleIsConsole
+    && Boolean(sessionRemoteGatewayBaseUrl)
+    && sessionRemoteGatewayBaseUrl !== localOrigin;
+  const shouldUseLocalGatewayApi = consoleUsesExplicitRemoteGateway
+    ? false
+    : shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
+  const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && (consoleUsesExplicitRemoteGateway || localGatewayManaged === false));
+  const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
   const sessionRemoteNodeId = currentRoleIsWorker ? authoritativeWorkerNodeId : "";
   const displayedWorkerNodeId = authoritativeWorkerNodeId || safeTrim(workerSetup.node_id);
   const displayedWorkerGatewayBaseUrl = authoritativeWorkerGatewayBaseUrl || safeTrim(workerSetup.gateway_base_url);
@@ -547,6 +553,7 @@ export function App() {
     currentRoleIsWorker,
     currentRoleIsConsole,
     localGatewayManaged,
+    shouldUseRemoteGatewayApi,
     sessionRemoteGatewayBaseUrl,
     requestJson,
     syncSetupProfileState,
@@ -1144,6 +1151,7 @@ export function App() {
   } = usePairingOperations({
     requestJson,
     withBusy,
+    canManageNodes: roleCapabilities.actions.canManageNodes,
     workerSetup,
     pairingSecrets,
     manualPair,
@@ -1194,10 +1202,8 @@ export function App() {
     messageHistoryLoading,
     messageHasMoreBefore,
     messageHistoryStart,
-    currentRoleIsWorker,
-    currentRoleIsConsole,
-    launcherStatus,
     shouldUseLocalGatewayApi,
+    shouldUseRemoteGatewayApi,
     sessionRemoteGatewayBaseUrl,
     setSessions,
     setSelectedSessionId,
@@ -1223,6 +1229,7 @@ export function App() {
     sessionRemoteGatewayBaseUrl,
     sessionRemoteNodeId,
     shouldUseLocalGatewayApi,
+    shouldUseRemoteGatewayApi,
     launcherStatus,
     selectedSessionId,
     sessions,
@@ -1261,6 +1268,7 @@ export function App() {
     launcherStatus,
     sessionRemoteGatewayBaseUrl,
     shouldUseLocalGatewayApi,
+    shouldUseRemoteGatewayApi,
     getNodeDiagnosticsCache,
     syncNodeDiagnosticsCache,
     applyNodeDiagnosticsEntry,
@@ -2010,7 +2018,16 @@ export function App() {
     () =>
       displayNodeInventory.map((node) => {
         const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
-        const taskStream = describeTaskStreamHealth(node.task_stream);
+        const localNodeUnmanaged = node.node_kind === "local"
+          && node.node_id === "local-node"
+          && !launcherShouldRunLocalNode(launcherStatus);
+        const taskStream = localNodeUnmanaged
+          ? {
+              label: "未托管",
+              detail: "当前角色不会在本机建立 claw-node 任务流连接。",
+              tone: "queued" as const,
+            }
+          : describeTaskStreamHealth(node.task_stream);
         const channelCapacity = Math.max(node.channel_capacity ?? 0, 0);
         const channelBusy = Math.max(node.channel_in_use ?? 0, 0);
         const channelIdle = Math.max(channelCapacity - channelBusy, 0);
@@ -2060,7 +2077,7 @@ export function App() {
               label: selectedNodeId === node.node_id ? "收起诊断" : "查看诊断",
               onClick: () => setSelectedNodeId(selectedNodeId === node.node_id ? null : node.node_id),
             },
-            ...(node.node_kind === "remote" && node.paired
+            ...(roleCapabilities.actions.canManageNodes && node.node_kind === "remote" && node.paired
               ? [
                   {
                     label: busy === `delete-node-${node.node_id}` ? "处理中..." : "删除节点",
@@ -2069,7 +2086,7 @@ export function App() {
                   },
                 ]
               : []),
-            ...(node.node_kind === "remote" && node.online
+            ...(roleCapabilities.actions.canManageNodes && node.node_kind === "remote" && node.online
               ? [
                   {
                     label: busy === `disconnect-node-${node.node_id}` ? "处理中..." : "断开连接",
@@ -2081,36 +2098,47 @@ export function App() {
           ],
         };
       }),
-    [busy, deletePairedNode, disconnectPairedNode, displayNodeInventory, launcherStatus, localNodeStatus, selectedNodeId],
+    [busy, deletePairedNode, disconnectPairedNode, displayNodeInventory, launcherStatus, localNodeStatus, roleCapabilities.actions.canManageNodes, selectedNodeId],
   );
   const selectedNodeDiagnosticsView = useMemo(() => {
     if (!selectedNodeId || !selectedNodeDiagnostics) return null;
     const taskStream = selectedNodeDiagnostics.task_stream;
+    const localNodeUnmanaged = selectedNodeDiagnostics.node_kind === "local"
+      && selectedNodeDiagnostics.node_id === "local-node"
+      && !launcherShouldRunLocalNode(launcherStatus);
     const rows: Array<{ label: string; value: string; multiline?: boolean }> = [
       { label: "连接状态", value: selectedNodeDiagnostics.connection_state || "未记录" },
       {
         label: "任务流模式",
-        value: taskStream.upgrade_required
-          ? `需要升级 · ${taskStream.protocol_version || "unknown"}`
-          : `${taskStream.connection_mode || "disconnected"} · ${taskStream.protocol_version || "未上报"}`,
+        value: localNodeUnmanaged
+          ? "未托管 · 当前角色不会在本机托管 claw-node"
+          : taskStream.upgrade_required
+            ? `需要升级 · ${taskStream.protocol_version || "unknown"}`
+            : `${taskStream.connection_mode || "disconnected"} · ${taskStream.protocol_version || "未上报"}`,
       },
       {
         label: "最近链路事件",
-        value: taskStream.last_event_at
-          ? formatTimeLabel(taskStream.last_event_at, true)
-          : taskStream.last_disconnect_at
-            ? `最近断流 ${formatTimeLabel(taskStream.last_disconnect_at, true)}`
-            : "暂无",
+        value: localNodeUnmanaged
+          ? "不适用"
+          : taskStream.last_event_at
+            ? formatTimeLabel(taskStream.last_event_at, true)
+            : taskStream.last_disconnect_at
+              ? `最近断流 ${formatTimeLabel(taskStream.last_disconnect_at, true)}`
+              : "暂无",
       },
       {
         label: "断流摘要",
-        value: taskStream.last_disconnect_at
-          ? `code ${taskStream.last_disconnect_code ?? "-"} · ${taskStream.last_disconnect_reason || "unknown"}`
-          : "暂无",
+        value: localNodeUnmanaged
+          ? "不适用"
+          : taskStream.last_disconnect_at
+            ? `code ${taskStream.last_disconnect_code ?? "-"} · ${taskStream.last_disconnect_reason || "unknown"}`
+            : "暂无",
       },
       {
         label: "重连 / 降级",
-        value: `${taskStream.reconnect_count} 次重连 · ${taskStream.fallback_poll_count} 次 fallback`,
+        value: localNodeUnmanaged
+          ? "不适用"
+          : `${taskStream.reconnect_count} 次重连 · ${taskStream.fallback_poll_count} 次 fallback`,
       },
       {
         label: "最近配对",
@@ -2200,7 +2228,7 @@ export function App() {
       timelineText: selectedNodeDiagnostics.timeline?.length ? selectedNodeTimelineText : null,
       onClose: () => setSelectedNodeId(null),
     };
-  }, [selectedNodeDiagnostics, selectedNodeId, selectedNodeTimelineText]);
+  }, [launcherStatus, selectedNodeDiagnostics, selectedNodeId, selectedNodeTimelineText]);
   const wechatStatusRows = useMemo(
     () => buildWechatStatusRows(wechatStatus, wechatRuntimeSummary, now),
     [

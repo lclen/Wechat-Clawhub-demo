@@ -1,0 +1,954 @@
+{
+  "D:\\wechat-clawhub\\apps\\agent-console\\vite.config.d.ts": {
+    "mtime": 1778123483.3512087,
+    "hash": "5ccf14b6a75fb3647217179a87676852"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\vite.config.js": {
+    "mtime": 1778123483.338204,
+    "hash": "70b55989ff4ef7764119b271cc176d70"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\vite.config.ts": {
+    "mtime": 1778122050.7576237,
+    "hash": "1d214ac2ec9a09581872ff1dfe08c5fa"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\scripts\\check-ui-copy.mjs": {
+    "mtime": 1778122050.7361248,
+    "hash": "70724613d300c821f5e0a30e74121001"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\App.tsx": {
+    "mtime": 1778131848.3269217,
+    "hash": "b152bc8fe9027e826ff6943eac139eca"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\appBootstrap.ts": {
+    "mtime": 1778122050.737126,
+    "hash": "9d5e8acdb125507cef57a4846608359e"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\appStorage.ts": {
+    "mtime": 1778122050.738127,
+    "hash": "7f4618f6a78b7cafaf562c5f40ca4426"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\consoleStateSync.ts": {
+    "mtime": 1778122050.7470233,
+    "hash": "f24a8d1a9317026668fb8d9fbda98611"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\main.tsx": {
+    "mtime": 1778122050.752568,
+    "hash": "af0f073120b6dffa1a05045a7993a545"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\qrcode.d.ts": {
+    "mtime": 1778122050.752568,
+    "hash": "e8b1d678925f9f712ab36ce4aef942ec"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\quickSetupDefaults.ts": {
+    "mtime": 1778122050.7535708,
+    "hash": "38bb3422f6b27d83f0d345e54cb9750a"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\roleCapabilities.ts": {
+    "mtime": 1778122050.7535708,
+    "hash": "7ff35a8dbe6f5b0e9a48544a76e3154e"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\roleWorkspace.ts": {
+    "mtime": 1778122050.7535708,
+    "hash": "d2789912c8676ee0e085bb8a4721c8fe"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\stringUtils.ts": {
+    "mtime": 1778122050.755623,
+    "hash": "7054e3fcd11dc032d2baaa43c3b00b21"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\transportUrls.ts": {
+    "mtime": 1778122050.7566216,
+    "hash": "a6467f982647ba777ad5bd4327ad4960"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\PublicEntryPage.tsx": {
+    "mtime": 1778122050.738127,
+    "hash": "a5eb141f7920ca2564b936227066cf8d"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\shared\\ConsolePrimitives.tsx": {
+    "mtime": 1778122050.7460225,
+    "hash": "250643c9a2b764a2a6dfba08be1077fe"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\ConnectionUi.tsx": {
+    "mtime": 1778122050.738127,
+    "hash": "7a94a1cf73cc8b24ce85c926631f8763"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\ConnectionWorkspace.tsx": {
+    "mtime": 1778122050.7396257,
+    "hash": "db6c3d8c649982174c11b92e63fffa38"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\ConnectivityCheckModal.tsx": {
+    "mtime": 1778122050.7396257,
+    "hash": "7d7458e887d5d9586e0b56a26f5622da"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\DiagnosticsConsole.tsx": {
+    "mtime": 1778122050.7396257,
+    "hash": "bbfd9a6a6aa4178d3e640727750cb1c2"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\NodeInventoryPanel.tsx": {
+    "mtime": 1778122050.7396257,
+    "hash": "c0209d015bde48bc6ac289a009d13c40"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\NodeModelConfigPanel.tsx": {
+    "mtime": 1778122050.7406466,
+    "hash": "be7f713366c03da6796011937182f9c2"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\OverviewPanel.tsx": {
+    "mtime": 1778122050.7406466,
+    "hash": "01433b03c58c5047ae581a15a9fd3e6e"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\PairingStatusModal.tsx": {
+    "mtime": 1778122050.7416506,
+    "hash": "6005b2f4bc3a926ec4955ef3b65d3c3b"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\RuntimeLogsPanel.tsx": {
+    "mtime": 1778122050.7416506,
+    "hash": "4ce5c2081136b414b1c9a94daa4e4aa6"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\WeChatConfigCard.tsx": {
+    "mtime": 1778122050.7416506,
+    "hash": "33ed502fd180db44d0c643d0be527797"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\ConversationTest\\ConversationTestWorkspace.tsx": {
+    "mtime": 1778122050.7416506,
+    "hash": "5c867262b9c070df21399b5bc3dafafc"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Logs\\LogsWorkspace.tsx": {
+    "mtime": 1778122050.742989,
+    "hash": "13921982d969bc9c8bbb7f8c744a2006"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\QuickSetup\\LauncherControlPanel.tsx": {
+    "mtime": 1778122050.742989,
+    "hash": "7be9fa349660482236053703583af49b"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\QuickSetup\\QuickSetupConfigStage.tsx": {
+    "mtime": 1778122050.742989,
+    "hash": "c3e4a4addcef61a71ac0592c888c3aff"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\QuickSetup\\QuickSetupExecutionStage.tsx": {
+    "mtime": 1778122050.742989,
+    "hash": "e712a39d6ed441462522d736814d0387"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\QuickSetup\\QuickSetupRolePanel.tsx": {
+    "mtime": 1778122050.7439961,
+    "hash": "c97a27795d4a71330e0c62f9f5c7d9d2"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\QuickSetup\\QuickSetupStatusPanel.tsx": {
+    "mtime": 1778122050.7450163,
+    "hash": "cca39e41cf88b1910d3d326bc07514aa"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\QuickSetup\\QuickSetupWorkspace.tsx": {
+    "mtime": 1778122050.7450163,
+    "hash": "4a647ab9ca02fac67153ac5c241d8cf2"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Sessions\\MessageContent.tsx": {
+    "mtime": 1778122050.7450163,
+    "hash": "e6ebe5d97e4332715f39e7282cc61900"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Sessions\\SessionsWorkspace.tsx": {
+    "mtime": 1778122050.7460225,
+    "hash": "a97a9d1e03183d30c9203a25854b60c2"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Sessions\\sessionUi.ts": {
+    "mtime": 1778122050.7460225,
+    "hash": "aac4d658314e757ceb60b0fd56c1aad3"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useGatewayRuntimeController.ts": {
+    "mtime": 1778131749.5538466,
+    "hash": "d168063c02f67213bcc58c4f2670ee90"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useGatewaySummaryEffects.ts": {
+    "mtime": 1778131618.7858095,
+    "hash": "5336f559111abd80bf59cc615208fc5c"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useLauncherController.ts": {
+    "mtime": 1778122050.7480228,
+    "hash": "d9173c160b91b0d23a11bef799b1e201"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useLocalNodeController.ts": {
+    "mtime": 1778122050.7490227,
+    "hash": "3b81990ab4a5e1b939328b6aa0c60571"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useNodeDiagnosticsEffects.ts": {
+    "mtime": 1778131774.6749527,
+    "hash": "c380e1dfd6ee1d1ba055b844c91affdd"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\usePairingDebug.ts": {
+    "mtime": 1778122050.7500577,
+    "hash": "9ddc64d29cb8ea5f408e73ef26723c07"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\usePairingOperations.ts": {
+    "mtime": 1778131004.9801042,
+    "hash": "268b07fffed2dfe456e4e51429ebbc88"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useQuickSetupController.ts": {
+    "mtime": 1778122050.7505624,
+    "hash": "f5d72804eeaf53b680347cf3bf6e9eb9"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useQuickSetupOperations.ts": {
+    "mtime": 1778126540.7707357,
+    "hash": "785f62582ec08aefc26936390f3aeae5"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useSessionConsoleController.ts": {
+    "mtime": 1778131819.101442,
+    "hash": "acc8ad8e747228e8909a33ea8e0308de"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useSessionWorkspaceEffects.ts": {
+    "mtime": 1778131765.5111187,
+    "hash": "93f5cfb1ce1f1c6d0caba2764e3bbcf4"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useSetupTaskEffects.ts": {
+    "mtime": 1778122050.7515697,
+    "hash": "d2021f102dc811e45a8a3df6b99d2c06"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useWechatOnboarding.ts": {
+    "mtime": 1778122050.7515697,
+    "hash": "e4fc4fd0660b72390f65c7f742048193"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\hooks\\useWorkspacePollingEffects.ts": {
+    "mtime": 1778122050.752568,
+    "hash": "456ab6c5c1fe4658f38561bc05044931"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\presenters\\wechatStatusPresenter.ts": {
+    "mtime": 1778122050.752568,
+    "hash": "71772e03cea154dd73d1651432ecd54f"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\consoleSelectors.ts": {
+    "mtime": 1778122050.7546184,
+    "hash": "1cd886ca7cd5759fb5645c86d29e77a1"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\launcherSelectors.ts": {
+    "mtime": 1778122050.7546184,
+    "hash": "89fd997bdd946480b3b2162ca6d33024"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\nodeSelectors.ts": {
+    "mtime": 1778122050.7546184,
+    "hash": "7bec9729abda33e1c544b2bb6b09b9b7"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\quickSetupSelectors.ts": {
+    "mtime": 1778122050.7546184,
+    "hash": "ebf786f4494d1acc42b1307357c80eca"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\sessionSelectors.ts": {
+    "mtime": 1778122050.755623,
+    "hash": "8c3d5c6a6f4ac5b0db8ecf0de90222bd"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\types\\index.ts": {
+    "mtime": 1778122050.7566216,
+    "hash": "5a5bdb454e479324fc3074d66cddcb1b"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\__snapshots__\\app-refactor-start\\App.tsx": {
+    "mtime": 1778122050.7331266,
+    "hash": "42d2053fe1d79d6c6b7ea662318118a5"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\__snapshots__\\app-refactor-start\\ConnectionUi.tsx": {
+    "mtime": 1778122050.7331266,
+    "hash": "7bb3bc1b40359a776628a38c22ac8183"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\__snapshots__\\app-refactor-start\\index.ts": {
+    "mtime": 1778122050.734125,
+    "hash": "2e95d32118c95207262377919af71a80"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\__snapshots__\\app-refactor-start\\NodeModelConfigPanel.tsx": {
+    "mtime": 1778122050.734125,
+    "hash": "b9498b4b58af936e6c4dce8e7551955e"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\__snapshots__\\app-refactor-start\\OverviewPanel.tsx": {
+    "mtime": 1778122050.734125,
+    "hash": "6fd9c6a365ed30de5b4336254f40bbd4"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\app.py": {
+    "mtime": 1778122050.7596245,
+    "hash": "f43e1b9a2b36fd1600fb63c167adb81f"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\environment.py": {
+    "mtime": 1778122050.7596245,
+    "hash": "88089bc5ea4a33837d8873116e118ef7"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\main.py": {
+    "mtime": 1778122050.7596245,
+    "hash": "acde3947e1ccdc63195ec899cefdffe6"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\models.py": {
+    "mtime": 1778122050.7606235,
+    "hash": "e84cbd0b68e10e46cc9275dd782213a7"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\network.py": {
+    "mtime": 1778122050.7606235,
+    "hash": "19568ae6555f4809a6ff3e43c7f747ca"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\process_manager.py": {
+    "mtime": 1778122050.761625,
+    "hash": "18465dac3f6be1b1df0bd4e83c640e20"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\profile_store.py": {
+    "mtime": 1778122050.761625,
+    "hash": "9e999b9905225393d33c374c1cda99ae"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\redis_runtime.py": {
+    "mtime": 1778122050.761625,
+    "hash": "6f7dbdb57b356261ef64759a2a925efd"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\runtime.py": {
+    "mtime": 1778122050.761625,
+    "hash": "6f48d76f8c15d61cf5685447554f9aec"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\wechat_status_presenter.py": {
+    "mtime": 1778122050.761625,
+    "hash": "9b9eb54296c7d9678603a087f6df5d3a"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\launcher\\__init__.py": {
+    "mtime": 1778122050.758624,
+    "hash": "b7346b706ada70d1ef9154767be1fb15"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_gateway_proxy_resolution.py": {
+    "mtime": 1778122050.7626238,
+    "hash": "67fec76ba4ba5593fbd0d5e06a81e54e"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_launcher_main.py": {
+    "mtime": 1778122050.7626238,
+    "hash": "838e9a8ccb1e0fb0dd216a269897225f"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_launcher_runtime_model.py": {
+    "mtime": 1778122050.7626238,
+    "hash": "5bf7dbd2f0a451ba197db4fd5d3002b4"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_local_node_channel_assessment.py": {
+    "mtime": 1778122050.7626238,
+    "hash": "7cb1be99b16a73a47f7436678b08b47d"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_local_node_channel_assessment_state.py": {
+    "mtime": 1778122050.7646232,
+    "hash": "dea55455ee485297e0223a5c86654d83"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_local_node_connectivity_check.py": {
+    "mtime": 1778122050.7646232,
+    "hash": "2907296098dde0bfa2baf64b7c364be1"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_local_node_model_config.py": {
+    "mtime": 1778122050.7646232,
+    "hash": "eb5448e8ce7b40ba6ffbe48b719bf23b"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_local_node_runtime_status.py": {
+    "mtime": 1778122050.7646232,
+    "hash": "217943ba168af3449337ea4695042a17"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_process_manager_local_node.py": {
+    "mtime": 1778122050.7646232,
+    "hash": "586fd051ea3eb5df3f3868bde07c7808"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_runtime_import_preference.py": {
+    "mtime": 1778122050.7666228,
+    "hash": "8a2c45c0b3847063e28898f50c7646c4"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\tests\\test_worker_model_env_migration.py": {
+    "mtime": 1778122050.7666228,
+    "hash": "42d9aad839aa70b2d74cde3ffa07cb4a"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\main.py": {
+    "mtime": 1778122050.774629,
+    "hash": "f53a68da25c81eada82aa9693978c8af"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\__init__.py": {
+    "mtime": 1778122050.7696238,
+    "hash": "b3612adc7fa7c6b5c0cf72b3bfb1df44"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\access\\wechat_bot.py": {
+    "mtime": 1778122050.7696238,
+    "hash": "fc9fecfa73120ed73e2a3d0b12c283c8"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\access\\wechat_multi_bot.py": {
+    "mtime": 1778122050.7706237,
+    "hash": "59fff98fa7aa47a24670aff19a105fe6"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\access\\wechat_official_account.py": {
+    "mtime": 1778122050.7706237,
+    "hash": "0a894c8cebb6fbf4323966b172b8bc2d"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\access\\__init__.py": {
+    "mtime": 1778122050.7696238,
+    "hash": "27c737e6ba44e35d4e2512b3ecdb64f7"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\router.py": {
+    "mtime": 1778122050.7706237,
+    "hash": "370e1fd0bd58fc53ff073071e3387b4d"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\messages.py": {
+    "mtime": 1778122050.771624,
+    "hash": "1dd01e2d77a9e1cff81689a89c9d5e13"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\models.py": {
+    "mtime": 1778122050.771624,
+    "hash": "489d7daccdef74b8e1b35d34638e94c7"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\nodes.py": {
+    "mtime": 1778122050.771624,
+    "hash": "97445adab222429562e8837b8096aaf5"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\public_entry.py": {
+    "mtime": 1778122050.771624,
+    "hash": "7ddb5f1b9bb099b497811154f69a7b93"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\sessions.py": {
+    "mtime": 1778122050.772624,
+    "hash": "bfa5be2d7fc3c57b5596498b5624d03a"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\setup.py": {
+    "mtime": 1778122050.772624,
+    "hash": "2d52680479a7a103edeef075f252c035"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\system.py": {
+    "mtime": 1778122050.772624,
+    "hash": "553ca07e6c104a26c0129be20a404314"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\wechat.py": {
+    "mtime": 1778122050.7736237,
+    "hash": "dd766e4b4d00677c0e99248a1268c911"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\wechat_mp.py": {
+    "mtime": 1778122050.7736237,
+    "hash": "22717c107fcc8e7f9b2dd3e712b3ce8b"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\api\\routes\\__init__.py": {
+    "mtime": 1778122050.7706237,
+    "hash": "e5c828fc2d0c416681f43bd796ce932d"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\core\\config.py": {
+    "mtime": 1778122050.7736237,
+    "hash": "84be9e4e11c9bc5dd89d93316b46ec35"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\core\\deps.py": {
+    "mtime": 1778122050.7736237,
+    "hash": "c94061042410e8fa6b2b7c91e3ace283"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\core\\lifespan.py": {
+    "mtime": 1778122050.7736237,
+    "hash": "b7d475fa4050b9e9be6be77bc06af59e"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\dispatch\\queue.py": {
+    "mtime": 1778122050.774629,
+    "hash": "ebeb26262a70a5356c2b88f4842a1028"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\dispatch\\scheduler.py": {
+    "mtime": 1778122050.774629,
+    "hash": "008c4794a9ff031f7619aff2e0cb2104"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\dispatch\\__init__.py": {
+    "mtime": 1778122050.774629,
+    "hash": "0126dc8c4942a7937519ffd542baa8ba"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\models\\dispatch.py": {
+    "mtime": 1778122050.7756288,
+    "hash": "7397486b1c5c68fc629e13857f450100"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\models\\gateway_summary.py": {
+    "mtime": 1778122050.7756288,
+    "hash": "8df31ca07c1319374c91fa3682937afb"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\models\\node.py": {
+    "mtime": 1778122050.7756288,
+    "hash": "44564594202675020fcb2a3c566d38d2"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\models\\public_entry.py": {
+    "mtime": 1778122050.7756288,
+    "hash": "747945f21023117392aaeae6de1ea42c"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\models\\session.py": {
+    "mtime": 1778122050.7756288,
+    "hash": "587ead3e0ea83e9dfb912c65b2f3af2f"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\models\\setup.py": {
+    "mtime": 1778122050.776629,
+    "hash": "9e5fe6ef8407a4181f7043ceee1f6410"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\models\\wechat.py": {
+    "mtime": 1778122050.776629,
+    "hash": "e2e1cdf512cbe92f118c24f54bbacffe"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\gateway_summary_service.py": {
+    "mtime": 1778122050.777628,
+    "hash": "6d1bcc5153dafc3ef2771c1304ca191c"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\gateway_summary_stream.py": {
+    "mtime": 1778122050.777628,
+    "hash": "533f461120fae891e2528f187a6491b1"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\inbound_aggregation.py": {
+    "mtime": 1778122050.777628,
+    "hash": "da6fc1dd9bd9013ba612278fa47a11a9"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\node_auth.py": {
+    "mtime": 1778122050.777628,
+    "hash": "0ea1a70bf0ea2a3a1213fa72621040cb"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\node_diagnostics_stream.py": {
+    "mtime": 1778122050.777628,
+    "hash": "ec5c0a3dc04e9b4642ba63278fa1b5b0"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\node_inventory.py": {
+    "mtime": 1778122050.7786314,
+    "hash": "df6caa4e0c9ad25c3d9fd4dd1222c375"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\node_registry.py": {
+    "mtime": 1778122050.7786314,
+    "hash": "2c63315b94de8c8f8b6fe43b3dfe4c2e"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\node_stream.py": {
+    "mtime": 1778122050.7786314,
+    "hash": "163c0e390ccd82eae6c60d75f4a25f48"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\openai_compatible_client.py": {
+    "mtime": 1778122050.7786314,
+    "hash": "b0bd22480023cca2229add268594846a"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\outgoing_dispatcher.py": {
+    "mtime": 1778122050.7796285,
+    "hash": "e3b0410bd2d306cbcb96340f7c0d58fe"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\public_entry_service.py": {
+    "mtime": 1778122050.7796285,
+    "hash": "53f335916e37c9e0e7d588ffc9aa99c9"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\redis_store.py": {
+    "mtime": 1778122050.7796285,
+    "hash": "5f784b991caf02052912666dcdfd6656"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\session_keys.py": {
+    "mtime": 1778122050.7796285,
+    "hash": "a69f01fde4628e02d716f2dc1eeb6854"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\session_manager.py": {
+    "mtime": 1778122050.7806284,
+    "hash": "de0397b8f7a93afa8028bacc23d9238d"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\session_stream.py": {
+    "mtime": 1778122050.7806284,
+    "hash": "4bb195706f66e1e9a1a71c2a0f90e913"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\setup_service.py": {
+    "mtime": 1778122050.7816281,
+    "hash": "1d0a0fd0f5ef3d3829905d9018ae5050"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\slot_reconciler.py": {
+    "mtime": 1778122050.7816281,
+    "hash": "3429d5eb4310a7dbd283a3ab2f2d8561"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\snapshot_services.py": {
+    "mtime": 1778122050.7816281,
+    "hash": "e5cefd558f9bfbc36ab221fa23fa04a4"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\transcript_writer.py": {
+    "mtime": 1778122050.7816281,
+    "hash": "4bd47020a9e8c6953dfef0f540635a9a"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\user_data_store.py": {
+    "mtime": 1778122050.7816281,
+    "hash": "ab4106722a4bb03e96390a35faafdcb3"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\wechat_media_store.py": {
+    "mtime": 1778122050.7826273,
+    "hash": "df05a0f65323444599680c77ddc562b9"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\services\\wechat_onboard.py": {
+    "mtime": 1778122050.7826273,
+    "hash": "a34ca17d2aafdae19b86b2aa16fadbe2"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\app\\utils\\network.py": {
+    "mtime": 1778122050.7826273,
+    "hash": "e488ab2483e91b466856228816abac9b"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_dispatch_queue.py": {
+    "mtime": 1778122050.7826273,
+    "hash": "5bbed64746d511db68df6f2d90acf65f"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_dispatch_scheduler.py": {
+    "mtime": 1778122050.7826273,
+    "hash": "db3b9a93e5ed0bce513fe86188b9c957"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_gateway_refresh_reading.py": {
+    "mtime": 1778122050.783628,
+    "hash": "c64247aa6aef2eb6582d153e0aba74d7"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_gateway_summary_service.py": {
+    "mtime": 1778122050.783628,
+    "hash": "a663e4313e71b97f605cc94af7cc9e5c"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_inbound_aggregation.py": {
+    "mtime": 1778122050.783628,
+    "hash": "9d1060c489b519688ff75777b99e05e7"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_network_utils.py": {
+    "mtime": 1778122050.783628,
+    "hash": "e4c58bdea07c3e9f300e8cc4b96632a1"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_nodes_route.py": {
+    "mtime": 1778122050.7846296,
+    "hash": "e5bc0aa038af558d87e570af08cc9f5c"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_node_auth.py": {
+    "mtime": 1778122050.7846296,
+    "hash": "03e2c187594c58ab06ab97e21cc0ad5f"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_node_diagnostics_stream.py": {
+    "mtime": 1778122050.7846296,
+    "hash": "9e74e0634e402d836db3d22ca0a1c75b"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_openai_compatible_client.py": {
+    "mtime": 1778122050.7846296,
+    "hash": "0ad478a2502ab4f0281153ff43822a89"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_outgoing_dispatcher.py": {
+    "mtime": 1778122050.7846296,
+    "hash": "aef3410b1249b47c2e48770c55d84e59"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_public_entry_service.py": {
+    "mtime": 1778122050.7856283,
+    "hash": "1ce8433d6f472754e43d57e6ad292d3f"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_redis_store.py": {
+    "mtime": 1778122050.7856283,
+    "hash": "093b004397ca1eb2504476dec15ea00b"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_session_manager_agent_binding.py": {
+    "mtime": 1778122050.7856283,
+    "hash": "0487b086146bea12bf8c7eaeedef6f56"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_session_message_windows.py": {
+    "mtime": 1778122050.7856283,
+    "hash": "c44f8f974f8952ff770720cb69454317"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_setup_service.py": {
+    "mtime": 1778122050.7856283,
+    "hash": "f54c2bd9e78479b8f93dcc04f0b116d5"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_user_data_store.py": {
+    "mtime": 1778122050.786628,
+    "hash": "c49d7e9f3eed2ee03b55386651b8989d"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_wechat_bot.py": {
+    "mtime": 1778122050.786628,
+    "hash": "c25e3eb2665cdc22b8c5ecf8ced0ae45"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_wechat_media_store.py": {
+    "mtime": 1778122050.786628,
+    "hash": "0872823497e93bc1dec3b0decec9a6e6"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_wechat_mp_route.py": {
+    "mtime": 1778122050.786628,
+    "hash": "43b8415f0fb692e037833f6969ad8993"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\tests\\test_wechat_official_account.py": {
+    "mtime": 1778122050.786628,
+    "hash": "95ffd5fce9c9b0e4ef53032f95ba53fa"
+  },
+  "D:\\wechat-clawhub\\apps\\winui-client\\App.xaml.cs": {
+    "mtime": 1778122050.7876277,
+    "hash": "7b339fb78c77b6033e5a02bef0d55919"
+  },
+  "D:\\wechat-clawhub\\apps\\winui-client\\MainWindow.xaml.cs": {
+    "mtime": 1778122050.7876277,
+    "hash": "e27504cfc3349351afaf50c92b7ce1bf"
+  },
+  "D:\\wechat-clawhub\\apps\\winui-client\\Services\\AppLog.cs": {
+    "mtime": 1778122050.7876277,
+    "hash": "7266f1bd0d1c3d045e3534aae763632f"
+  },
+  "D:\\wechat-clawhub\\apps\\winui-client\\Services\\LauncherRuntimeState.cs": {
+    "mtime": 1778122050.7876277,
+    "hash": "0ed645e014b89c531da6d00668c57230"
+  },
+  "D:\\wechat-clawhub\\apps\\winui-client\\Services\\LauncherStartResult.cs": {
+    "mtime": 1778122050.7876277,
+    "hash": "b8408fcb8c13b562863b5f956e974ac0"
+  },
+  "D:\\wechat-clawhub\\apps\\winui-client\\Services\\LauncherSupervisor.cs": {
+    "mtime": 1778122050.7876277,
+    "hash": "4acc03c6e3375d0d6ad2e6b3b7b531db"
+  },
+  "D:\\wechat-clawhub\\plugins\\graphify\\scripts\\install-graphify-codex.ps1": {
+    "mtime": 1778122050.9625723,
+    "hash": "cd556e197652da82c9cf3cf88891a132"
+  },
+  "D:\\wechat-clawhub\\scripts\\build-claw-node-bundle.ps1": {
+    "mtime": 1778122050.9635735,
+    "hash": "41741c786794930b43b9ae5ae97fce11"
+  },
+  "D:\\wechat-clawhub\\scripts\\build-desktop-launcher.ps1": {
+    "mtime": 1778122050.9635735,
+    "hash": "16b499b5260ce01b8da3bed942c0a3c9"
+  },
+  "D:\\wechat-clawhub\\scripts\\build-winui-client.ps1": {
+    "mtime": 1778122050.9646633,
+    "hash": "58599c2aa8611d410a1d801406be0ce6"
+  },
+  "D:\\wechat-clawhub\\scripts\\chat-check-claw.py": {
+    "mtime": 1778122050.9646633,
+    "hash": "f7be4766c26164484322203259f75f64"
+  },
+  "D:\\wechat-clawhub\\scripts\\install-claw-node.ps1": {
+    "mtime": 1778122050.965669,
+    "hash": "0696b484427cfd951122155fe0119166"
+  },
+  "D:\\wechat-clawhub\\scripts\\smoke-check-host.ps1": {
+    "mtime": 1778122050.9666688,
+    "hash": "0ae0c6dc1fbab9e552261fd56c7a3253"
+  },
+  "D:\\wechat-clawhub\\scripts\\smoke-check-node.ps1": {
+    "mtime": 1778122050.9676688,
+    "hash": "ff3d29184fd1bc5d75a63380905318dd"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\channel_assessment.py": {
+    "mtime": 1778122050.9686694,
+    "hash": "c884c5cc3e480aad4dec677863cb77bc"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\config.py": {
+    "mtime": 1778122050.9686694,
+    "hash": "02c1e70d51fc7100c39ad21aaa34e707"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\diagnostics.py": {
+    "mtime": 1778122050.9686694,
+    "hash": "f822a4e89ba588999ab604be7bffa5bd"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\dify_client.py": {
+    "mtime": 1778122050.9686694,
+    "hash": "0c44d5f4d608ff954fb26672e6466d15"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\discovery_service.py": {
+    "mtime": 1778122050.9696698,
+    "hash": "51dadc676855315e33094917ab355957"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\gateway_client.py": {
+    "mtime": 1778122050.9696698,
+    "hash": "ddca12195029c46575ba4a0c0b71a68a"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\inference.py": {
+    "mtime": 1778122050.9706714,
+    "hash": "5edfa650a786e4df2f1b91be1ae0d2b1"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\local_cache.py": {
+    "mtime": 1778122050.9706714,
+    "hash": "171d823d099ef6ad1b439ee4b494e3c7"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\main.py": {
+    "mtime": 1778122050.9706714,
+    "hash": "82e39e73a2502cc28259bcb2db49dc35"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\multimodal.py": {
+    "mtime": 1778122050.9706714,
+    "hash": "2d2d61bd58af5cfd478f0277923f5981"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\node_identity.py": {
+    "mtime": 1778122050.9706714,
+    "hash": "42fa152b6fd993ad351862581e845ea6"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\openai_compatible_client.py": {
+    "mtime": 1778122050.97167,
+    "hash": "4a71a8ddce34d953db6b7bf8c7babd1b"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\worker.py": {
+    "mtime": 1778122050.97167,
+    "hash": "bfb9140c4a5de4ac2511b49861c29ed0"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\claw_node\\__init__.py": {
+    "mtime": 1778122050.9676688,
+    "hash": "8120e4326ea02c6d261a5b7e4cc3e5fe"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_channel_assessment.py": {
+    "mtime": 1778122050.97167,
+    "hash": "484ef73aa47069d88c2d565804579f39"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_config.py": {
+    "mtime": 1778122050.97167,
+    "hash": "888ea251469d35b7bea0b2d35cfecfa9"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_diagnostics.py": {
+    "mtime": 1778122050.97167,
+    "hash": "e5774a8202172acec60daca9569ce9cd"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_dify_client.py": {
+    "mtime": 1778122050.9730897,
+    "hash": "e5324ee5b9510fb0d15e5c81b44ac42a"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_gateway_client.py": {
+    "mtime": 1778122050.9730897,
+    "hash": "27d4dea910cc4dc46d5a41278e1422e1"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_node_identity.py": {
+    "mtime": 1778122050.9730897,
+    "hash": "a033c217237bb39ac3b1cbe75551844c"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_openai_compatible_client.py": {
+    "mtime": 1778122050.9730897,
+    "hash": "09c4a19a9b6049b23830935dcbd9e81b"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\tests\\test_worker.py": {
+    "mtime": 1778122050.9740949,
+    "hash": "eae9eeba0b1308f8825b80bca8bb9668"
+  },
+  "D:\\wechat-clawhub\\AGENTS.md": {
+    "mtime": 1778122050.7297242,
+    "hash": "27570a320d717285bbf0b954247917d3"
+  },
+  "D:\\wechat-clawhub\\CLAUDE.md": {
+    "mtime": 1778122050.7297242,
+    "hash": "60759b98d159a9b08d2d205fbc6bc261"
+  },
+  "D:\\wechat-clawhub\\README.md": {
+    "mtime": 1778122050.7297242,
+    "hash": "98e949be52e8dcc167b8469e5e0ca394"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\index.html": {
+    "mtime": 1778122050.7351265,
+    "hash": "fbd0e33f6b71b13cefa05eec8ef55367"
+  },
+  "D:\\wechat-clawhub\\apps\\desktop-launcher\\README.md": {
+    "mtime": 1778122050.758624,
+    "hash": "9f878eae64efeb7be92e16c7d1bdfdba"
+  },
+  "D:\\wechat-clawhub\\apps\\gateway\\README.md": {
+    "mtime": 1778122050.7686348,
+    "hash": "550c67f333f2c14b79338106ff23b652"
+  },
+  "D:\\wechat-clawhub\\apps\\winui-client\\README.md": {
+    "mtime": 1778122050.7876277,
+    "hash": "df8dc4069b0acee89f94bf4cafeedc20"
+  },
+  "D:\\wechat-clawhub\\docs\\architecture-overview.md": {
+    "mtime": 1778122050.789747,
+    "hash": "8c8c22cb3e2f8c5aa6b38d74d5892aa1"
+  },
+  "D:\\wechat-clawhub\\docs\\bug-report-template.md": {
+    "mtime": 1778122050.789747,
+    "hash": "5d77e1c7387f9dfd0a7f3658446b2084"
+  },
+  "D:\\wechat-clawhub\\docs\\changelog.md": {
+    "mtime": 1778122050.7902699,
+    "hash": "55acbadcd354d32b11096e54387cff26"
+  },
+  "D:\\wechat-clawhub\\docs\\channel-hosted-session-architecture.md": {
+    "mtime": 1778122050.7902699,
+    "hash": "3acb4ab36befa4da57557cc2171344aa"
+  },
+  "D:\\wechat-clawhub\\docs\\code-review-407dfe5.md": {
+    "mtime": 1778122050.7902699,
+    "hash": "9eb2468833b8142a27887f8b795c1813"
+  },
+  "D:\\wechat-clawhub\\docs\\console-summary-polling-optimization.md": {
+    "mtime": 1778122050.7912743,
+    "hash": "6c760e8fbfdd6988e7f1fcf03ffb56a9"
+  },
+  "D:\\wechat-clawhub\\docs\\dify\u53c2\u8003.md": {
+    "mtime": 1778122050.7919238,
+    "hash": "9b039822f40e80342d51cfde1e16e951"
+  },
+  "D:\\wechat-clawhub\\docs\\dual-machine-validation-checklist.md": {
+    "mtime": 1778122050.7919238,
+    "hash": "ad9ad364bb92a6b04fa8ef5590904adb"
+  },
+  "D:\\wechat-clawhub\\docs\\employee-takeover-code-review.md": {
+    "mtime": 1778122050.7924485,
+    "hash": "0015f3448141cea39f865c6e751dcf46"
+  },
+  "D:\\wechat-clawhub\\docs\\employee-takeover-testing-plan.md": {
+    "mtime": 1778122050.7924485,
+    "hash": "54909a9c864efe281d604c72dd39d20c"
+  },
+  "D:\\wechat-clawhub\\docs\\frontend-unification-plan.md": {
+    "mtime": 1778122050.7924485,
+    "hash": "740058b9b2c064986053dde57db1936a"
+  },
+  "D:\\wechat-clawhub\\docs\\gateway-node-console-implementation-roadmap.md": {
+    "mtime": 1778122050.7924485,
+    "hash": "9c4959a1b8c429f774aede895e4268d4"
+  },
+  "D:\\wechat-clawhub\\docs\\gateway-node-console-runtime.md": {
+    "mtime": 1778122050.7934566,
+    "hash": "32bf5b4059569ad85630729cd2eb0eb4"
+  },
+  "D:\\wechat-clawhub\\docs\\inbound-message-aggregation.md": {
+    "mtime": 1778122050.7934566,
+    "hash": "c58ee4d0780f9b53e95f6f487bd44af0"
+  },
+  "D:\\wechat-clawhub\\docs\\node-event-stream-race-condition-fix.md": {
+    "mtime": 1778122050.7934566,
+    "hash": "c3c8cb5f2c4b1d5d75408bfaf460076e"
+  },
+  "D:\\wechat-clawhub\\docs\\openclaw-weixin-session-renewal-notes.md": {
+    "mtime": 1778122050.7934566,
+    "hash": "c6e387aa556a91dce1a73f09e085b568"
+  },
+  "D:\\wechat-clawhub\\docs\\operations-guide.md": {
+    "mtime": 1778122050.7934566,
+    "hash": "5edf7d11fb00e9d4239e6ae096718b4a"
+  },
+  "D:\\wechat-clawhub\\docs\\prd.md": {
+    "mtime": 1778122050.794456,
+    "hash": "6091069ca519b29e68ccacfef58dc8f2"
+  },
+  "D:\\wechat-clawhub\\docs\\session-status-management-implementation.md": {
+    "mtime": 1778122050.794456,
+    "hash": "b588b544bcfa65ca2281b4a00372d95c"
+  },
+  "D:\\wechat-clawhub\\docs\\summary-event-stream-optimization.md": {
+    "mtime": 1778122050.794456,
+    "hash": "2e0e68f25d0c529ce67cb1e8816c2ff4"
+  },
+  "D:\\wechat-clawhub\\docs\\unified-wechat-entry-agent-binding.md": {
+    "mtime": 1778122050.794456,
+    "hash": "380e9810c5eb5705a22098289d4c7a48"
+  },
+  "D:\\wechat-clawhub\\docs\\websocket-realtime-messaging.md": {
+    "mtime": 1778122050.794456,
+    "hash": "656ee2bb0469dee6389f1a89e832be44"
+  },
+  "D:\\wechat-clawhub\\docs\\wechat-mp-integration-notes.md": {
+    "mtime": 1778122050.7954571,
+    "hash": "403730780761fcfa30f66df883ea1005"
+  },
+  "D:\\wechat-clawhub\\docs\\windows-node-dispatch-implementation.md": {
+    "mtime": 1778122050.7954571,
+    "hash": "04fe5129ebebc2f13effb6b6ac7f7836"
+  },
+  "D:\\wechat-clawhub\\docs\\\u963f\u91cc\u4e91\u53c2\u8003.md": {
+    "mtime": 1778122050.7954571,
+    "hash": "3227a91e4e87a60b7f0df6e3caea8037"
+  },
+  "D:\\wechat-clawhub\\infra\\windows\\winsw\\README.md": {
+    "mtime": 1778122050.8334734,
+    "hash": "4a09f9745216a3beafda215dba1f2bb8"
+  },
+  "D:\\wechat-clawhub\\plugins\\graphify\\README.md": {
+    "mtime": 1778122050.961566,
+    "hash": "4c3f00e3785eaa3315ffe24e4ea3d718"
+  },
+  "D:\\wechat-clawhub\\plugins\\graphify\\skills\\graphify\\SKILL.md": {
+    "mtime": 1778122050.9625723,
+    "hash": "3c5011e1ec35df91b902c1f9942bc94a"
+  },
+  "D:\\wechat-clawhub\\runtime\\vendor\\host-redis\\README.txt": {
+    "mtime": 1778130457.531712,
+    "hash": "2672235115e21a8c8804d1d33a1d4ddb"
+  },
+  "D:\\wechat-clawhub\\runtime\\vendor\\host-redis\\RELEASENOTES.txt": {
+    "mtime": 1778130457.5330865,
+    "hash": "477281140c62842fe8d09653503e5f91"
+  },
+  "D:\\wechat-clawhub\\services\\claw-node\\README.md": {
+    "mtime": 1778122050.9676688,
+    "hash": "a6a3cc12a757f74044916d8c2aadb22a"
+  },
+  "D:\\wechat-clawhub\\tmp-connection-ui.png": {
+    "mtime": 1778122050.9760945,
+    "hash": "d6a7110a66d1cfa5f5e1197a5f4792e3"
+  },
+  "D:\\wechat-clawhub\\tmp-conversation-ui.png": {
+    "mtime": 1778122050.9785442,
+    "hash": "94c6d7b4568bb7e055c5982c74771b0c"
+  },
+  "D:\\wechat-clawhub\\tmp-sessions-ui.png": {
+    "mtime": 1778122050.9801607,
+    "hash": "b98d3f63d91948be1e6206181445bf26"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\assets\\sidebar-logo.png": {
+    "mtime": 1778122050.738127,
+    "hash": "e1023bd424bfff318b17fb930ad98d0d"
+  }
+}

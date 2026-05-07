@@ -18,6 +18,7 @@ type UseNodeDiagnosticsEffectsOptions = {
   launcherStatus: LauncherStatusResponse | null;
   sessionRemoteGatewayBaseUrl: string;
   shouldUseLocalGatewayApi: boolean;
+  shouldUseRemoteGatewayApi: boolean;
   getNodeDiagnosticsCache: (nodeId: string | null) => NodeDiagnosticsRecord | null;
   syncNodeDiagnosticsCache: (nodeId: string, diagnostics: NodeDiagnosticsRecord) => NodeDiagnosticsRecord;
   applyNodeDiagnosticsEntry: (nodeId: string, diagnostics: NodeDiagnosticsRecord | null) => void;
@@ -29,10 +30,10 @@ export function useNodeDiagnosticsEffects(options: UseNodeDiagnosticsEffectsOpti
     requestJson,
     workspace,
     selectedNodeId,
-    currentRoleIsConsole,
     launcherStatus,
     sessionRemoteGatewayBaseUrl,
     shouldUseLocalGatewayApi,
+    shouldUseRemoteGatewayApi,
     getNodeDiagnosticsCache,
     syncNodeDiagnosticsCache,
     applyNodeDiagnosticsEntry,
@@ -44,7 +45,7 @@ export function useNodeDiagnosticsEffects(options: UseNodeDiagnosticsEffectsOpti
       setSelectedNodeDiagnostics(null);
       return;
     }
-    const useRemoteGateway = currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus);
+    const useRemoteGateway = shouldUseRemoteGatewayApi;
     const remoteGateway = useRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     if (useRemoteGateway && !remoteGateway) return;
     if (!useRemoteGateway && !shouldUseLocalGatewayApi) return;
@@ -141,5 +142,5 @@ export function useNodeDiagnosticsEffects(options: UseNodeDiagnosticsEffectsOpti
         // ignore teardown close errors
       }
     };
-  }, [applyNodeDiagnosticsEntry, currentRoleIsConsole, getNodeDiagnosticsCache, launcherStatus, requestJson, selectedNodeId, sessionRemoteGatewayBaseUrl, setSelectedNodeDiagnostics, shouldUseLocalGatewayApi, syncNodeDiagnosticsCache, workspace]);
+  }, [applyNodeDiagnosticsEntry, getNodeDiagnosticsCache, launcherStatus, requestJson, selectedNodeId, sessionRemoteGatewayBaseUrl, setSelectedNodeDiagnostics, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, syncNodeDiagnosticsCache, workspace]);
 }

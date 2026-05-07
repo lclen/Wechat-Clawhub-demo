@@ -1,7 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "react";
 import { syncSessions } from "../consoleStateSync";
-import { launcherShouldRunGateway } from "../selectors/launcherSelectors";
 import { shouldUseFastPolling } from "../selectors/sessionSelectors";
 import { buildSessionOverviewWebSocketUrl, buildSessionWebSocketUrl } from "../transportUrls";
 import type {
@@ -88,6 +87,7 @@ type UseSessionWorkspaceEffectsOptions = {
   sessionRemoteGatewayBaseUrl: string;
   sessionRemoteNodeId: string;
   shouldUseLocalGatewayApi: boolean;
+  shouldUseRemoteGatewayApi: boolean;
   launcherStatus: LauncherStatusResponse | null;
   selectedSessionId: string | null;
   sessions: SessionRecord[];
@@ -133,12 +133,10 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
     sessionsLoaded,
     setSessionsLoaded,
     currentRoleIsWorker,
-    currentRoleIsConsole,
-    localGatewayManaged,
     sessionRemoteGatewayBaseUrl,
     sessionRemoteNodeId,
     shouldUseLocalGatewayApi,
-    launcherStatus,
+    shouldUseRemoteGatewayApi,
     selectedSessionId,
     sessions,
     messagesLength,
@@ -248,7 +246,7 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
 
   useEffect(() => {
     if (workspace !== "sessions") return;
-    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const usesRemoteGateway = shouldUseRemoteGatewayApi;
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     if (usesRemoteGateway && !remoteGateway) return;
     if (!usesRemoteGateway && !shouldUseLocalGatewayApi) return;
@@ -355,7 +353,7 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
         // ignore teardown close errors
       }
     };
-  }, [currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, sessionsLoaded, shouldUseLocalGatewayApi, workspace]);
+  }, [currentRoleIsWorker, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, sessionsLoaded, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, workspace]);
 
   useEffect(() => {
     const sessionChanged = previousSelectedSessionIdRef.current !== selectedSessionId;
@@ -395,7 +393,7 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
   useEffect(() => {
     if (workspace !== "sessions") return;
     if (!selectedSessionId) return;
-    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && !launcherShouldRunGateway(launcherStatus));
+    const usesRemoteGateway = shouldUseRemoteGatewayApi;
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     if (usesRemoteGateway && !remoteGateway) return;
     if (!usesRemoteGateway && !shouldUseLocalGatewayApi) return;
@@ -654,5 +652,5 @@ export function useSessionWorkspaceEffects(options: UseSessionWorkspaceEffectsOp
       }
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [applySessionMessageEntry, currentRoleIsConsole, currentRoleIsWorker, fetchSessionMessages, getSessionMessageCache, launcherStatus, selectedSessionId, sessionRemoteGatewayBaseUrl, shouldUseLocalGatewayApi, syncSessionMessageCache, workspace]);
+  }, [applySessionMessageEntry, currentRoleIsWorker, fetchSessionMessages, getSessionMessageCache, selectedSessionId, sessionRemoteGatewayBaseUrl, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, syncSessionMessageCache, workspace]);
 }

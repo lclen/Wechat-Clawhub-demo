@@ -1,5 +1,4 @@
 import { useEffect } from "react";
-import { launcherShouldRunGateway } from "../selectors/launcherSelectors";
 import { buildGatewaySummaryWebSocketUrl } from "../transportUrls";
 import type {
   GatewaySummaryEnvelope,
@@ -38,14 +37,11 @@ type UseGatewaySummaryEffectsOptions = {
 export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOptions) {
   const {
     currentRoleIsWorker,
-    currentRoleIsConsole,
     localGatewayManaged,
     sessionRemoteGatewayBaseUrl,
     sessionRemoteNodeId,
     shouldUseLocalGatewayApi,
     shouldUseRemoteGatewayApi,
-    launcherStatus,
-    workspace,
     gatewaySummaryStreamActive,
     setGatewaySummaryStreamActive,
     refreshGatewaySummarySnapshot,
@@ -59,7 +55,7 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
     let socket: WebSocket | null = null;
     let reconnectAttempt = 0;
     const getReconnectDelay = (attempt: number) => Math.min(15000, 1500 * (2 ** Math.max(0, attempt)));
-    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const usesRemoteGateway = shouldUseRemoteGatewayApi;
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     if (!shouldUseLocalGatewayApi && !usesRemoteGateway) {
       setGatewaySummaryStreamActive(false);
@@ -149,7 +145,7 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
         // ignore teardown close errors
       }
     };
-  }, [applyGatewaySummary, currentRoleIsConsole, currentRoleIsWorker, localGatewayManaged, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, setGatewaySummaryStreamActive, setWorkerGatewayProbeTask, shouldUseLocalGatewayApi]);
+  }, [applyGatewaySummary, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, setGatewaySummaryStreamActive, setWorkerGatewayProbeTask, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi]);
 
   useEffect(() => {
     let cancelled = false;
@@ -203,7 +199,7 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
         return;
       }
 
-      if (!launcherShouldRunGateway(launcherStatus) && currentRoleIsConsole) {
+      if (shouldUseRemoteGatewayApi) {
         const remoteGateway = sessionRemoteGatewayBaseUrl;
         if (!remoteGateway) return;
         let failed = false;
@@ -247,5 +243,5 @@ export function useGatewaySummaryEffects(options: UseGatewaySummaryEffectsOption
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [applyGatewaySummary, currentRoleIsConsole, currentRoleIsWorker, gatewaySummaryStreamActive, launcherStatus, localGatewayManaged, refreshGatewaySummarySnapshot, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, workspace, setWorkerGatewayProbeTask]);
+  }, [gatewaySummaryStreamActive, refreshGatewaySummarySnapshot, sessionRemoteGatewayBaseUrl, sessionRemoteNodeId, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, setWorkerGatewayProbeTask]);
 }

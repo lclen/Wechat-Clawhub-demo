@@ -44,6 +44,7 @@ type UseGatewayRuntimeControllerOptions = {
   currentRoleIsWorker: boolean;
   currentRoleIsConsole: boolean;
   localGatewayManaged: boolean | null;
+  shouldUseRemoteGatewayApi: boolean;
   sessionRemoteGatewayBaseUrl: string;
   requestJson: RequestJson;
   syncSetupProfileState: (
@@ -74,9 +75,8 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
     initialUiState,
     initialSummaryState,
     systemStatus,
-    currentRoleIsWorker,
-    currentRoleIsConsole,
     localGatewayManaged,
+    shouldUseRemoteGatewayApi,
     sessionRemoteGatewayBaseUrl,
     requestJson,
     syncSetupProfileState,
@@ -102,7 +102,7 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
   const latestGatewaySummaryRef = useRef<GatewaySummaryResponse | null>(null);
 
   const refreshGatewaySummarySnapshot = useCallback(async (options?: RefreshGatewaySummaryOptions) => {
-    const usesRemoteGateway = currentRoleIsWorker || (currentRoleIsConsole && localGatewayManaged === false);
+    const usesRemoteGateway = shouldUseRemoteGatewayApi;
     const remoteGateway = usesRemoteGateway ? sessionRemoteGatewayBaseUrl : "";
     const force = options?.force ?? false;
     const minIntervalMs = options?.minIntervalMs ?? GATEWAY_SUMMARY_MIN_INTERVAL_MS;
@@ -153,14 +153,13 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
     }
     return request;
   }, [
-    currentRoleIsConsole,
-    currentRoleIsWorker,
     localGatewayManaged,
     requestJson,
     sessionRemoteGatewayBaseUrl,
     setSystemStatus,
     setWechatBaseUrl,
     setWechatStatus,
+    shouldUseRemoteGatewayApi,
     syncNodeStateView,
   ]);
 
