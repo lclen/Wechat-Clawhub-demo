@@ -11,6 +11,7 @@ from app.access.wechat_bot import (
     InboundWeChatMediaRef,
     WeChatBotService,
     WeChatSessionExpiredError,
+    WECHAT_CONTEXT_TOKENS_FIELD,
     WECHAT_ILINK_APP_CLIENT_VERSION,
     WECHAT_OPENCLAW_COMPAT_VERSION,
     _build_markdown_image_summary,
@@ -41,24 +42,88 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_get_updates_raises_session_expired_for_errcode_minus_14(self) -> None:
         self.service._poll_post = AsyncMock(return_value={"ret": None, "errcode": -14, "errmsg": "session timeout"})  # type: ignore[method-assign]
 
-        with self.assertRaises(WeChatSessionExpiredError):
+        with self.assertRaises(WeChatSessionExpiredError) as ctx:
             await self.service._get_updates()
 
-    async def test_poll_loop_stops_when_session_expires(self) -> None:
+        self.assertEqual(ctx.exception.reason, "upstream_session_timeout_errcode_-14")
+        self.assertEqual(ctx.exception.errcode, -14)
+        self.assertEqual(ctx.exception.errmsg, "session timeout")
+
+    async def test_get_updates_logs_binding_context_when_session_expires(self) -> None:
+        service = WeChatBotService(
+            store=self.store,
+            session_manager=self.session_manager,
+            dispatch_queue=self.dispatch_queue,
+            transcript_writer=self.transcript_writer,
+            settings=self.settings,
+            runtime_id="entry-user-1",
+            runtime_label="OpenClaw 专属入口",
+            static_agent_id="wechat-openclaw-123",
+            external_account_id="wx-user-session-expired",
+            managed_account_id="entry-user-1",
+            managed_bound_agent_id="wechat-openclaw-123",
+        )
+        service._poll_post = AsyncMock(return_value={"ret": None, "errcode": -14, "errmsg": "session timeout"})  # type: ignore[method-assign]
+
+        with self.assertLogs("app.access.wechat_bot", level="WARNING") as captured:
+            with self.assertRaises(WeChatSessionExpiredError):
+                await service._get_updates()
+
+        joined = "\n".join(captured.output)
+        self.assertIn("session_timeout_detected", joined)
+        self.assertIn("account_id=entry-user-1", joined)
+        self.assertIn("bound_agent_id=wechat-openclaw-123", joined)
+        self.assertIn("external_account_id=...sion-expired", joined)
+        self.assertIn("reason=upstream_session_timeout_errcode_-14", joined)
+
+    async def test_poll_loop_pauses_when_session_expires(self) -> None:
         self.service._get_updates = AsyncMock(side_effect=WeChatSessionExpiredError("WeChat 会话已过期，请重新扫码或手动重新连接。"))  # type: ignore[method-assign]
+        self.service._wait_for_session_pause_to_end = AsyncMock(return_value=False)  # type: ignore[method-assign]
         self.service._running = True
         self.service._lease_state = "active"
         self.store.delete_if_value_matches.return_value = True
 
         await self.service._poll_loop()
 
-        self.assertFalse(self.service._running)
-        self.assertEqual(self.service._last_error, "WeChat 会话已过期，请重新扫码或手动重新连接。")
-        self.assertTrue(self.service._needs_rescan)
+        self.assertTrue(self.service._running)
+        self.assertTrue(self.service._is_session_paused())
+        self.assertFalse(self.service._needs_rescan)
+        self.assertIn("paused for", self.service._last_error or "")
         self.store.delete_if_value_matches.assert_awaited_once_with(
             self.service._lease_key,
             self.service._lease_owner_id,
         )
+        self.assertEqual(self.service._lease_state, "none")
+
+    async def test_poll_loop_logs_binding_context_when_managed_runtime_expires(self) -> None:
+        service = WeChatBotService(
+            store=self.store,
+            session_manager=self.session_manager,
+            dispatch_queue=self.dispatch_queue,
+            transcript_writer=self.transcript_writer,
+            settings=self.settings,
+            runtime_id="entry-user-2",
+            runtime_label="OpenClaw 专属入口",
+            static_agent_id="wechat-openclaw-456",
+            external_account_id="wx-user-managed-expired",
+            managed_account_id="entry-user-2",
+            managed_bound_agent_id="wechat-openclaw-456",
+        )
+        service._get_updates = AsyncMock(side_effect=WeChatSessionExpiredError("WeChat 会话已过期，请重新扫码或手动重新连接。"))  # type: ignore[method-assign]
+        service._wait_for_session_pause_to_end = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        service._running = True
+        service._lease_state = "active"
+        self.store.delete_if_value_matches.return_value = True
+
+        with self.assertLogs("app.access.wechat_bot", level="WARNING") as captured:
+            await service._poll_loop()
+
+        joined = "\n".join(captured.output)
+        self.assertIn("session timeout; polling paused", joined)
+        self.assertIn("account_id=entry-user-2", joined)
+        self.assertIn("bound_agent_id=wechat-openclaw-456", joined)
+        self.assertIn("external_account_id=...aged-expired", joined)
+        self.assertIn("reason=unknown", joined)
 
     async def test_start_polling_acquires_lease_before_creating_poll_task(self) -> None:
         self.service._config.token = "token"
@@ -121,6 +186,72 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.service._last_error)
         self.assertFalse(self.service._needs_rescan)
         self.assertEqual(self.service._get_updates_buf, "next")
+        self.store.hset_many.assert_awaited_with(
+            self.service._config_store_key,
+            {
+                "token": self.service._config.token,
+                "base_url": self.service._config.base_url,
+                "get_updates_buf": "next",
+                WECHAT_CONTEXT_TOKENS_FIELD: "{}",
+            },
+        )
+
+    async def test_initialize_restores_persisted_get_updates_buf(self) -> None:
+        self.store.hgetall.return_value = {
+            "token": "persisted-token",
+            "base_url": "https://ilinkai.weixin.qq.com",
+            "get_updates_buf": "persisted-cursor",
+            WECHAT_CONTEXT_TOKENS_FIELD: '{"wechat-user":"ctx-persisted"}',
+        }
+        self.service.start_polling = AsyncMock()  # type: ignore[method-assign]
+
+        await self.service.initialize()
+
+        self.assertEqual(self.service._config.token, "persisted-token")
+        self.assertEqual(self.service._get_updates_buf, "persisted-cursor")
+        self.assertEqual(self.service._context_tokens["wechat-user"], "ctx-persisted")
+        self.service.start_polling.assert_awaited_once()
+
+    async def test_connect_resets_and_persists_get_updates_buf(self) -> None:
+        self.service._get_updates_buf = "old-cursor"
+        self.service._context_tokens = {"wechat-user": "old-ctx"}
+        self.service.start_polling = AsyncMock()  # type: ignore[method-assign]
+
+        await self.service.connect("new-token", "https://ilinkai.weixin.qq.com", enable_polling=False)
+
+        self.assertEqual(self.service._get_updates_buf, "")
+        self.assertEqual(self.service._context_tokens, {})
+        self.store.hset_many.assert_awaited_with(
+            self.service._config_store_key,
+            {
+                "token": "new-token",
+                "base_url": "https://ilinkai.weixin.qq.com",
+                "get_updates_buf": "",
+                WECHAT_CONTEXT_TOKENS_FIELD: "{}",
+            },
+        )
+
+    async def test_handle_raw_message_persists_context_token(self) -> None:
+        raw = {
+            "message_id": "wx-msg-context",
+            "message_type": 1,
+            "from_user_id": "wechat-user",
+            "context_token": "ctx-new",
+            "item_list": [{"type": 1, "text_item": {"text": "你好"}}],
+        }
+
+        await self.service._handle_raw_message(raw)
+
+        self.assertEqual(self.service._context_tokens["wechat-user"], "ctx-new")
+        self.store.hset_many.assert_any_await(
+            self.service._config_store_key,
+            {
+                "token": self.service._config.token,
+                "base_url": self.service._config.base_url,
+                "get_updates_buf": self.service._get_updates_buf,
+                WECHAT_CONTEXT_TOKENS_FIELD: '{"wechat-user": "ctx-new"}',
+            },
+        )
 
     async def test_handle_raw_message_notifies_user_when_dispatch_enqueue_fails(self) -> None:
         session = Mock(session_id="wechat:user-1")
@@ -596,6 +727,7 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
 
         kwargs = client.post.await_args.kwargs
         self.assertEqual(kwargs["json"]["base_info"]["channel_version"], WECHAT_OPENCLAW_COMPAT_VERSION)
+        self.assertEqual(kwargs["json"]["base_info"]["bot_agent"], "OpenClaw")
         self.assertEqual(kwargs["headers"]["iLink-App-Id"], "bot")
         self.assertEqual(kwargs["headers"]["iLink-App-ClientVersion"], str(WECHAT_ILINK_APP_CLIENT_VERSION))
 
