@@ -2563,6 +2563,10 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   align-items: start;
 }
 
+.connection-dashboard-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .connection-main-column {
   display: flex;
   flex-direction: column;

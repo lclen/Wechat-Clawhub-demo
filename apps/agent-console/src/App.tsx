@@ -1836,7 +1836,7 @@ export function App() {
         },
       ];
     }
-    return [
+    const overviewCards: Array<{ eyebrow: string; title: string; detail: string; tone: "good" | "warn" }> = [
       {
         eyebrow: "主网关",
         title: gatewayRuntimeSummary.value,
@@ -1859,6 +1859,12 @@ export function App() {
           : `当前在线节点共有 ${nodeChannelOverview.onlineIdle} 条空闲通道，可继续接入更多节点扩容。`,
         tone: nodeInventorySummary.online_total > 0 ? "good" : "warn",
       },
+    ];
+    if (currentRoleIsConsole) {
+      return overviewCards;
+    }
+    return [
+      ...overviewCards,
       {
         eyebrow: "模型基线",
         title: modelStatus?.model || "未配置",
@@ -1869,6 +1875,7 @@ export function App() {
   }, [
     availableDispatchNodes,
     currentNodeLanIp,
+    currentRoleIsConsole,
     currentRoleIsWorker,
     displayedWorkerGatewayBaseUrl,
     gatewayRuntimeSummary.detail,
@@ -2315,12 +2322,18 @@ export function App() {
           tone: localNodeStatus?.inference_ready ? "good" : "warn",
         },
       ]
-    : [
-        { label: "网关", value: gatewayRuntimeSummary.value, tone: gatewayRuntimeSummary.tone },
-        { label: "微信", value: wechatRuntimeSummary.value, tone: wechatRuntimeSummary.tone },
-        { label: "节点", value: `${nodeInventorySummary.online_total} 在线`, tone: nodeInventorySummary.online_total > 0 ? "good" : "warn" },
-        { label: "模型", value: modelStatus?.model || "未配置", tone: modelStatus?.configured ? "good" : "warn" },
-      ];
+    : currentRoleIsConsole
+      ? [
+          { label: "网关", value: gatewayRuntimeSummary.value, tone: gatewayRuntimeSummary.tone },
+          { label: "微信", value: wechatRuntimeSummary.value, tone: wechatRuntimeSummary.tone },
+          { label: "节点", value: `${nodeInventorySummary.online_total} 在线`, tone: nodeInventorySummary.online_total > 0 ? "good" : "warn" },
+        ]
+      : [
+          { label: "网关", value: gatewayRuntimeSummary.value, tone: gatewayRuntimeSummary.tone },
+          { label: "微信", value: wechatRuntimeSummary.value, tone: wechatRuntimeSummary.tone },
+          { label: "节点", value: `${nodeInventorySummary.online_total} 在线`, tone: nodeInventorySummary.online_total > 0 ? "good" : "warn" },
+          { label: "模型", value: modelStatus?.model || "未配置", tone: modelStatus?.configured ? "good" : "warn" },
+        ];
 
   return (
     <div className="console-app-desktop">

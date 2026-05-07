@@ -202,7 +202,7 @@ export function buildRoleCapabilities(role: SetupRole | null): RoleCapabilities 
         canEditQuickSetup: true,
       },
       sections: {
-        showGatewayOverview: true,
+        showGatewayOverview: false,
         showWeChatAccess: false,
         showPublicEntryProfile: true,
         showRemoteNodeInventory: true,

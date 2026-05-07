@@ -223,6 +223,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
   const showNodeOnboarding = props.roleActions.canManageNodes;
   const showGatewayControls = props.roleActions.canManageGateway;
   const canManagePublicEntry = props.roleActions.canManagePublicEntry;
+  const hasSidebarContent = showNodeOnboarding || showOverview;
   const localNodeConsoleRef = useRef<HTMLDivElement | null>(null);
   const localConsoleHint = showLocalNodePanel
     ? {
@@ -253,7 +254,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
             ))}
           </div>
 
-          <div className="connection-dashboard-grid">
+          <div className={`connection-dashboard-grid ${hasSidebarContent ? "" : "connection-dashboard-grid-single"}`}>
             {/* Main Operational Pillar (Left) */}
             <div className="connection-main-column">
               {showInventory ? (
@@ -322,6 +323,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
             </div>
 
             {/* Sidebar Column (Right) */}
+            {hasSidebarContent ? (
             <div className="connection-sidebar-column">
               {showNodeOnboarding ? (
                 <div className="connection-onboarding-sidebar">
@@ -429,6 +431,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                 />
               ) : null}
             </div>
+            ) : null}
           </div>
         </div>
 

@@ -16,8 +16,8 @@
     "hash": "70724613d300c821f5e0a30e74121001"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\App.tsx": {
-    "mtime": 1778137136.524396,
-    "hash": "de827282ec8298c251ef4b1b52b9c51f"
+    "mtime": 1778142067.369665,
+    "hash": "958f8fe2dcf2cf3e35d9b4fca4c7e7a0"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\appBootstrap.ts": {
     "mtime": 1778122050.737126,
@@ -44,8 +44,8 @@
     "hash": "38bb3422f6b27d83f0d345e54cb9750a"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\roleCapabilities.ts": {
-    "mtime": 1778122050.7535708,
-    "hash": "7ff35a8dbe6f5b0e9a48544a76e3154e"
+    "mtime": 1778141922.7384627,
+    "hash": "cc1e80deceaed9e9463e65ef359688e3"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\roleWorkspace.ts": {
     "mtime": 1778122050.7535708,
@@ -72,8 +72,8 @@
     "hash": "7a94a1cf73cc8b24ce85c926631f8763"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\ConnectionWorkspace.tsx": {
-    "mtime": 1778122050.7396257,
-    "hash": "db6c3d8c649982174c11b92e63fffa38"
+    "mtime": 1778142556.6544447,
+    "hash": "c019fb272f7417a7a2d0b4651a51b2e6"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\components\\Workspaces\\Connection\\ConnectivityCheckModal.tsx": {
     "mtime": 1778122050.7396257,
