@@ -262,6 +262,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   headline={props.nodeInventoryHeadline}
                   cards={props.nodeInventoryCards}
                   selectedDiagnostics={props.selectedNodeDiagnosticsView}
+                  layout={hasSidebarContent ? "compact" : "stacked"}
                 />
               ) : null}
 

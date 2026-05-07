@@ -1519,15 +1519,22 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .connection-node-grid {
   display: grid;
   gap: 12px;
+  width: 100%;
+  align-items: stretch;
 }
 .connection-node-grid-compact {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+}
+.connection-node-grid-stacked {
+  grid-template-columns: minmax(0, 1fr);
 }
 .connection-node-card {
   padding: 18px;
   border-radius: 12px;
   border: 1px solid var(--line);
   background: var(--panel);
+  width: 100%;
+  min-width: 0;
   transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease;
 }
 .connection-node-card:hover {
@@ -2567,10 +2574,20 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   grid-template-columns: minmax(0, 1fr);
 }
 
+.connection-dashboard-grid-single > .connection-main-column,
+.connection-dashboard-grid-single .connection-panel-stack,
+.connection-dashboard-grid-single .inventory-command-surface,
+.connection-dashboard-grid-single .wechat-command-surface {
+  width: 100%;
+  max-width: none;
+}
+
 .connection-main-column {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
+  min-width: 0;
 }
 
 .connection-sidebar-column {

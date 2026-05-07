@@ -54,9 +54,10 @@ type NodeInventoryPanelProps = {
   headline: string;
   cards: InventoryCardView[];
   selectedDiagnostics: SelectedDiagnosticsView | null;
+  layout?: "compact" | "stacked";
 };
 
-export function NodeInventoryPanel({ headline, cards, selectedDiagnostics }: NodeInventoryPanelProps) {
+export function NodeInventoryPanel({ headline, cards, selectedDiagnostics, layout = "compact" }: NodeInventoryPanelProps) {
   return (
     <div className="connection-panel-stack">
       <SurfaceCard className="inventory-command-surface">
@@ -69,7 +70,7 @@ export function NodeInventoryPanel({ headline, cards, selectedDiagnostics }: Nod
         {!cards.length ? (
           <EmptyState title="当前还没有已接入节点" detail="本机内置节点和远端工作节点会在这里统一显示，但会明确区分角色来源。" />
         ) : (
-          <div className="connection-node-grid connection-node-grid-compact">
+          <div className={`connection-node-grid ${layout === "stacked" ? "connection-node-grid-stacked" : "connection-node-grid-compact"}`}>
             {cards.map((card) => (
               <article key={card.nodeId} className={`connection-node-card ${card.selected ? "connection-node-card-active" : ""}`}>
                 <div className="connection-node-card-top">
