@@ -902,7 +902,7 @@ class PublicEntryService:
       </div>
 
       <div id="disabledBanner" class="stage-detail entry-disabled" style="display:none;">公共入口当前未启用，请联系管理员先在接入中心开启。</div>
-      <div class="footnote">如果专属二维码失效，页面会自动帮你重新领取；只有连续失败时才需要手动刷新。</div>
+      <div class="footnote">如果专属二维码失效，或上一位用户已经完成绑定，页面都会自动领取下一张二维码；只有连续失败时才需要手动刷新。</div>
     </section>
   </main>
 
@@ -926,6 +926,7 @@ class PublicEntryService:
     const POLL_INTERVAL_MS = 2200;
     const EXPIRES_CHECK_INTERVAL_MS = 1000;
     const AUTO_RENEW_DELAY_MS = 900;
+    const BOUND_RENEW_DELAY_MS = 3200;
     const EARLY_RENEW_WINDOW_MS = 90 * 1000;
     const TICKET_CACHE_VERSION = 1;
 
@@ -1097,13 +1098,24 @@ class PublicEntryService:
       }}
       renewingTicket = true;
       stopPolling();
-      setStatus("waiting", "二维码已失效，正在续领");
-      detail.textContent = reason === "expired"
+      clearCachedTicket();
+      let statusTone = "waiting";
+      let statusText = "二维码已失效，正在续领";
+      let detailText = reason === "expired"
         ? "当前专属二维码已过期，正在自动领取新的专属二维码..."
         : "当前专属二维码即将失效，正在后台刷新新的专属二维码...";
+      let renewDelayMs = AUTO_RENEW_DELAY_MS;
+      if (reason === "bound") {{
+        statusTone = "bound";
+        statusText = "当前用户已接入，正在准备下一张二维码";
+        detailText = "当前用户已经完成绑定。页面会自动生成新的专属二维码，方便下一位继续扫码接入。";
+        renewDelayMs = BOUND_RENEW_DELAY_MS;
+      }}
+      setStatus(statusTone, statusText);
+      detail.textContent = detailText;
       window.setTimeout(() => {{
         void bootstrap(true);
-      }}, AUTO_RENEW_DELAY_MS);
+      }}, renewDelayMs);
     }}
 
     async function renderTicket(ticket) {{
@@ -1138,7 +1150,7 @@ class PublicEntryService:
       }} else {{
         setStatus("failed", "绑定失败");
       }}
-      if (ticket.status === "failed") {{
+      if (ticket.status === "failed" || ticket.status === "bound") {{
         clearCachedTicket();
       }} else {{
         writeCachedTicket(ticket);
@@ -1207,7 +1219,11 @@ class PublicEntryService:
             return;
           }}
           await renderTicket(ticket);
-          if (ticket.status === "bound" || ticket.status === "failed") {{
+          if (ticket.status === "bound") {{
+            scheduleRenew("bound");
+            return;
+          }}
+          if (ticket.status === "failed") {{
             stopPolling();
             renewingTicket = false;
             return;
@@ -1264,6 +1280,13 @@ class PublicEntryService:
         renewingTicket = false;
         activeTicketId = created.ticket_id;
         await renderTicket(created);
+        if (created.status === "bound") {{
+          scheduleRenew("bound");
+          return;
+        }}
+        if (created.status === "failed") {{
+          return;
+        }}
         schedulePoll();
         expiresCheckTimer = window.setInterval(() => {{
           if (ticketIdEl.textContent !== activeTicketId) {{

@@ -178,6 +178,23 @@ class LocalNodeStatusResponse(BaseModel):
     model_settings: "LocalNodeModelConfig" = Field(default_factory=lambda: LocalNodeModelConfig())
 
 
+class LocalNodeConnectivityCheckItem(BaseModel):
+    key: str
+    label: str
+    status: str
+    summary: str
+    detail: str
+
+
+class LocalNodeConnectivityCheckReport(BaseModel):
+    checked_at: datetime
+    summary: str = ""
+    passed_count: int = 0
+    failed_count: int = 0
+    warning_count: int = 0
+    items: list[LocalNodeConnectivityCheckItem] = Field(default_factory=list)
+
+
 class LocalNodeLogsResponse(BaseModel):
     service_name: str
     event_log_path: str | None = None

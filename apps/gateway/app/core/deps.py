@@ -5,6 +5,7 @@ from fastapi import HTTPException, Request, status
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueue
 from app.access.wechat_multi_bot import MultiWeChatBotService
+from app.access.wechat_official_account import WeChatOfficialAccountService
 from app.services.gateway_summary_service import GatewaySummaryService
 from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
 from app.services.inbound_aggregation import InboundAggregationService
@@ -81,6 +82,10 @@ def get_node_auth(request: Request) -> NodeAuthService:
 
 def get_wechat_bot(request: Request) -> MultiWeChatBotService:
     return request.app.state.wechat_bot
+
+
+def get_wechat_official_account(request: Request) -> WeChatOfficialAccountService:
+    return request.app.state.wechat_official_account
 
 
 def get_outgoing_dispatcher(request: Request) -> OutgoingDispatcher:

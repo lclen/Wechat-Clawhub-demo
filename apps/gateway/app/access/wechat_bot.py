@@ -10,6 +10,7 @@ import mimetypes
 import os
 import random
 import re
+import socket
 import struct
 import time
 import uuid
@@ -41,7 +42,7 @@ uvicorn_logger = logging.getLogger("uvicorn.error")
 WECHAT_CONFIG_KEY = "wch:config:wechat"
 DEFAULT_WECHAT_BASE_URL = "https://ilinkai.weixin.qq.com"
 DEFAULT_WECHAT_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
-WECHAT_OPENCLAW_COMPAT_VERSION = os.environ.get("WECHAT_OPENCLAW_COMPAT_VERSION", "2.1.6")
+WECHAT_OPENCLAW_COMPAT_VERSION = os.environ.get("WECHAT_OPENCLAW_COMPAT_VERSION", "2.4.1")
 DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000
 DEFAULT_API_TIMEOUT_MS = 15_000
 DEFAULT_CONFIG_TIMEOUT_MS = 10_000
@@ -63,6 +64,14 @@ WECHAT_ILINK_APP_ID = os.environ.get("WECHAT_ILINK_APP_ID", "bot")
 CONFIG_CACHE_TTL_S = 86_400
 CONFIG_CACHE_INITIAL_RETRY_S = 2.0
 CONFIG_CACHE_MAX_RETRY_S = 3_600.0
+DEFAULT_WECHAT_BOT_AGENT = "OpenClaw"
+WECHAT_GET_UPDATES_BUF_FIELD = "get_updates_buf"
+WECHAT_CONTEXT_TOKENS_FIELD = "context_tokens_json"
+SESSION_PAUSE_DURATION_SECONDS = 3_600.0
+SESSION_PAUSE_SLEEP_SECONDS = 10.0
+POLLING_LEASE_TTL_SECONDS = 90
+POLLING_LEASE_REFRESH_SECONDS = 30.0
+POLLING_LEASE_STANDBY_RETRY_SECONDS = 5.0
 ITEM_TEXT = 1
 ITEM_IMAGE = 2
 ITEM_FILE = 4
@@ -90,6 +99,8 @@ MARKDOWN_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 MARKDOWN_ITALIC_RE = re.compile(r"\*(.+?)\*")
 MARKDOWN_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 MARKDOWN_HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+BOT_AGENT_PRODUCT_RE = re.compile(r"^[A-Za-z0-9_.-]{1,32}/[A-Za-z0-9_.+\-]{1,32}$")
+BOT_AGENT_COMMENT_RE = re.compile(r"^[\x20-\x27\x2A-\x7E]{1,64}$")
 
 
 @dataclass(frozen=True)
@@ -224,6 +235,58 @@ def _build_wechat_client_version(version: str) -> int:
 WECHAT_ILINK_APP_CLIENT_VERSION = _build_wechat_client_version(WECHAT_OPENCLAW_COMPAT_VERSION)
 
 
+def _sanitize_wechat_bot_agent(raw: str | None) -> str:
+    candidate = str(raw or "").strip()
+    if not candidate:
+        return DEFAULT_WECHAT_BOT_AGENT
+    tokens = candidate.split()
+    accepted: list[str] = []
+    pending_product: str | None = None
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("("):
+            merged = token
+            while not merged.endswith(")") and index + 1 < len(tokens):
+                index += 1
+                merged += f" {tokens[index]}"
+            if pending_product and merged.startswith("(") and merged.endswith(")"):
+                inner = merged[1:-1]
+                if BOT_AGENT_COMMENT_RE.fullmatch(inner):
+                    accepted.append(f"{pending_product} ({inner})")
+                    pending_product = None
+                    index += 1
+                    continue
+            if pending_product:
+                accepted.append(pending_product)
+                pending_product = None
+            index += 1
+            continue
+        if pending_product:
+            accepted.append(pending_product)
+            pending_product = None
+        if BOT_AGENT_PRODUCT_RE.fullmatch(token):
+            pending_product = token
+        index += 1
+    if pending_product:
+        accepted.append(pending_product)
+    if not accepted:
+        return DEFAULT_WECHAT_BOT_AGENT
+    joined = " ".join(accepted)
+    if len(joined.encode("utf-8")) <= 256:
+        return joined
+    truncated: list[str] = []
+    current_len = 0
+    for token in accepted:
+        token_len = len(token.encode("utf-8"))
+        extra = token_len if not truncated else token_len + 1
+        if current_len + extra > 256:
+            break
+        truncated.append(token)
+        current_len += extra
+    return " ".join(truncated) if truncated else DEFAULT_WECHAT_BOT_AGENT
+
+
 def _looks_like_image_url(url: str) -> bool:
     normalized = url.split("?", 1)[0].split("#", 1)[0].lower()
     return normalized.endswith(IMAGE_URL_EXTENSIONS)
@@ -344,6 +407,21 @@ def _build_asset_label_text(segment: OutboundMarkdownSegment) -> str:
 class WeChatSessionExpiredError(RuntimeError):
     """Raised when the upstream WeChat bot session has expired."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: str = "",
+        ret: object | None = None,
+        errcode: object | None = None,
+        errmsg: object | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.reason = str(reason or "").strip()
+        self.ret = ret
+        self.errcode = errcode
+        self.errmsg = str(errmsg or "").strip()
+
 
 @dataclass
 class WeChatRuntimeConfig:
@@ -394,6 +472,9 @@ class WeChatBotService:
         config_store_key: str = WECHAT_CONFIG_KEY,
         persist_env: bool = True,
         user_route_recorder: UserRouteRecorder | None = None,
+        external_account_id: str | None = None,
+        managed_account_id: str | None = None,
+        managed_bound_agent_id: str | None = None,
     ) -> None:
         self._store = store
         self._session_manager = session_manager
@@ -408,6 +489,9 @@ class WeChatBotService:
         self._config_store_key = config_store_key
         self._persist_env_enabled = persist_env
         self._user_route_recorder = user_route_recorder
+        self._external_account_id = (external_account_id or "").strip()
+        self._managed_account_id = (managed_account_id or runtime_id).strip()
+        self._managed_bound_agent_id = (managed_bound_agent_id or static_agent_id or "").strip()
 
         self._config = WeChatRuntimeConfig(
             token=settings.wechat_token or "",
@@ -417,6 +501,7 @@ class WeChatBotService:
         self._api_http: httpx.AsyncClient | None = None
         self._asset_http: httpx.AsyncClient | None = None
         self._poll_task: asyncio.Task | None = None
+        self._standby_task: asyncio.Task | None = None
         self._get_updates_buf = ""
         self._seen_msg_ids: OrderedDict[int, float] = OrderedDict()
         self._context_tokens: dict[str, str] = {}
@@ -429,7 +514,45 @@ class WeChatBotService:
         self._received_messages = 0
         self._sent_messages = 0
         self._last_error: str | None = None
+        self._lease_owner_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:12]}"
+        self._lease_key = f"wch:lock:wechat:{self._runtime_id}:polling"
+        self._lease_state = "none"
+        self._last_lease_refresh_at = 0.0
+        self._needs_rescan = False
+        self._session_paused_until = 0.0
+        self._session_pause_reason = ""
         self._next_poll_timeout_ms = DEFAULT_LONG_POLL_TIMEOUT_MS
+
+    @staticmethod
+    def _mask_identifier(value: str, *, keep: int = 12) -> str:
+        text = value.strip()
+        if not text:
+            return "-"
+        if len(text) <= keep:
+            return text
+        return f"...{text[-keep:]}"
+
+    def _binding_log_fields(self) -> dict[str, str]:
+        return {
+            "external_account_id": self._mask_identifier(self._external_account_id),
+            "account_id": self._managed_account_id or "-",
+            "bound_agent_id": self._managed_bound_agent_id or "-",
+        }
+
+    @staticmethod
+    def _session_expired_reason(ret: object, errcode: object, errmsg: object) -> str:
+        ret_text = str(ret).strip() if ret is not None else ""
+        errcode_text = str(errcode).strip() if errcode is not None else ""
+        errmsg_text = str(errmsg).strip()
+        if errcode_text == "-14":
+            return "upstream_session_timeout_errcode_-14"
+        if "session timeout" in errmsg_text.lower():
+            return "upstream_session_timeout_message"
+        if errcode_text:
+            return f"upstream_session_expired_errcode_{errcode_text}"
+        if ret_text:
+            return f"upstream_session_expired_ret_{ret_text}"
+        return "upstream_session_expired_unknown"
 
     def attach_dispatch_queue(self, dispatch_queue: "DispatchQueue") -> None:
         self._dispatch_queue = dispatch_queue
@@ -453,6 +576,10 @@ class WeChatBotService:
                 token=raw.get("token", self._config.token),
                 base_url=raw.get("base_url", self._config.base_url or DEFAULT_WECHAT_BASE_URL),
             )
+            self._get_updates_buf = raw.get(WECHAT_GET_UPDATES_BUF_FIELD, "").strip()
+            self._context_tokens = self._decode_context_tokens(
+                raw.get(WECHAT_CONTEXT_TOKENS_FIELD, "")
+            )
         if self._config.token:
             try:
                 await self.start_polling()
@@ -472,18 +599,26 @@ class WeChatBotService:
             last_error=self._last_error,
             received_messages=self._received_messages,
             sent_messages=self._sent_messages,
+            lease_state=self._lease_state,
+            needs_rescan=self._needs_rescan,
+            lease_owner_id=self._lease_owner_id if self._lease_state == "active" else None,
+            session_paused=self._is_session_paused(),
+            session_paused_until=self._session_paused_until or None,
+            session_pause_reason=self._session_pause_reason or None,
         )
 
     async def connect(self, token: str, base_url: str, *, enable_polling: bool = True) -> WeChatStatusResponse:
         self._config = WeChatRuntimeConfig(token=token, base_url=base_url.rstrip("/"))
+        self._get_updates_buf = ""
+        self._context_tokens = {}
+        self._session_paused_until = 0.0
+        self._session_pause_reason = ""
         if self._persist_env_enabled:
             self._settings.wechat_token = self._config.token
             self._settings.wechat_base_url = self._config.base_url
         self._persist_runtime_config()
-        await self._store.hset_many(
-            self._config_store_key,
-            {"token": self._config.token, "base_url": self._config.base_url},
-        )
+        await self._persist_runtime_state()
+        self._needs_rescan = False
         if enable_polling:
             await self.start_polling()
         return await self.get_status()
@@ -491,24 +626,42 @@ class WeChatBotService:
     async def disconnect(self) -> WeChatStatusResponse:
         await self.stop_polling()
         self._config = WeChatRuntimeConfig(token="", base_url=self._config.base_url)
+        self._get_updates_buf = ""
+        self._context_tokens = {}
+        self._needs_rescan = False
+        self._lease_state = "none"
+        self._session_paused_until = 0.0
+        self._session_pause_reason = ""
         if self._persist_env_enabled:
             self._settings.wechat_token = ""
             self._settings.wechat_base_url = self._config.base_url
         self._persist_runtime_config()
-        await self._store.hset_many(self._config_store_key, {"token": "", "base_url": self._config.base_url})
+        await self._persist_runtime_state()
         return await self.get_status()
 
     async def start_polling(self) -> None:
         if self._running or not self._config.token:
             return
+        if not await self._acquire_polling_lease():
+            self._ensure_standby_task()
+            return
+        self._start_polling_with_active_lease()
+
+    def _start_polling_with_active_lease(self) -> None:
+        if self._running:
+            return
         self._ensure_poll_http()
         self._ensure_api_http()
         self._ensure_asset_http()
         self._running = True
+        self._needs_rescan = False
+        if not self._is_session_paused():
+            self._last_error = None
         self._poll_task = asyncio.create_task(self._poll_loop(), name="wechat-poll-loop")
 
     async def stop_polling(self) -> None:
         self._running = False
+        await self._cancel_standby_task()
         for user_id, task in list(self._typing_tasks.items()):
             task.cancel()
             try:
@@ -525,6 +678,7 @@ class WeChatBotService:
                 pass
         self._poll_task = None
         await self._close_http_clients()
+        await self._release_polling_lease()
 
     async def send_text(self, *, user_id: str, text: str, context_token: str | None = None) -> str:
         if not self._config.token:
@@ -533,6 +687,7 @@ class WeChatBotService:
             return ""
         started_at = time.perf_counter()
         rate_limit_ms = await self._rate_limit_wait(user_id)
+        await self._remember_context_token(user_id, context_token)
         ctx = self._context_tokens.get(user_id) or context_token or ""
         client_id = f"wechat-claw-hub-{uuid.uuid4().hex[:12]}"
         payload = {
@@ -725,6 +880,7 @@ class WeChatBotService:
         if not self._config.token:
             raise RuntimeError("WeChat token is not configured")
         started_at = time.perf_counter()
+        await self._remember_context_token(user_id, context_token)
         ctx = self._context_tokens.get(user_id) or context_token or ""
         _emit_wechat_debug("wechat-bot: send_asset_url start user_id=%s asset_url=%s", user_id, asset_url)
         asset_bytes, content_type = await self._download_remote_asset(asset_url)
@@ -776,8 +932,7 @@ class WeChatBotService:
         return await self.send_asset_url(user_id=user_id, asset_url=image_url, context_token=context_token)
 
     async def send_typing(self, *, user_id: str, context_token: str | None = None) -> None:
-        if context_token:
-            self._context_tokens[user_id] = context_token
+        await self._remember_context_token(user_id, context_token)
         existing = self._typing_start_time.get(user_id)
         if existing is None or (time.time() - existing) > TYPING_STALE_THRESHOLD_SECONDS:
             self._typing_start_time[user_id] = time.time()
@@ -799,8 +954,7 @@ class WeChatBotService:
             logger.debug("wechat-bot: sendtyping failed for %s", user_id, exc_info=True)
 
     async def clear_typing(self, *, user_id: str, context_token: str | None = None) -> None:
-        if context_token:
-            self._context_tokens[user_id] = context_token
+        await self._remember_context_token(user_id, context_token)
         ticket = await self._get_typing_ticket(user_id)
         if not ticket:
             self._typing_start_time.pop(user_id, None)
@@ -849,6 +1003,49 @@ class WeChatBotService:
             kept_lines.append(f"{key}={self._escape_env_value(value)}")
         env_path.write_text("\n".join(kept_lines) + "\n", encoding="utf-8")
 
+    async def _persist_runtime_state(self) -> None:
+        await self._store.hset_many(
+            self._config_store_key,
+            {
+                "token": self._config.token,
+                "base_url": self._config.base_url,
+                WECHAT_GET_UPDATES_BUF_FIELD: self._get_updates_buf,
+                WECHAT_CONTEXT_TOKENS_FIELD: json.dumps(
+                    self._context_tokens,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ),
+            },
+        )
+
+    async def _remember_context_token(self, user_id: str, context_token: str | None) -> None:
+        token = (context_token or "").strip()
+        if not user_id or not token or self._context_tokens.get(user_id) == token:
+            return
+        self._context_tokens[user_id] = token
+        try:
+            await self._persist_runtime_state()
+        except Exception:
+            logger.debug("wechat-bot: failed to persist context token for %s", user_id, exc_info=True)
+
+    def _decode_context_tokens(self, raw: str | None) -> dict[str, str]:
+        if not raw:
+            return {}
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.debug("wechat-bot: ignored invalid persisted context token payload")
+            return {}
+        if not isinstance(decoded, dict):
+            return {}
+        tokens: dict[str, str] = {}
+        for user_id, token in decoded.items():
+            user_key = str(user_id).strip()
+            token_value = str(token).strip()
+            if user_key and token_value:
+                tokens[user_key] = token_value
+        return tokens
+
     def _escape_env_value(self, value: str) -> str:
         normalized = value.replace("\r", "\\r").replace("\n", "\\n")
         if any(ch in normalized for ch in ('"', "'", " ", "#")):
@@ -857,8 +1054,7 @@ class WeChatBotService:
         return normalized
 
     async def start_typing_loop(self, *, user_id: str, context_token: str | None = None) -> None:
-        if context_token:
-            self._context_tokens[user_id] = context_token
+        await self._remember_context_token(user_id, context_token)
         task = self._typing_tasks.get(user_id)
         if task and not task.done():
             return
@@ -868,8 +1064,7 @@ class WeChatBotService:
         )
 
     async def stop_typing_loop(self, *, user_id: str, context_token: str | None = None) -> None:
-        if context_token:
-            self._context_tokens[user_id] = context_token
+        await self._remember_context_token(user_id, context_token)
         task = self._typing_tasks.pop(user_id, None)
         if task and not task.done():
             task.cancel()
@@ -879,24 +1074,167 @@ class WeChatBotService:
                 pass
         await self.clear_typing(user_id=user_id, context_token=context_token)
 
+    async def _acquire_polling_lease(self) -> bool:
+        acquired = await self._store.set_if_absent_with_ttl(
+            self._lease_key,
+            self._lease_owner_id,
+            POLLING_LEASE_TTL_SECONDS,
+        )
+        if acquired:
+            self._lease_state = "active"
+            self._last_lease_refresh_at = time.monotonic()
+            logger.info(
+                "wechat-bot: polling lease acquired runtime_id=%s owner=%s key=%s",
+                self._runtime_id,
+                self._lease_owner_id,
+                self._lease_key,
+            )
+            return True
+        self._lease_state = "standby"
+        logger.info(
+            "wechat-bot: polling lease held by another instance runtime_id=%s key=%s",
+            self._runtime_id,
+            self._lease_key,
+        )
+        return False
+
+    async def _refresh_polling_lease_if_needed(self) -> bool:
+        if self._lease_state != "active":
+            return False
+        now = time.monotonic()
+        if now - self._last_lease_refresh_at < POLLING_LEASE_REFRESH_SECONDS:
+            return True
+        refreshed = await self._store.refresh_if_value_matches(
+            self._lease_key,
+            self._lease_owner_id,
+            POLLING_LEASE_TTL_SECONDS,
+        )
+        if refreshed:
+            self._last_lease_refresh_at = now
+            return True
+        self._lease_state = "standby"
+        self._running = False
+        self._last_error = "WeChat polling lease was lost to another gateway instance."
+        logger.warning(
+            "wechat-bot: polling lease refresh failed runtime_id=%s owner=%s key=%s",
+            self._runtime_id,
+            self._lease_owner_id,
+            self._lease_key,
+        )
+        return False
+
+    async def _release_polling_lease(self) -> None:
+        if self._lease_state != "active":
+            if self._lease_state == "standby" and not self._running:
+                return
+            self._lease_state = "none"
+            return
+        released = await self._store.delete_if_value_matches(self._lease_key, self._lease_owner_id)
+        logger.info(
+            "wechat-bot: polling lease release runtime_id=%s owner=%s released=%s",
+            self._runtime_id,
+            self._lease_owner_id,
+            released,
+        )
+        self._lease_state = "none"
+        self._last_lease_refresh_at = 0.0
+
+    def _is_session_paused(self) -> bool:
+        if self._session_paused_until <= 0:
+            return False
+        if time.time() >= self._session_paused_until:
+            self._session_paused_until = 0.0
+            self._session_pause_reason = ""
+            return False
+        return True
+
+    def _pause_session(self, exc: WeChatSessionExpiredError) -> None:
+        self._session_paused_until = time.time() + SESSION_PAUSE_DURATION_SECONDS
+        self._session_pause_reason = exc.reason or "unknown"
+        self._needs_rescan = False
+        remaining_seconds = int(SESSION_PAUSE_DURATION_SECONDS)
+        self._last_error = (
+            f"WeChat session timeout; polling paused for {remaining_seconds}s "
+            f"before retrying. reason={self._session_pause_reason}"
+        )
+
+    async def _wait_for_session_pause_to_end(self) -> bool:
+        while self._running and self._is_session_paused():
+            if not await self._refresh_polling_lease_if_needed():
+                return False
+            remaining = max(0.0, self._session_paused_until - time.time())
+            await asyncio.sleep(min(SESSION_PAUSE_SLEEP_SECONDS, remaining or SESSION_PAUSE_SLEEP_SECONDS))
+        return self._running
+
+    def _ensure_standby_task(self) -> None:
+        if self._standby_task and not self._standby_task.done():
+            return
+        self._standby_task = asyncio.create_task(self._standby_polling_loop(), name=f"wechat-standby-{self._runtime_id}")
+
+    async def _cancel_standby_task(self) -> None:
+        task = self._standby_task
+        self._standby_task = None
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _standby_polling_loop(self) -> None:
+        logger.info("wechat-bot: standby polling lease loop started runtime_id=%s", self._runtime_id)
+        while not self._running and self._config.token and not self._needs_rescan:
+            try:
+                if await self._acquire_polling_lease():
+                    self._start_polling_with_active_lease()
+                    break
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._lease_state = "standby"
+                self._last_error = f"WeChat polling lease acquire failed: {exc}"
+                logger.warning("wechat-bot: standby lease acquire failed runtime_id=%s error=%s", self._runtime_id, exc)
+            await asyncio.sleep(POLLING_LEASE_STANDBY_RETRY_SECONDS)
+        logger.info("wechat-bot: standby polling lease loop ended runtime_id=%s", self._runtime_id)
+
     async def _poll_loop(self) -> None:
         logger.info("wechat-bot: poll loop started")
         while self._running:
             try:
+                if not await self._refresh_polling_lease_if_needed():
+                    break
+                if self._is_session_paused():
+                    if not await self._wait_for_session_pause_to_end():
+                        break
+                    continue
                 response = await self._get_updates()
                 if response.get("longpolling_timeout_ms"):
                     self._next_poll_timeout_ms = int(response["longpolling_timeout_ms"])
                 new_buf = response.get("get_updates_buf")
                 if new_buf:
                     self._get_updates_buf = new_buf
+                    await self._persist_runtime_state()
                 for raw in response.get("msgs") or []:
                     await self._handle_raw_message(raw)
                 self._last_error = None
+                self._needs_rescan = False
             except WeChatSessionExpiredError as exc:
-                self._last_error = str(exc)
-                self._running = False
-                logger.warning("wechat-bot: polling stopped because session expired: %s", exc)
-                break
+                self._pause_session(exc)
+                binding = self._binding_log_fields()
+                logger.warning(
+                    "wechat-bot: session timeout; polling paused runtime_id=%s runtime_label=%s account_id=%s external_account_id=%s bound_agent_id=%s reason=%s pause_seconds=%s error=%s",
+                    self._runtime_id,
+                    self._runtime_label,
+                    binding["account_id"],
+                    binding["external_account_id"],
+                    binding["bound_agent_id"],
+                    getattr(exc, "reason", "") or "unknown",
+                    int(SESSION_PAUSE_DURATION_SECONDS),
+                    exc,
+                )
+                if not await self._wait_for_session_pause_to_end():
+                    break
+                continue
             except asyncio.CancelledError:
                 break
             except Exception as exc:
@@ -904,6 +1242,9 @@ class WeChatBotService:
                 logger.exception("wechat-bot: poll loop error: %s", exc)
                 await asyncio.sleep(2)
         await self._close_http_clients()
+        await self._release_polling_lease()
+        if self._lease_state == "standby" and self._config.token and not self._needs_rescan:
+            self._ensure_standby_task()
         logger.info("wechat-bot: poll loop ended")
 
     async def _get_updates(self) -> dict[str, Any]:
@@ -918,18 +1259,28 @@ class WeChatBotService:
         if ret in (None, 0) and errcode in (None, 0):
             return response
         if self._is_session_timeout(ret=ret, errcode=errcode, errmsg=errmsg):
+            reason = self._session_expired_reason(ret, errcode, errmsg)
+            binding = self._binding_log_fields()
             logger.warning(
-                "wechat-bot: session_timeout_detected runtime_id=%s runtime_label=%s base_url=%s ret=%s errcode=%s errmsg=%s next_poll_timeout_ms=%s",
+                "wechat-bot: session_timeout_detected runtime_id=%s runtime_label=%s base_url=%s account_id=%s external_account_id=%s bound_agent_id=%s reason=%s ret=%s errcode=%s errmsg=%s next_poll_timeout_ms=%s",
                 self._runtime_id,
                 self._runtime_label,
                 self._config.base_url,
+                binding["account_id"],
+                binding["external_account_id"],
+                binding["bound_agent_id"],
+                reason,
                 ret,
                 errcode,
                 errmsg,
                 self._next_poll_timeout_ms,
             )
             raise WeChatSessionExpiredError(
-                "WeChat 会话已过期，请重新扫码或手动重新连接。"
+                "WeChat 会话已过期，请重新扫码或手动重新连接。",
+                reason=reason,
+                ret=ret,
+                errcode=errcode,
+                errmsg=errmsg,
             )
         raise RuntimeError(
             f"WeChat getupdates failed: ret={ret} errcode={errcode} errmsg={errmsg}"
@@ -955,8 +1306,7 @@ class WeChatBotService:
             self._user_route_recorder(user_id, self._runtime_id)
 
         context_token = raw.get("context_token") or ""
-        if context_token:
-            self._context_tokens[user_id] = context_token
+        await self._remember_context_token(user_id, context_token)
 
         parsed = await self._parse_inbound_message(
             raw.get("item_list") or [],
@@ -1162,9 +1512,14 @@ class WeChatBotService:
         return content, content_type
 
     async def _api_post(self, endpoint: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
+        if self._is_session_paused():
+            remaining = max(0, int(self._session_paused_until - time.time()))
+            raise RuntimeError(
+                f"WeChat session is paused for {remaining}s before retrying "
+                f"(reason={self._session_pause_reason or 'unknown'})"
+            )
         client = self._ensure_api_http()
-        request_body = dict(body)
-        request_body.setdefault("base_info", {"channel_version": WECHAT_OPENCLAW_COMPAT_VERSION})
+        request_body = self._with_base_info(body)
         try:
             response = await client.post(
                 f"{self._config.base_url}/{endpoint}",
@@ -1197,8 +1552,7 @@ class WeChatBotService:
     async def _poll_post(self, endpoint: str, body: dict[str, Any], *, timeout_s: float) -> dict[str, Any]:
         async with self._poll_request_lock:
             client = self._ensure_poll_http()
-            request_body = dict(body)
-            request_body.setdefault("base_info", {"channel_version": WECHAT_OPENCLAW_COMPAT_VERSION})
+            request_body = self._with_base_info(body)
             try:
                 response = await client.post(
                     f"{self._config.base_url}/{endpoint}",
@@ -1214,6 +1568,15 @@ class WeChatBotService:
                 )
                 await self._reset_poll_http_client()
                 raise
+
+    def _with_base_info(self, body: dict[str, Any]) -> dict[str, Any]:
+        request_body = dict(body)
+        raw_base_info = request_body.get("base_info")
+        base_info = dict(raw_base_info) if isinstance(raw_base_info, dict) else {}
+        base_info.setdefault("channel_version", WECHAT_OPENCLAW_COMPAT_VERSION)
+        base_info.setdefault("bot_agent", _sanitize_wechat_bot_agent(self._settings.wechat_bot_agent))
+        request_body["base_info"] = base_info
+        return request_body
 
     async def _reset_poll_http_client(self) -> None:
         client = self._poll_http

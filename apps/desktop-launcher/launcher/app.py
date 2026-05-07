@@ -31,6 +31,8 @@ from launcher.models import (
     LocalNodeActionResponse,
     LocalNodeChannelAssessmentApplyRequest,
     LocalNodeChannelAssessmentResult,
+    LocalNodeConnectivityCheckReport,
+    LocalNodeConnectivityCheckItem,
     LocalNodeConversationTestRequest,
     LocalNodeConversationTestResponse,
     LocalNodeExportResponse,
@@ -51,6 +53,7 @@ from launcher.process_manager import ProcessManager
 from launcher.profile_store import build_layout, default_state_path, ensure_layout, load_profile, redis_state, save_profile
 from launcher.redis_runtime import ensure_redis_binary
 from launcher.runtime import ensure_repo_pythonpath, resource_root
+from launcher.wechat_status_presenter import build_wechat_admin_connectivity_item
 
 ensure_repo_pythonpath()
 _WINDOWS_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -667,6 +670,51 @@ def create_app() -> FastAPI:
             lock_name="local_node_status_lock",
             ttl_seconds=2.0,
             builder=build_local_node_status,
+        )
+
+    @app.get("/local/node/connectivity-check", response_model=LocalNodeConnectivityCheckReport)
+    async def local_node_connectivity_check() -> LocalNodeConnectivityCheckReport:
+        profile = app.state.profile
+        gateway_base_url = _resolve_gateway_proxy_base_url(profile)
+        local_status = await local_node_status()
+        gateway_summary: dict[str, object] | None = None
+        model_check: dict[str, object] | None = None
+        public_entry: dict[str, object] | None = None
+
+        async with httpx.AsyncClient(timeout=5.0, trust_env=False) as client:
+            try:
+                summary_response = await client.get(f"{gateway_base_url}/api/system/summary")
+                summary_response.raise_for_status()
+                payload = summary_response.json()
+                if isinstance(payload, dict):
+                    gateway_summary = payload
+            except Exception:
+                gateway_summary = None
+
+            try:
+                model_check_response = await client.post(f"{gateway_base_url}/api/models/builtin/check")
+                model_check_response.raise_for_status()
+                payload = model_check_response.json()
+                if isinstance(payload, dict):
+                    model_check = payload
+            except Exception:
+                model_check = None
+
+            try:
+                public_entry_response = await client.get(f"{gateway_base_url}/api/setup/public-entry")
+                public_entry_response.raise_for_status()
+                payload = public_entry_response.json()
+                if isinstance(payload, dict):
+                    public_entry = payload
+            except Exception:
+                public_entry = None
+
+        return _build_local_node_connectivity_check_report(
+            local_status=local_status,
+            gateway_summary=gateway_summary,
+            model_check=model_check,
+            public_entry=public_entry,
+            gateway_base_url=gateway_base_url,
         )
 
     @app.get("/local/node/logs", response_model=LocalNodeLogsResponse)
@@ -1340,6 +1388,119 @@ def _resolve_gateway_proxy_base_url(profile) -> str:
     return local_gateway_base_url(profile.gateway_port).rstrip("/")
 
 
+def _connectivity_item_status(value: bool, *, warning: bool = False) -> str:
+    if value:
+        return "passed"
+    if warning:
+        return "warning"
+    return "failed"
+
+
+def _build_local_node_connectivity_check_report(
+    *,
+    local_status: LocalNodeStatusResponse,
+    gateway_summary: dict[str, object] | None,
+    model_check: dict[str, object] | None,
+    public_entry: dict[str, object] | None,
+    gateway_base_url: str,
+) -> LocalNodeConnectivityCheckReport:
+    system_status = gateway_summary.get("system") if isinstance(gateway_summary, dict) else None
+    wechat_status = gateway_summary.get("wechat") if isinstance(gateway_summary, dict) else None
+    nodes_status = gateway_summary.get("nodes") if isinstance(gateway_summary, dict) else None
+    node_summary = nodes_status.get("summary") if isinstance(nodes_status, dict) else None
+
+    redis_ok = bool(system_status.get("redis_ok")) if isinstance(system_status, dict) else False
+    public_entry_enabled = bool(public_entry.get("enabled")) if isinstance(public_entry, dict) else False
+    public_entry_access_url = str(public_entry.get("access_url") or "").strip() if isinstance(public_entry, dict) else ""
+    public_entry_stats = public_entry.get("stats") if isinstance(public_entry, dict) else None
+    pending_qr = _safe_int(public_entry_stats.get("pending_qr"), 0) if isinstance(public_entry_stats, dict) else 0
+    waiting_confirm = _safe_int(public_entry_stats.get("waiting_confirm"), 0) if isinstance(public_entry_stats, dict) else 0
+    active_bindings = _safe_int(public_entry_stats.get("active_bindings"), 0) if isinstance(public_entry_stats, dict) else 0
+    online_total = _safe_int(node_summary.get("online_total"), 0) if isinstance(node_summary, dict) else 0
+    model_name = str(model_check.get("configured_model") or "").strip() if isinstance(model_check, dict) else ""
+    model_available = bool(model_check.get("configured_model_available")) if isinstance(model_check, dict) else False
+
+    gateway_ok = isinstance(gateway_summary, dict)
+    admin_wechat_item = build_wechat_admin_connectivity_item(wechat_status if isinstance(wechat_status, dict) else None)
+    public_entry_ok = public_entry_enabled and bool(public_entry_access_url)
+    public_entry_warning = isinstance(public_entry, dict) and not public_entry_enabled
+    node_ok = online_total > 0 or local_status.runtime_state == "connected"
+    model_ok = model_available or local_status.inference_ready
+
+    items = [
+        LocalNodeConnectivityCheckItem(
+            key="gateway",
+            label="网关",
+            status=_connectivity_item_status(gateway_ok),
+            summary="可达" if gateway_ok else "不可达",
+            detail=(
+                str(system_status.get("preferred_gateway_base_url") or "").strip()
+                if isinstance(system_status, dict) and str(system_status.get("preferred_gateway_base_url") or "").strip()
+                else gateway_base_url or "主网关摘要读取成功。"
+            ) if gateway_ok else "未能读取目标网关摘要，请检查节点保存的目标网关地址和网络连通性。",
+        ),
+        LocalNodeConnectivityCheckItem(
+            key="redis",
+            label="Redis",
+            status=_connectivity_item_status(redis_ok),
+            summary="状态存储正常" if redis_ok else "状态存储异常",
+            detail="会话、微信运行态与节点调度都可以持续写入。" if redis_ok else "Redis 不可用时，运行态恢复与调度状态都会受影响。",
+        ),
+        admin_wechat_item,
+        LocalNodeConnectivityCheckItem(
+            key="wechat-public-entry",
+            label="公共入口扫码",
+            status=_connectivity_item_status(public_entry_ok, warning=public_entry_warning),
+            summary="入口已启用" if public_entry_ok else "入口未启用" if isinstance(public_entry, dict) else "入口读取失败",
+            detail=(
+                f"入口地址 {public_entry_access_url}。当前已绑定 {active_bindings} 个用户，正在接入 {pending_qr + waiting_confirm} 个。"
+                if public_entry_ok
+                else "公共入口资料已读取，但入口当前未启用；外部用户暂时无法通过公共二维码接入。"
+                if isinstance(public_entry, dict)
+                else "未能读取公共入口资料，请检查目标网关的公共入口配置。"
+            ),
+        ),
+        LocalNodeConnectivityCheckItem(
+            key="node",
+            label="节点",
+            status=_connectivity_item_status(node_ok),
+            summary="在线" if node_ok else "离线",
+            detail=local_status.detail if node_ok and local_status.detail else (
+                f"当前可见 {online_total} 个在线节点。"
+                if node_ok
+                else local_status.last_register_error or "当前节点还没有成功接入目标网关。"
+            ),
+        ),
+        LocalNodeConnectivityCheckItem(
+            key="model",
+            label="模型",
+            status=_connectivity_item_status(model_ok),
+            summary="可用" if model_ok else "未通过",
+            detail=(
+                local_status.inference_detail
+                or (f"已检测 {model_name}。" if model_name else "模型检测已通过。")
+            ) if model_ok else (
+                f"{model_name} 未通过模型检测，请检查配置与密钥。"
+                if model_name
+                else local_status.inference_detail or "当前没有可用的推理后端。"
+            ),
+        ),
+    ]
+
+    summary = " · ".join(f"{item.label}{item.summary}" for item in items)
+    passed_count = sum(1 for item in items if item.status == "passed")
+    failed_count = sum(1 for item in items if item.status == "failed")
+    warning_count = sum(1 for item in items if item.status == "warning")
+    return LocalNodeConnectivityCheckReport(
+        checked_at=datetime.now(UTC),
+        summary=summary,
+        passed_count=passed_count,
+        failed_count=failed_count,
+        warning_count=warning_count,
+        items=items,
+    )
+
+
 def _read_env_file(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
@@ -1444,10 +1605,7 @@ def _sync_local_node_model_config_from_gateway_env(
         return False
     node_values = _read_env_file(config_path)
     local_model_ready = _has_worker_model_config(node_values)
-    gateway_mtime = gateway_env_path.stat().st_mtime if gateway_env_path.exists() else 0.0
-    node_mtime = config_path.stat().st_mtime if config_path.exists() else 0.0
-    gateway_is_newer = gateway_mtime >= node_mtime
-    if local_model_ready and not gateway_is_newer:
+    if local_model_ready:
         return False
     changed = any(node_values.get(key, "") != value for key, value in updates.items())
     if not changed:

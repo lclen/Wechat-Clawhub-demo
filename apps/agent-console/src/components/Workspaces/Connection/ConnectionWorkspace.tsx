@@ -161,11 +161,11 @@ type ConnectionWorkspaceProps = {
       activeBindings: number;
     };
   };
-  modelCheckText: string | null;
+  connectivityCheckText: string | null;
   wechatLastError: string | null;
   wechatStatus: WeChatStatus | null;
   systemStatus: SystemStatus | null;
-  onRunModelCheck: () => void;
+  onRunConnectivityCheck: () => void;
   onToggleDispatch: () => void;
   onRefreshAllStatus: () => void;
   onWechatBaseUrlChange: (value: string) => void;
@@ -403,13 +403,13 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   signalCards={props.connectionSignalCards}
                   canManageGateway={showGatewayControls}
                   localConsoleHint={localConsoleHint}
-                  modelCheckText={props.modelCheckText}
+                  connectivityCheckText={props.connectivityCheckText}
                   lastError={props.wechatLastError}
                   dispatchWarning={props.gatewaySetupDispatchModeEnabled && props.availableDispatchNodes === 0 ? "已开启分发模式，但暂无远程节点。" : null}
                   localNodeStatus={props.localNodeStatus}
                   assessmentMaxRounds={props.assessmentMaxRounds}
                   assessmentApplyStrategy={props.assessmentApplyStrategy}
-                  onRunModelCheck={props.onRunModelCheck}
+                  onRunConnectivityCheck={props.onRunConnectivityCheck}
                   onToggleDispatch={props.onToggleDispatch}
                   onRefreshAllStatus={props.onRefreshAllStatus}
                   onRefreshChannelAssessment={props.onRefreshLocalNodeStatus}
@@ -418,7 +418,7 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   onStartChannelAssessment={props.onStartLocalNodeChannelAssessment}
                   onApplyChannelAssessment={props.onApplyLocalNodeChannelAssessment}
                   applyChannelAssessmentLabel={props.busyKey === "local-node-channel-assessment-apply" ? "应用中..." : "应用评估建议"}
-                  runModelCheckLabel={props.busyKey === "model-check" ? "检测中..." : "检测模型"}
+                  runConnectivityCheckLabel={props.busyKey === "connectivity-check" ? "检测中..." : "完整检测"}
                   toggleDispatchLabel={props.busyKey === "dispatch-mode-toggle" ? "切换中..." : props.gatewaySetupDispatchModeEnabled ? "关闭分发模式" : "开启分发模式"}
                   refreshAllLabel={props.busyKey === "connection-refresh-all" ? "刷新中..." : "刷新状态"}
                   busy={props.busyKey !== null}
@@ -473,6 +473,17 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   kicker="本机链路"
                   title={props.heroTitle}
                   description="把当前机器的发现地址、网关连接和节点身份收在同一块，切换或排障时不需要再来回找信息。"
+                  actions={(
+                    <button
+                      type="button"
+                      className="ghost-button"
+                      onClick={props.onRunConnectivityCheck}
+                      disabled={props.busyKey !== null}
+                      style={{ height: 30, fontSize: 12, borderStyle: "dashed" }}
+                    >
+                      {props.busyKey === "connectivity-check" ? "检测中..." : "完整检测"}
+                    </button>
+                  )}
                 />
                 <div className="worker-wizard-identity worker-node-address-card">
                   <div className="worker-wizard-identity-ip">
@@ -511,6 +522,9 @@ export function ConnectionWorkspace(props: ConnectionWorkspaceProps) {
                   items={[
                     { label: "连接详情", value: props.workerGatewayConnection.detail, multiline: true },
                     { label: "配对密钥", value: hasText(props.workerSetup.pairing_key) ? "已填写，可在安装修复区显示或修改" : "未填写", multiline: true },
+                    ...(props.connectivityCheckText
+                      ? [{ label: "完整检测", value: props.connectivityCheckText, multiline: true }]
+                      : []),
                     ...(props.workerGatewayConnection.remoteNode
                       ? [{ label: "网关侧节点记录", value: summarizeRemoteNode(props.workerGatewayConnection.remoteNode), multiline: true }]
                       : []),

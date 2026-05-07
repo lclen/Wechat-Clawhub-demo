@@ -337,6 +337,52 @@ class WorkerModelEnvMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(values["CLAW_OPENAI_API_KEY"], "sk-custom")
         self.assertEqual(values["CLAW_OPENAI_MODEL"], "qwen-custom")
 
+    async def test_sync_local_node_model_config_preserves_existing_dify_even_when_gateway_is_newer(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            node_env = root / "node.env"
+            gateway_env = root / "gateway.env"
+            node_env.write_text(
+                "\n".join(
+                    [
+                        "CLAW_NODE_KIND=local",
+                        "CLAW_MODEL_PROVIDER=dify",
+                        "CLAW_DIFY_BASE_URL=https://node-dify.example/v1",
+                        "CLAW_DIFY_API_KEY=node-dify-key",
+                        "CLAW_OPENAI_BASE_URL=",
+                        "CLAW_OPENAI_API_KEY=",
+                        "CLAW_OPENAI_MODEL=",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            gateway_env.write_text(
+                "\n".join(
+                    [
+                        "WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                        "WCH_BUILTIN_MODEL_API_KEY=sk-gateway",
+                        "WCH_BUILTIN_MODEL_NAME=qwen-gateway",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            os.utime(gateway_env, (time.time() + 10, time.time() + 10))
+
+            synced = _sync_node_model_config_from_gateway_env(
+                config_path=node_env,
+                gateway_env_path=gateway_env,
+                node_kind="local",
+            )
+            values = _read_env_file(node_env)
+
+        self.assertFalse(synced)
+        self.assertEqual(values["CLAW_MODEL_PROVIDER"], "dify")
+        self.assertEqual(values["CLAW_DIFY_BASE_URL"], "https://node-dify.example/v1")
+        self.assertEqual(values["CLAW_DIFY_API_KEY"], "node-dify-key")
+        self.assertEqual(values.get("CLAW_OPENAI_BASE_URL", ""), "")
+
     async def test_worker_runtime_does_not_inherit_gateway_even_when_node_kind_is_stale_local(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

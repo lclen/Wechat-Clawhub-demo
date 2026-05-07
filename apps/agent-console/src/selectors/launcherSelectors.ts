@@ -13,6 +13,12 @@ import type {
 } from "../types";
 import { DEFAULT_REMOTE_WORKER_NODE_ID, LEGACY_WORKER_NODE_IDS } from "../quickSetupDefaults";
 import { formatTimeLabel } from "./sessionSelectors";
+import {
+  describeWechatSessionPause,
+  resolveWechatRuntimePresentation,
+} from "../presenters/wechatStatusPresenter";
+
+export { describeWechatSessionPause } from "../presenters/wechatStatusPresenter";
 
 export function runningLauncherComponents(status: LauncherStatusResponse | null): Set<string> {
   return new Set((status?.components || []).filter((item) => item.state === "running").map((item) => item.name));
@@ -77,19 +83,10 @@ export function launcherLocalNodePolicyLabel(launcherStatus: LauncherStatusRespo
 }
 
 export function summarizeWechatRuntime(launcherStatus: LauncherStatusResponse | null, wechatStatus: WeChatStatus | null, gatewaySetup: GatewaySetupConfig) {
-  if (!launcherShouldRunGateway(launcherStatus)) {
-    return { value: "远端网关", detail: "当前机器不托管主网关，请到远端网关查看微信接入状态。", tone: "warn" as const };
-  }
-  if (!gatewaySetup.wechat_base_url && !wechatStatus?.base_url) {
-    return { value: "未配置", detail: "尚未填写微信 Base URL。", tone: "warn" as const };
-  }
-  if (!wechatStatus?.has_token) {
-    return { value: "待接入", detail: "当前还没有写入微信 token。", tone: "warn" as const };
-  }
-  if (!wechatStatus.running) {
-    return { value: "已配置", detail: wechatStatus.last_error || "token 已保存，但轮询尚未运行。", tone: "warn" as const };
-  }
-  return { value: "轮询中", detail: wechatStatus.last_error || `Base URL：${wechatStatus.base_url}`, tone: "good" as const };
+  return resolveWechatRuntimePresentation(wechatStatus, {
+    gatewayManaged: launcherShouldRunGateway(launcherStatus),
+    baseUrlConfigured: Boolean(gatewaySetup.wechat_base_url || wechatStatus?.base_url),
+  });
 }
 
 export function summarizeLocalNodeRuntime(

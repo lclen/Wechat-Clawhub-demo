@@ -19,7 +19,21 @@ export type ModelStatus = {
 };
 export type SystemStatus = { app_name: string; environment: string; version: string; redis_ok: boolean; dify_configured: boolean; wechat_configured: boolean; active_nodes: number; dispatch_mode_enabled: boolean; gateway_bind_host: string; preferred_lan_ip: string | null; preferred_gateway_base_url: string; timestamp: string };
 export type ModelCheck = { ok: boolean; configured_model: string; available_models: string[]; configured_model_available: boolean };
-export type WeChatStatus = { configured: boolean; running: boolean; base_url: string; has_token: boolean; last_error: string | null; received_messages: number; sent_messages: number };
+export type WeChatStatus = {
+  configured: boolean;
+  running: boolean;
+  base_url: string;
+  has_token: boolean;
+  last_error: string | null;
+  received_messages: number;
+  sent_messages: number;
+  lease_state?: "active" | "standby" | "none" | string;
+  needs_rescan?: boolean;
+  lease_owner_id?: string | null;
+  session_paused?: boolean;
+  session_paused_until?: number | null;
+  session_pause_reason?: string | null;
+};
 export type SessionStatus = "bot_active" | "handoff_pending" | "human_active" | "closing";
 export type QueueStatus = "none" | "pending" | "inflight";
 export type RoutingMode = "auto" | "manual";
@@ -68,6 +82,21 @@ export type ConnectionTone = "good" | "warn";
 export type ConnectionHeroCardData = { eyebrow: string; title: string; detail: string; tone: ConnectionTone };
 export type ConnectionSignalCardData = { label: string; value: string; meta: string; tone: ConnectionTone };
 export type ConnectionPrepItem = { label: string; detail: string; tone: ConnectionTone };
+export type ConnectivityCheckItem = {
+  key: "gateway" | "redis" | "wechat" | "wechat-admin" | "wechat-public-entry" | "node" | "model";
+  label: string;
+  status: "passed" | "failed" | "warning";
+  summary: string;
+  detail: string;
+};
+export type ConnectivityCheckReport = {
+  checked_at: string;
+  summary: string;
+  passed_count: number;
+  failed_count: number;
+  warning_count: number;
+  items: ConnectivityCheckItem[];
+};
 export type SessionMessageCacheEntry = {
   session: SessionRecord | null;
   messages: MessageRecord[];

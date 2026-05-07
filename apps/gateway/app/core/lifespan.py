@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.access.wechat_multi_bot import MultiWeChatBotService
+from app.access.wechat_official_account import WeChatOfficialAccountService
 from app.core.config import get_settings
 from app.dispatch.queue import DispatchQueue
 from app.dispatch.scheduler import DispatchScheduler
@@ -60,7 +61,16 @@ async def lifespan(app: FastAPI):
     )
     scheduler = DispatchScheduler(node_registry, settings)
     wechat_bot = MultiWeChatBotService(redis_store, session_manager, None, transcript_writer, settings)
-    outgoing_dispatcher = OutgoingDispatcher(wechat_bot=wechat_bot, transcript_writer=transcript_writer)
+    wechat_official_account = WeChatOfficialAccountService(
+        store=redis_store,
+        transcript_writer=transcript_writer,
+        settings=settings,
+    )
+    outgoing_dispatcher = OutgoingDispatcher(
+        wechat_bot=wechat_bot,
+        wechat_official_account=wechat_official_account,
+        transcript_writer=transcript_writer,
+    )
     dispatch_queue = DispatchQueue(
         redis_store,
         session_manager,
@@ -121,6 +131,7 @@ async def lifespan(app: FastAPI):
     app.state.inbound_aggregation = inbound_aggregation
     app.state.node_auth = node_auth
     app.state.wechat_bot = wechat_bot
+    app.state.wechat_official_account = wechat_official_account
     app.state.outgoing_dispatcher = outgoing_dispatcher
     app.state.setup_service = setup_service
     app.state.public_entry_service = public_entry_service
@@ -135,6 +146,7 @@ async def lifespan(app: FastAPI):
         await inbound_aggregation.shutdown()
         await public_entry_service.close()
         await wechat_bot.shutdown()
+        await wechat_official_account.shutdown()
         await redis_store.close()
 
 

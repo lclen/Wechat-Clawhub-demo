@@ -45,7 +45,8 @@ async def list_sessions(
     try:
         await ensure_redis_available(store)
         sessions = await manager.list_sessions()
-        sessions = await dispatch_queue.reconcile_sessions_state(sessions)
+        if hasattr(dispatch_queue, "reconcile_sessions_state"):
+            sessions = await dispatch_queue.reconcile_sessions_state(sessions)
         response = SessionListResponse(sessions=sessions)
         logger.info(
             "sessions_request completed path=/api/sessions elapsed_ms=%.2f degraded=false session_count=%d",
