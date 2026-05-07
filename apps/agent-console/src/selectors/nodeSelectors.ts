@@ -11,6 +11,21 @@ import { summarizeLocalNodeRuntime } from "./launcherSelectors";
 import { formatTimeLabel } from "./sessionSelectors";
 import { isGatewayEmbeddedNode } from "./nodeIdentity";
 
+function sameTaskStreamHealth(left: TaskStreamHealth | null | undefined, right: TaskStreamHealth | null | undefined) {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  return left.protocol_version === right.protocol_version
+    && left.connection_mode === right.connection_mode
+    && left.connected_at === right.connected_at
+    && left.last_event_at === right.last_event_at
+    && left.last_disconnect_at === right.last_disconnect_at
+    && left.last_disconnect_code === right.last_disconnect_code
+    && left.last_disconnect_reason === right.last_disconnect_reason
+    && left.reconnect_count === right.reconnect_count
+    && left.fallback_poll_count === right.fallback_poll_count
+    && left.upgrade_required === right.upgrade_required;
+}
+
 export function getNodeAddress(node: NodeRecord) {
   if (node.advertised_address) return node.advertised_address;
   if (node.base_url && /^https?:\/\//i.test(node.base_url)) return node.base_url;
@@ -42,14 +57,19 @@ export function normalizeInventoryRuntimeMetrics(
   const nextMaxConcurrency = Number.isFinite(assessment?.current_max_concurrency)
     ? Math.max(assessment.current_max_concurrency, 0)
     : node.max_concurrency;
-  if (nextChannelCapacity === node.channel_capacity && nextMaxConcurrency === node.max_concurrency) {
+  const nextTaskStream = localNodeStatus.task_stream || node.task_stream;
+  if (
+    nextChannelCapacity === node.channel_capacity
+    && nextMaxConcurrency === node.max_concurrency
+    && sameTaskStreamHealth(nextTaskStream, node.task_stream)
+  ) {
     return node;
   }
   return {
     ...node,
     channel_capacity: nextChannelCapacity,
     max_concurrency: nextMaxConcurrency,
-    task_stream: localNodeStatus.task_stream || node.task_stream,
+    task_stream: nextTaskStream,
   };
 }
 
