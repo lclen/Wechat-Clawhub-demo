@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import { summarizeLocalNodeRuntime } from "./launcherSelectors";
 import { formatTimeLabel } from "./sessionSelectors";
+import { isGatewayEmbeddedNode } from "./nodeIdentity";
 
 export function getNodeAddress(node: NodeRecord) {
   if (node.advertised_address) return node.advertised_address;
@@ -30,7 +31,7 @@ export function normalizeInventoryRuntimeMetrics(
   node: NodeInventoryRecord,
   localNodeStatus: LocalNodeStatusResponse | null,
 ): NodeInventoryRecord {
-  const isLocalInventoryNode = node.node_kind === "local" && node.node_id === "local-node";
+  const isLocalInventoryNode = isGatewayEmbeddedNode(node);
   if (!isLocalInventoryNode || !localNodeStatus) {
     return node;
   }
@@ -88,11 +89,18 @@ export function describeInventoryConnection(node: NodeInventoryRecord) {
 }
 
 export function resolveInventoryNodePresentation(node: NodeInventoryRecord, localNodeStatus: LocalNodeStatusResponse | null, launcherStatus: LauncherStatusResponse | null) {
-  if (node.node_kind !== "local" || node.node_id !== "local-node") {
+  if (!isGatewayEmbeddedNode(node)) {
     return {
       badge: nodeInventoryBadgeLabel(node.connection_state, node.paired),
       tone: nodeInventoryBadgeTone(node.connection_state),
       detail: describeInventoryConnection(node),
+    };
+  }
+  if (!launcherStatus?.runtime_model.gateway_should_run) {
+    return {
+      badge: nodeInventoryBadgeLabel(node.connection_state, node.paired),
+      tone: nodeInventoryBadgeTone(node.connection_state),
+      detail: node.last_error || node.status || "远端网关内置节点状态由目标网关上报。",
     };
   }
   const runtime = summarizeLocalNodeRuntime(localNodeStatus, launcherStatus, node);

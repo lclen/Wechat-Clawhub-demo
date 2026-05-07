@@ -97,6 +97,7 @@ import {
   resolveInventoryNodePresentation,
   summarizeRemoteNode,
 } from "./selectors/nodeSelectors";
+import { isGatewayEmbeddedNode } from "./selectors/nodeIdentity";
 import {
   isGatewayRole,
   isConsoleRole,
@@ -2018,8 +2019,8 @@ export function App() {
     () =>
       displayNodeInventory.map((node) => {
         const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
-        const localNodeUnmanaged = node.node_kind === "local"
-          && node.node_id === "local-node"
+        const localNodeUnmanaged = isGatewayEmbeddedNode(node)
+          && launcherShouldRunGateway(launcherStatus)
           && !launcherShouldRunLocalNode(launcherStatus);
         const taskStream = localNodeUnmanaged
           ? {
@@ -2103,8 +2104,8 @@ export function App() {
   const selectedNodeDiagnosticsView = useMemo(() => {
     if (!selectedNodeId || !selectedNodeDiagnostics) return null;
     const taskStream = selectedNodeDiagnostics.task_stream;
-    const localNodeUnmanaged = selectedNodeDiagnostics.node_kind === "local"
-      && selectedNodeDiagnostics.node_id === "local-node"
+    const localNodeUnmanaged = isGatewayEmbeddedNode(selectedNodeDiagnostics)
+      && launcherShouldRunGateway(launcherStatus)
       && !launcherShouldRunLocalNode(launcherStatus);
     const rows: Array<{ label: string; value: string; multiline?: boolean }> = [
       { label: "连接状态", value: selectedNodeDiagnostics.connection_state || "未记录" },

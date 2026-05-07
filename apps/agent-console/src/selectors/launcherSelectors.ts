@@ -17,6 +17,7 @@ import {
   describeWechatSessionPause,
   resolveWechatRuntimePresentation,
 } from "../presenters/wechatStatusPresenter";
+import { isGatewayEmbeddedNode } from "./nodeIdentity";
 
 export { describeWechatSessionPause } from "../presenters/wechatStatusPresenter";
 
@@ -95,6 +96,17 @@ export function summarizeLocalNodeRuntime(
   inventoryNode?: NodeInventoryRecord | null,
 ) {
   if (!launcherShouldRunLocalNode(launcherStatus)) {
+    if (inventoryNode && isGatewayEmbeddedNode(inventoryNode) && !launcherShouldRunGateway(launcherStatus)) {
+      return {
+        label: "已连接",
+        detail: inventoryNode.last_register_at
+          ? `远端网关最近注册 ${formatTimeLabel(inventoryNode.last_register_at, true)}`
+          : inventoryNode.last_heartbeat_at
+            ? `远端网关最近心跳 ${formatTimeLabel(inventoryNode.last_heartbeat_at, true)}`
+            : "远端网关的内置节点已在目标网关上报状态。",
+        tone: "good" as const,
+      };
+    }
     return { label: "未托管", detail: "当前角色不会在本机托管 claw-node。", tone: "warn" as const };
   }
   if (
