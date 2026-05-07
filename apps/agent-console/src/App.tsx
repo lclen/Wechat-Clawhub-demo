@@ -458,6 +458,8 @@ export function App() {
     ? false
     : shouldUseOriginLocalGateway(launcherAvailable, localGatewayManaged);
   const shouldUseRemoteGatewayApi = currentRoleIsWorker || (currentRoleIsConsole && (consoleUsesExplicitRemoteGateway || localGatewayManaged === false));
+  const shouldUseLocalInventoryRuntime = localGatewayManaged === true && !shouldUseRemoteGatewayApi;
+  const localInventoryRuntimeStatus = shouldUseLocalInventoryRuntime ? localNodeStatus : null;
   const shouldUseWorkerLocalApi = currentRoleIsWorker && localGatewayManaged === false;
   const sessionRemoteNodeId = currentRoleIsWorker ? authoritativeWorkerNodeId : "";
   const displayedWorkerNodeId = authoritativeWorkerNodeId || safeTrim(workerSetup.node_id);
@@ -1758,8 +1760,8 @@ export function App() {
       .join("\n");
   }, [selectedNodeDiagnostics]);
   const displayNodeInventory = useMemo(
-    () => nodeInventory.map((node) => normalizeInventoryRuntimeMetrics(node, localNodeStatus)),
-    [localNodeStatus, nodeInventory],
+    () => nodeInventory.map((node) => normalizeInventoryRuntimeMetrics(node, localInventoryRuntimeStatus)),
+    [localInventoryRuntimeStatus, nodeInventory],
   );
   const nodeChannelOverview = useMemo(() => buildNodeChannelOverview(displayNodeInventory), [displayNodeInventory]);
   const nodeInventoryHeadline = useMemo(
@@ -2018,8 +2020,9 @@ export function App() {
   }>>(
     () =>
       displayNodeInventory.map((node) => {
-        const presentation = resolveInventoryNodePresentation(node, localNodeStatus, launcherStatus);
+        const presentation = resolveInventoryNodePresentation(node, localInventoryRuntimeStatus, launcherStatus);
         const localNodeUnmanaged = isGatewayEmbeddedNode(node)
+          && shouldUseLocalInventoryRuntime
           && launcherShouldRunGateway(launcherStatus)
           && !launcherShouldRunLocalNode(launcherStatus);
         const taskStream = localNodeUnmanaged
@@ -2099,12 +2102,13 @@ export function App() {
           ],
         };
       }),
-    [busy, deletePairedNode, disconnectPairedNode, displayNodeInventory, launcherStatus, localNodeStatus, roleCapabilities.actions.canManageNodes, selectedNodeId],
+    [busy, deletePairedNode, disconnectPairedNode, displayNodeInventory, launcherStatus, localInventoryRuntimeStatus, roleCapabilities.actions.canManageNodes, selectedNodeId, shouldUseLocalInventoryRuntime],
   );
   const selectedNodeDiagnosticsView = useMemo(() => {
     if (!selectedNodeId || !selectedNodeDiagnostics) return null;
     const taskStream = selectedNodeDiagnostics.task_stream;
     const localNodeUnmanaged = isGatewayEmbeddedNode(selectedNodeDiagnostics)
+      && shouldUseLocalInventoryRuntime
       && launcherShouldRunGateway(launcherStatus)
       && !launcherShouldRunLocalNode(launcherStatus);
     const rows: Array<{ label: string; value: string; multiline?: boolean }> = [
@@ -2229,7 +2233,7 @@ export function App() {
       timelineText: selectedNodeDiagnostics.timeline?.length ? selectedNodeTimelineText : null,
       onClose: () => setSelectedNodeId(null),
     };
-  }, [launcherStatus, selectedNodeDiagnostics, selectedNodeId, selectedNodeTimelineText]);
+  }, [launcherStatus, selectedNodeDiagnostics, selectedNodeId, selectedNodeTimelineText, shouldUseLocalInventoryRuntime]);
   const wechatStatusRows = useMemo(
     () => buildWechatStatusRows(wechatStatus, wechatRuntimeSummary, now),
     [

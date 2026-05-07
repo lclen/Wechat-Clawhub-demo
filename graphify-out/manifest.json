@@ -16,8 +16,8 @@
     "hash": "70724613d300c821f5e0a30e74121001"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\App.tsx": {
-    "mtime": 1778131848.3269217,
-    "hash": "b152bc8fe9027e826ff6943eac139eca"
+    "mtime": 1778137136.524396,
+    "hash": "de827282ec8298c251ef4b1b52b9c51f"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\appBootstrap.ts": {
     "mtime": 1778122050.737126,
@@ -216,12 +216,16 @@
     "hash": "1cd886ca7cd5759fb5645c86d29e77a1"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\launcherSelectors.ts": {
-    "mtime": 1778122050.7546184,
-    "hash": "89fd997bdd946480b3b2162ca6d33024"
+    "mtime": 1778133830.3040009,
+    "hash": "2763c6dee5028e6572c2f57f495d63a6"
+  },
+  "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\nodeIdentity.ts": {
+    "mtime": 1778133830.305014,
+    "hash": "755ad20d072f2eedf3625a648c0d0e08"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\nodeSelectors.ts": {
-    "mtime": 1778122050.7546184,
-    "hash": "7bec9729abda33e1c544b2bb6b09b9b7"
+    "mtime": 1778135875.399509,
+    "hash": "213beffc98c63d0a34fa63e3b4facf28"
   },
   "D:\\wechat-clawhub\\apps\\agent-console\\src\\selectors\\quickSetupSelectors.ts": {
     "mtime": 1778122050.7546184,
