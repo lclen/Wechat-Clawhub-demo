@@ -27,13 +27,13 @@ type OverviewPanelProps = {
     detail: string;
     onFocus: () => void;
   } | null;
-  modelCheckText?: string | null;
+  connectivityCheckText?: string | null;
   lastError?: string | null;
   dispatchWarning?: string | null;
   localNodeStatus: LocalNodeStatusResponse | null;
   assessmentMaxRounds: number;
   assessmentApplyStrategy: "balanced" | "peak";
-  onRunModelCheck: () => void;
+  onRunConnectivityCheck: () => void;
   onToggleDispatch: () => void;
   onRefreshAllStatus: () => void;
   onRefreshChannelAssessment: () => void;
@@ -42,7 +42,7 @@ type OverviewPanelProps = {
   onStartChannelAssessment: () => void;
   onApplyChannelAssessment: () => void;
   applyChannelAssessmentLabel: string;
-  runModelCheckLabel: string;
+  runConnectivityCheckLabel: string;
   toggleDispatchLabel: string;
   refreshAllLabel: string;
   busy: boolean;
@@ -55,13 +55,13 @@ export function OverviewPanel({
   signalCards,
   canManageGateway,
   localConsoleHint,
-  modelCheckText,
+  connectivityCheckText,
   lastError,
   dispatchWarning,
   localNodeStatus,
   assessmentMaxRounds,
   assessmentApplyStrategy,
-  onRunModelCheck,
+  onRunConnectivityCheck,
   onToggleDispatch,
   onRefreshAllStatus,
   onRefreshChannelAssessment,
@@ -70,7 +70,7 @@ export function OverviewPanel({
   onStartChannelAssessment,
   onApplyChannelAssessment,
   applyChannelAssessmentLabel,
-  runModelCheckLabel,
+  runConnectivityCheckLabel,
   toggleDispatchLabel,
   refreshAllLabel,
   busy,
@@ -79,7 +79,7 @@ export function OverviewPanel({
   const [roundsExpanded, setRoundsExpanded] = useState(false);
 
   const supplementalItems = [
-    modelCheckText ? { label: "模型检测", value: modelCheckText, multiline: true } : null,
+    connectivityCheckText ? { label: "完整检测", value: connectivityCheckText, multiline: true } : null,
     lastError ? { label: "最近错误", value: lastError, multiline: true } : null,
   ].filter((item): item is { label: string; value: string; multiline: boolean } => Boolean(item));
 
@@ -163,11 +163,11 @@ export function OverviewPanel({
           <button
             type="button"
             className="ghost-button"
-            onClick={onRunModelCheck}
+            onClick={onRunConnectivityCheck}
             disabled={busy}
             style={{ width: "100%", marginTop: 12, borderStyle: "dashed" }}
           >
-            {runModelCheckLabel}
+            {runConnectivityCheckLabel}
           </button>
         )}
       </SurfaceCard>

@@ -7,6 +7,7 @@ import {
   resolveTokenDisplayState,
 } from "./roleWorkspace";
 import { DiagnosticsConsole } from "./components/Workspaces/Connection/DiagnosticsConsole";
+import { ConnectivityCheckModal } from "./components/Workspaces/Connection/ConnectivityCheckModal";
 import { InfoRow, MetaPill, Metric, SnippetBlock, StatusChip } from "./components/Workspaces/Connection/ConnectionUi";
 import { ConnectionWorkspace } from "./components/Workspaces/Connection/ConnectionWorkspace";
 import { ConversationTestWorkspace } from "./components/Workspaces/ConversationTest/ConversationTestWorkspace";
@@ -32,6 +33,10 @@ import {
 import { applyGatewaySummaryToState, resolvePreferredGatewayBaseUrl } from "./appBootstrap";
 import { clearQuickSetupCache, loadSetupDraft, loadSummaryStateCache, loadUiStateCache, saveUiStateCache } from "./appStorage";
 import { syncNodeState } from "./consoleStateSync";
+import {
+  buildWechatAdminConnectivityItem,
+  buildWechatStatusRows,
+} from "./presenters/wechatStatusPresenter";
 import {
   buildRoleCapabilities,
   connectionConsolePresentation,
@@ -149,6 +154,7 @@ import type {
   LocalNodeModelConfigRequest,
   LocalNodeStatusResponse,
   MessageRecord,
+  ConnectivityCheckReport,
   ModelCheck,
   ModelStatus,
   NodeCredentialResetRequest,
@@ -273,6 +279,9 @@ export function App() {
   const [assessmentApplyStrategy, setAssessmentApplyStrategy] = useState<"balanced" | "peak">("balanced");
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [modelCheck, setModelCheck] = useState<ModelCheck | null>(null);
+  const [connectivityCheckText, setConnectivityCheckText] = useState<string | null>(null);
+  const [connectivityCheckReport, setConnectivityCheckReport] = useState<ConnectivityCheckReport | null>(null);
+  const [connectivityCheckModalOpen, setConnectivityCheckModalOpen] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(initialSummaryState.system_status);
   const [wechatStatus, setWechatStatus] = useState<WeChatStatus | null>(initialSummaryState.wechat_status);
   const [nodes, setNodes] = useState<NodeRecord[]>(initialSummaryState.node_list?.nodes ?? []);
@@ -796,8 +805,175 @@ export function App() {
     nodeDiagnosticsCacheRef.current.delete(nodeId);
   }, []);
 
+  function presentConnectivityCheckReport(report: ConnectivityCheckReport) {
+    const failedChecks = report.items.filter((item) => item.status !== "passed");
+    setConnectivityCheckReport(report);
+    setConnectivityCheckModalOpen(true);
+    setConnectivityCheckText(report.summary);
+    setNotice(
+      failedChecks.length
+        ? `完整检测发现 ${failedChecks.length} 项需处理：${report.summary}`
+        : `完整检测通过：${report.summary}`
+    );
+  }
+
   async function withBusy<T>(name: string, fn: () => Promise<T>) { setBusy(name); try { return await fn(); } finally { setBusy(null); } }
-  async function runModelCheck() { try { const result = await withBusy("model-check", () => requestJson<ModelCheck>("/api/models/builtin/check", { method: "POST" })); setModelCheck(result); setNotice(result.configured_model_available ? `内置模型 ${result.configured_model} 可用。` : `内置模型 ${result.configured_model} 未出现在模型列表中，请检查配置。`); } catch (error) { setNotice(`模型检测失败：${(error as Error).message}`); } }
+  async function runConnectivityCheck() {
+    try {
+      await withBusy("connectivity-check", async () => {
+        if (launcherAvailable) {
+          try {
+            const report = await requestJson<ConnectivityCheckReport>("/local/node/connectivity-check");
+            presentConnectivityCheckReport(report);
+            return;
+          } catch (launcherError) {
+            console.warn("local connectivity check fallback", launcherError);
+          }
+        }
+
+        const [summaryResult, modelStatusResult, modelCheckResult, launcherResult, localNodeResult, publicEntryResult] = await Promise.allSettled([
+          refreshGatewaySummarySnapshot({ force: true, minIntervalMs: 0 }),
+          requestJson<ModelStatus>("/api/models/builtin/status"),
+          requestJson<ModelCheck>("/api/models/builtin/check", { method: "POST" }),
+          launcherAvailable ? refreshLauncherStatus() : Promise.resolve(null),
+          launcherAvailable ? requestJson<LocalNodeStatusResponse>("/local/node/status") : Promise.resolve(null),
+          refreshPublicEntryProfile({ force: true, minIntervalMs: 0 }),
+        ]);
+
+        const summary = summaryResult.status === "fulfilled" ? summaryResult.value : null;
+        if (summary) {
+          applyGatewaySummary(summary);
+        }
+        if (modelStatusResult.status === "fulfilled") {
+          setModelStatus(modelStatusResult.value);
+        }
+        if (modelCheckResult.status === "fulfilled") {
+          setModelCheck(modelCheckResult.value);
+        }
+        if (launcherResult.status === "fulfilled" && launcherResult.value) {
+          setLauncherStatus(launcherResult.value);
+        }
+        if (localNodeResult.status === "fulfilled" && localNodeResult.value) {
+          setLocalNodeStatus(localNodeResult.value);
+        }
+
+        const effectiveSystem = summary?.system ?? systemStatus;
+        const effectiveWechat = summary?.wechat ?? wechatStatus;
+        const effectiveNodeSummary = summary?.nodes.summary ?? nodeInventorySummary;
+        const effectiveLocalNode = localNodeResult.status === "fulfilled" ? localNodeResult.value : localNodeStatus;
+        const effectiveModel = modelCheckResult.status === "fulfilled" ? modelCheckResult.value : modelCheck;
+        const effectivePublicEntry = publicEntryResult.status === "fulfilled" ? publicEntryResult.value : publicEntryProfileState;
+        const gatewayOk = Boolean(summary);
+        const redisOk = Boolean(effectiveSystem?.redis_ok);
+        const adminWechatItem = buildWechatAdminConnectivityItem(effectiveWechat ?? null, {
+          gatewayManaged: launcherShouldRunGateway(launcherStatus),
+          baseUrlConfigured: Boolean(gatewaySetup.wechat_base_url || effectiveWechat?.base_url),
+          nowMs: now,
+        });
+        const publicEntryEnabled = Boolean(effectivePublicEntry?.enabled);
+        const publicEntryActiveCount = (effectivePublicEntry?.stats.pending_qr ?? 0) + (effectivePublicEntry?.stats.waiting_confirm ?? 0);
+        const publicEntryOk = Boolean(publicEntryEnabled && effectivePublicEntry?.access_url);
+        const publicEntryStatus: "passed" | "failed" | "warning" = !effectivePublicEntry
+          ? "failed"
+          : publicEntryOk
+            ? "passed"
+            : publicEntryEnabled
+              ? "failed"
+              : "warning";
+        const nodeOk = (effectiveNodeSummary?.online_total ?? 0) > 0 || effectiveLocalNode?.runtime_state === "connected";
+        const modelOk = Boolean(effectiveModel?.configured_model_available || effectiveLocalNode?.inference_ready);
+        const items: ConnectivityCheckReport["items"] = [
+          {
+            key: "gateway",
+            label: "网关",
+            status: gatewayOk ? "passed" : "failed",
+            summary: gatewayOk ? (gatewayRuntimeSummary.value || "可达") : "不可达",
+            detail: gatewayOk
+              ? (summary?.system.preferred_gateway_base_url || gatewayRuntimeSummary.detail || "主网关摘要读取成功。")
+              : "未能拉取主网关摘要，请先确认 gateway 进程与 8300 端口。",
+          },
+          {
+            key: "redis",
+            label: "Redis",
+            status: redisOk ? "passed" : "failed",
+            summary: redisOk ? "状态存储正常" : "状态存储异常",
+            detail: redisOk
+              ? "会话、微信运行态与节点调度都可以持续写入。"
+              : "Redis 不可用时，运行态恢复与调度状态都会受影响。",
+          },
+          adminWechatItem,
+          {
+            key: "wechat-public-entry",
+            label: "公共入口扫码",
+            status: publicEntryStatus,
+            summary: publicEntryOk
+              ? "入口已启用"
+              : effectivePublicEntry
+                ? "入口未启用"
+                : "入口读取失败",
+            detail: publicEntryOk
+              ? `入口地址 ${effectivePublicEntry?.access_url}。当前已绑定 ${effectivePublicEntry?.stats.active_bindings ?? 0} 个用户，正在接入 ${publicEntryActiveCount} 个。`
+              : effectivePublicEntry
+                ? "公共入口资料已读取，但入口当前未启用；外部用户暂时无法通过公共二维码接入。"
+                : "未能读取公共入口资料，请检查 /api/setup/public-entry 与 /entry 路由是否可达。",
+          },
+          {
+            key: "node",
+            label: "节点",
+            status: nodeOk ? "passed" : "failed",
+            summary: nodeOk ? "在线" : "离线",
+            detail: nodeOk
+              ? effectiveLocalNode?.detail || `当前可见 ${effectiveNodeSummary?.online_total ?? 0} 个在线节点。`
+              : effectiveLocalNode?.last_register_error || "没有可接单节点在线，消息可能只能接入无法完成回复。",
+          },
+          {
+            key: "model",
+            label: "模型",
+            status: modelOk ? "passed" : "failed",
+            summary: modelOk ? "可用" : "未通过",
+            detail: modelOk
+              ? effectiveLocalNode?.inference_detail || (effectiveModel?.configured_model
+                ? `已检测 ${effectiveModel.configured_model}。`
+                : "模型检测已通过。")
+              : effectiveModel?.configured_model
+                ? `${effectiveModel.configured_model} 未通过模型检测，请检查配置与密钥。`
+                : effectiveLocalNode?.inference_detail || "当前没有可用的推理后端。",
+          },
+        ];
+        const parts = items.map((item) => `${item.label}${item.summary}`);
+        const detail = parts.join(" · ");
+        const report: ConnectivityCheckReport = {
+          checked_at: new Date().toISOString(),
+          summary: detail,
+          passed_count: items.filter((item) => item.status === "passed").length,
+          failed_count: items.filter((item) => item.status === "failed").length,
+          warning_count: items.filter((item) => item.status === "warning").length,
+          items,
+        };
+        presentConnectivityCheckReport(report);
+      });
+    } catch (error) {
+      setConnectivityCheckText(`检测失败：${(error as Error).message}`);
+      setConnectivityCheckReport({
+        checked_at: new Date().toISOString(),
+        summary: `检测失败：${(error as Error).message}`,
+        passed_count: 0,
+        failed_count: 1,
+        warning_count: 0,
+        items: [
+          {
+            key: "gateway",
+            label: "完整检测",
+            status: "failed",
+            summary: "执行失败",
+            detail: (error as Error).message,
+          },
+        ],
+      });
+      setConnectivityCheckModalOpen(true);
+      setNotice(`完整检测失败：${(error as Error).message}`);
+    }
+  }
   function updateNodeState(next: NodeListResponse) {
     syncNodeStateView(next);
   }
@@ -1718,24 +1894,43 @@ export function App() {
     ];
   }, [currentRoleIsWorker]);
   const connectionPrepItems = useMemo<Array<{ label: string; detail: string; tone: "good" | "warn" }>>(
-    () => [
-      {
-        label: "模型可用",
-        detail: modelStatus?.configured ? builtinModelStatusMeta : "尚未检测",
-        tone: modelStatus?.configured ? "good" : "warn",
-      },
-      {
-        label: "微信已连接",
-        detail: wechatRuntimeSummary.value,
-        tone: wechatRuntimeSummary.tone,
-      },
-      {
-        label: "节点在线",
-        detail: `${systemStatus?.active_nodes ?? 0} 个节点`,
-        tone: (systemStatus?.active_nodes ?? 0) > 0 ? "good" : "warn",
-      },
+    () => {
+      const localNodeOnline = localNodeStatus?.runtime_state === "connected" || localNodeStatus?.service_state === "running";
+      const activeNodeCount = Math.max(systemStatus?.active_nodes ?? 0, localNodeOnline ? 1 : 0);
+      return [
+        {
+          label: "网关可达",
+          detail: gatewayRuntimeSummary.value,
+          tone: gatewayRuntimeSummary.tone,
+        },
+        {
+          label: "模型可用",
+          detail: modelStatus?.configured ? builtinModelStatusMeta : "尚未检测",
+          tone: modelStatus?.configured ? "good" : "warn",
+        },
+        {
+          label: "微信已连接",
+          detail: wechatRuntimeSummary.value,
+          tone: wechatRuntimeSummary.tone,
+        },
+        {
+          label: "节点在线",
+          detail: `${activeNodeCount} 个节点`,
+          tone: activeNodeCount > 0 ? "good" : "warn",
+        },
+      ];
+    },
+    [
+      builtinModelStatusMeta,
+      gatewayRuntimeSummary.tone,
+      gatewayRuntimeSummary.value,
+      localNodeStatus?.runtime_state,
+      localNodeStatus?.service_state,
+      modelStatus?.configured,
+      systemStatus?.active_nodes,
+      wechatRuntimeSummary.tone,
+      wechatRuntimeSummary.value,
     ],
-    [builtinModelStatusMeta, modelStatus?.configured, systemStatus?.active_nodes, wechatRuntimeSummary.tone, wechatRuntimeSummary.value],
   );
   const connectionSignalCards = useMemo<Array<{ label: string; value: string; meta: string; tone: "good" | "warn" }>>(
     () => [
@@ -2007,13 +2202,17 @@ export function App() {
     };
   }, [selectedNodeDiagnostics, selectedNodeId, selectedNodeTimelineText]);
   const wechatStatusRows = useMemo(
-    () => [
-      { label: "接入状态", value: wechatRuntimeSummary.value, multiline: true },
-      { label: "Token 状态", value: wechatStatus?.has_token ? "已写入当前网关" : "尚未写入" },
-      { label: "运行状态", value: wechatStatus?.running ? "轮询中" : "未轮询" },
-      ...(wechatStatus?.last_error ? [{ label: "最近错误", value: wechatStatus.last_error, multiline: true }] : []),
+    () => buildWechatStatusRows(wechatStatus, wechatRuntimeSummary, now),
+    [
+      wechatRuntimeSummary,
+      wechatStatus?.has_token,
+      wechatStatus?.last_error,
+      wechatStatus?.running,
+      wechatStatus?.session_pause_reason,
+      wechatStatus?.session_paused,
+      wechatStatus?.session_paused_until,
+      now,
     ],
-    [wechatRuntimeSummary.value, wechatStatus?.has_token, wechatStatus?.last_error, wechatStatus?.running],
   );
   const pairingDebugViewEntries = useMemo<Array<{
     id: string;
@@ -2318,11 +2517,11 @@ export function App() {
                 activeBindings: publicEntryProfileState?.stats.active_bindings || 0,
               },
             }}
-            modelCheckText={modelCheck ? (modelCheck.configured_model_available ? "可用" : "未命中模型列表") : null}
+            connectivityCheckText={connectivityCheckText}
             wechatLastError={wechatStatus?.last_error || null}
             wechatStatus={wechatStatus}
             systemStatus={systemStatus}
-            onRunModelCheck={() => void runModelCheck()}
+            onRunConnectivityCheck={() => void runConnectivityCheck()}
             onToggleDispatch={() => void applyDispatchMode(!gatewaySetup.dispatch_mode_enabled)}
             onRefreshAllStatus={() => void refreshAllConnectionStatus()}
             onWechatBaseUrlChange={setWechatBaseUrl}
@@ -2459,6 +2658,11 @@ export function App() {
           />
         );
       })()}
+      <ConnectivityCheckModal
+        open={connectivityCheckModalOpen}
+        report={connectivityCheckReport}
+        onClose={() => setConnectivityCheckModalOpen(false)}
+      />
     </div>
   );
 }

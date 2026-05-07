@@ -257,6 +257,8 @@ class PublicEntryServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("长按识别图中二维码", html)
         self.assertIn("单独打开二维码图片", html)
+        self.assertIn('scheduleRenew("bound")', html)
+        self.assertIn("方便下一位继续扫码接入", html)
 
     async def test_slow_ticket_poll_does_not_block_creating_another_client_ticket(self) -> None:
         first = await self.service.create_or_restore_ticket("client-a")

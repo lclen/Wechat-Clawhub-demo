@@ -21,6 +21,7 @@ type PublicEntryTicketResponse = {
 const CLIENT_STORAGE_KEY = "wch-public-entry-client-id";
 const POLL_INTERVAL_MS = 2200;
 const AUTO_RENEW_DELAY_MS = 900;
+const BOUND_RENEW_DELAY_MS = 3200;
 const EARLY_RENEW_WINDOW_MS = 90 * 1000;
 
 function ensureClientId() {
@@ -82,7 +83,7 @@ export function PublicEntryPage() {
   const renewTimeoutRef = useRef<number | null>(null);
   const renewingRef = useRef(false);
   const currentExpiresAtRef = useRef<string>("");
-  const startFlowRef = useRef<() => Promise<void>>(async () => undefined);
+  const startFlowRef = useRef<(forceNew?: boolean) => Promise<void>>(async () => undefined);
   const lifecycleTokenRef = useRef(0);
   const createTicketControllerRef = useRef<AbortController | null>(null);
   const loadTicketControllerRef = useRef<AbortController | null>(null);
@@ -108,7 +109,7 @@ export function PublicEntryPage() {
     createTicketControllerRef.current = null;
   }, []);
 
-  const scheduleRenew = useCallback((reason: "expired" | "clock") => {
+  const scheduleRenew = useCallback((reason: "expired" | "clock" | "bound") => {
     if (renewingRef.current) return;
     renewingRef.current = true;
     stopPolling();
@@ -121,7 +122,9 @@ export function PublicEntryPage() {
             detail:
               reason === "expired"
                 ? "当前专属二维码已过期，正在自动领取新的专属二维码..."
-                : "当前专属二维码即将失效，正在后台刷新新的专属二维码...",
+                : reason === "bound"
+                  ? "当前用户已经完成绑定。页面会自动生成新的专属二维码，方便下一位继续扫码接入。"
+                  : "当前专属二维码即将失效，正在后台刷新新的专属二维码...",
           }
         : current,
     );
@@ -153,14 +156,21 @@ export function PublicEntryPage() {
             if (token !== lifecycleTokenRef.current) {
               return;
             }
-            if (next.status === "bound" || next.status === "failed") {
+            if (next.status === "bound") {
+              scheduleRenew("bound");
+              renewTimeoutRef.current = window.setTimeout(() => {
+                void startFlowRef.current(true);
+              }, BOUND_RENEW_DELAY_MS);
+              return;
+            }
+            if (next.status === "failed") {
               renewingRef.current = false;
               return;
             }
             if (next.status === "expired") {
               scheduleRenew("expired");
               renewTimeoutRef.current = window.setTimeout(() => {
-                void startFlowRef.current();
+                void startFlowRef.current(true);
               }, AUTO_RENEW_DELAY_MS);
               return;
             }
@@ -168,7 +178,7 @@ export function PublicEntryPage() {
             if (Number.isFinite(expiresAt) && expiresAt - Date.now() <= EARLY_RENEW_WINDOW_MS) {
               scheduleRenew("clock");
               renewTimeoutRef.current = window.setTimeout(() => {
-                void startFlowRef.current();
+                void startFlowRef.current(true);
               }, AUTO_RENEW_DELAY_MS);
               return;
             }
@@ -214,13 +224,23 @@ export function PublicEntryPage() {
       renewingRef.current = false;
       currentExpiresAtRef.current = created.expires_at;
       setTicket(created);
+      if (created.status === "bound") {
+        scheduleRenew("bound");
+        renewTimeoutRef.current = window.setTimeout(() => {
+          void startFlowRef.current(true);
+        }, BOUND_RENEW_DELAY_MS);
+        return;
+      }
+      if (created.status === "failed") {
+        return;
+      }
       schedulePoll(created.ticket_id, forceNew ? 0 : POLL_INTERVAL_MS);
       expiresCheckRef.current = window.setInterval(() => {
         const expiresAt = Date.parse(currentExpiresAtRef.current);
         if (Number.isFinite(expiresAt) && expiresAt - Date.now() <= EARLY_RENEW_WINDOW_MS) {
           scheduleRenew(Date.now() >= expiresAt ? "expired" : "clock");
           renewTimeoutRef.current = window.setTimeout(() => {
-            void startFlowRef.current();
+            void startFlowRef.current(true);
           }, AUTO_RENEW_DELAY_MS);
         }
       }, 1000);
@@ -251,11 +271,18 @@ export function PublicEntryPage() {
     if (ticket.status === "expired") {
       scheduleRenew("expired");
       renewTimeoutRef.current = window.setTimeout(() => {
-        void startFlowRef.current();
+        void startFlowRef.current(true);
       }, AUTO_RENEW_DELAY_MS);
       return;
     }
-    if (ticket.status === "bound" || ticket.status === "failed") {
+    if (ticket.status === "bound") {
+      scheduleRenew("bound");
+      renewTimeoutRef.current = window.setTimeout(() => {
+        void startFlowRef.current(true);
+      }, BOUND_RENEW_DELAY_MS);
+      return;
+    }
+    if (ticket.status === "failed") {
       renewingRef.current = false;
     }
   }, [scheduleRenew, startFlow, ticket]);
@@ -339,7 +366,7 @@ export function PublicEntryPage() {
             <article className="public-entry-story-card">
               <span>使用提示</span>
               <strong>{profile?.contact_hint || "完成确认后，回到微信发送问题即可开始对话。"}</strong>
-              <p>如果二维码过期，页面会自动刷新新的专属二维码；只有连续失败时才需要你手动重新领取。</p>
+              <p>如果二维码过期，或上一位用户已经完成绑定，页面都会自动刷新新的专属二维码；只有连续失败时才需要你手动重新领取。</p>
             </article>
           </div>
         </section>

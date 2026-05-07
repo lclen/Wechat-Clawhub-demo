@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     dify_api_key: str = ""
     wechat_token: str = ""
     wechat_base_url: str = "https://ilinkai.weixin.qq.com"
+    wechat_bot_agent: str = "OpenClaw"
     wechat_mp_app_id: str = ""
     wechat_mp_app_secret: str = ""
     wechat_mp_token: str = ""

@@ -221,6 +221,9 @@ class MultiWeChatBotService:
             config_store_key=f"wch:config:wechat:account:{config.account_id}",
             persist_env=False,
             user_route_recorder=self.record_user_route,
+            external_account_id=config.external_account_id,
+            managed_account_id=config.account_id,
+            managed_bound_agent_id=config.bound_agent_id,
         )
         self._attach_runtime(runtime)
         return runtime

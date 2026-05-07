@@ -46,6 +46,16 @@ uv run python -m launcher.main
 > [!IMPORTANT]
 > 节点端启动 launcher 后，页面不会自动拉起 gateway。这是正确行为。
 
+### 前端与桌面安装包同步
+
+桌面安装包的链路是 `agent-console/dist -> desktop-launcher.exe -> WinUI 客户端发布目录`，不是直接读取 `src`。修改前端代码后：
+
+- 开发期运行 `cd apps/agent-console && npm run build`，launcher 会继续服务最新的 `dist`。
+- 正式打包桌面安装包运行 `.\scripts\build-winui-client.ps1`，脚本会先调用 `build-desktop-launcher.ps1`。
+- `build-desktop-launcher.ps1` 会先执行 `apps/agent-console` 的 `npm run build`，再把最新 `dist` 打进 `dist\desktop-launcher\wechat-claw-hub-launcher.exe`。
+- WinUI 客户端项目会把 `dist\desktop-launcher\wechat-claw-hub-launcher.exe` 复制到发布目录的 `runtime\wechat-claw-hub-launcher.exe`，所以安装包/发布目录会使用最新前端。
+- 微信运行态、完整检测等跨客户端状态文案应优先放在 `apps/agent-console/src/presenters/*` 或 `apps/desktop-launcher/launcher/*_presenter.py`，避免在页面和启动器检测里重复写分支。
+
 ---
 
 ## 节点服务管理
@@ -240,7 +250,8 @@ $pids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinu
 
 **当前已确认可用的协议约束**：
 
-- `base_info.channel_version` 必须对齐 OpenClaw 兼容版本，当前固定为 `2.1.6`
+- `base_info.channel_version` 需要与当前 OpenClaw Weixin 兼容实现保持一致，现已跟进到 `2.4.1`
+- `base_info.bot_agent` 建议稳定声明，当前网关默认使用 `OpenClaw`
 - `iLink-App-ClientVersion` 必须基于同一个兼容版本编码
 - 图片消息 `image_item` 需要携带顶层 `aeskey`
 - `media.aes_key` 需要使用 `base64(hex-string)` 兼容编码
@@ -257,7 +268,7 @@ $pids | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinu
    - 当前兼容模式通常会显示更长的掩码，例如 `...(44)`
    - 如果回退成较短形态，通常说明 `aes_key` 又被改回了 raw-key base64
 3. 检查 `apps/gateway/app/access/wechat_bot.py` 是否仍保留以下兼容逻辑：
-   - `WECHAT_OPENCLAW_COMPAT_VERSION = "2.1.6"`
+   - `WECHAT_OPENCLAW_COMPAT_VERSION = "2.4.1"`
    - `_encode_wechat_media_aes_key()`
    - `image_item["aeskey"] = aeskey_hex`
 4. 若日志显示 `cdn_upload success` 但缺少 `send_uploaded_media success`，优先检查 `sendmessage` 请求和返回体

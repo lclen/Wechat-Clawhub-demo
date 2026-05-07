@@ -1457,12 +1457,18 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   line-height: 1.15;
   font-weight: 800;
   color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .connection-hero-detail {
   margin-top: 10px;
   color: var(--muted);
   line-height: 1.6;
   font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .connection-signal-grid {
   display: grid;
@@ -1489,12 +1495,18 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   font-size: 22px;
   font-weight: 800;
   color: #22314a;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .connection-signal-meta {
   margin-top: 8px;
   color: #66738b;
   line-height: 1.6;
   font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .connection-signal-note {
   margin-top: 12px;
@@ -2519,6 +2531,28 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   .connection-overview-chip-row {
     justify-content: flex-start;
   }
+
+  .connection-dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .connection-main-column,
+  .connection-sidebar-column {
+    min-width: 0;
+  }
+
+  .connection-sidebar-column {
+    position: static;
+    top: auto;
+  }
+
+  .workspace-hero-strip {
+    flex-wrap: wrap;
+  }
+
+  .workspace-hero-strip .connection-hero-card {
+    flex: 1 1 240px;
+  }
 }
 
 /* Connection Dashboard Grid (v3) */
@@ -2857,6 +2891,68 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   display: flex;
   gap: 8px;
   margin-top: 4px;
+}
+
+.connectivity-check-modal-card {
+  width: min(680px, calc(100vw - 32px));
+  max-width: 680px;
+  align-items: stretch;
+  gap: 18px;
+  padding: 24px 24px 22px;
+}
+
+.connectivity-check-modal-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+}
+
+.connectivity-check-modal-meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  width: 100%;
+  font-size: 12px;
+  color: var(--text-secondary, #555);
+}
+
+.connectivity-check-modal-list {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+}
+
+.connectivity-check-modal-item {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 14px 12px;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.72), rgba(255,255,255,0.9)),
+    radial-gradient(circle at top left, rgba(52, 100, 236, 0.06), transparent 42%);
+}
+
+.connectivity-check-modal-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.connectivity-check-modal-summary {
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary, #1a1a1a);
+}
+
+.connectivity-check-modal-detail {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary, #555);
 }
 
 /* Auth failed badge on node card */
@@ -3529,6 +3625,9 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   line-height: 1.15;
   letter-spacing: -0.04em;
   color: var(--title);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .metric-card-detail {
@@ -3537,6 +3636,9 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
   color: var(--body);
   font-size: 12px;
   line-height: 1.5;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .metric-card-accent {
@@ -3579,6 +3681,9 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .command-bar-detail {
   color: var(--muted);
   font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .command-bar-actions {
@@ -3642,6 +3747,9 @@ label span { color: var(--muted); font-size: 13px; font-weight: 700; }
 .console-info-row strong {
   color: var(--title);
   line-height: 1.6;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .connection-section-grid-single {

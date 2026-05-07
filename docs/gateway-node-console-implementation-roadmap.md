@@ -238,8 +238,8 @@
 
 修复措施：
 
-- 将微信协议兼容版本固定对齐到 `OpenAkita` 默认兼容版本 `2.1.6`
-- `iLink-App-ClientVersion` 改为基于 `2.1.6` 编码，而不是基于本项目版本号编码
+- 将微信协议兼容版本更新到当前 `openclaw-weixin` 轨道的 `2.4.1`
+- `iLink-App-ClientVersion` 改为基于 `2.4.1` 编码，并与 `base_info.channel_version` 同步
 - 图片/视频/文件消息补充顶层 `aeskey`
 - `media.aes_key` 改为与 `OpenAkita` 一致的 `base64(hex-string)` 编码方式
 - 保持 `no_need_thumb=true` 的官方兼容模式，不再依赖缩略图上传
