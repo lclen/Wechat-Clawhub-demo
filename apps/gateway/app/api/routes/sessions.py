@@ -8,12 +8,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSock
 from app.core.deps import (
     ensure_redis_available,
     get_dispatch_queue,
+    get_outgoing_dispatcher,
     get_redis_store,
     get_session_manager,
     get_session_overview_snapshot_service,
 )
 from app.dispatch.queue import DispatchQueue, DispatchQueueError
 from app.models.session import (
+    HumanReplyRequest,
+    HumanReplyResponse,
     SessionClaimRequest,
     SessionClaimResponse,
     SessionDetailResponse,
@@ -25,6 +28,7 @@ from app.models.session import (
     SessionSwitchRequest,
     SessionSwitchResponse,
 )
+from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionCursorError, SessionManager, SessionManagerError, SessionNotFoundError
 from app.services.snapshot_services import SessionOverviewSnapshotService
@@ -374,6 +378,8 @@ async def release_session(
             session_id=session_id,
             new_status=SessionStatus.BOT_ACTIVE,
             claimed_by=None,
+            handoff_requested_at=None,
+            handoff_expires_at=None,
             reason=payload.reason or "employee_released",
         )
 
@@ -386,4 +392,66 @@ async def release_session(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except SessionManagerError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
+@router.post("/{session_id}/human-reply", response_model=HumanReplyResponse)
+async def send_human_reply(
+    session_id: str,
+    payload: HumanReplyRequest,
+    store: RedisStore = Depends(get_redis_store),
+    manager: SessionManager = Depends(get_session_manager),
+    dispatch_queue: DispatchQueue = Depends(get_dispatch_queue),
+    outgoing_dispatcher: OutgoingDispatcher = Depends(get_outgoing_dispatcher),
+) -> HumanReplyResponse:
+    """
+    控制台人工回复。
+
+    - handoff_pending 会在发送前自动认领为 human_active
+    - human_active 直接发送
+    - 发送失败不追加 human 消息，避免 transcript 显示未实际送达
+    """
+    await ensure_redis_available(store)
+    try:
+        session = await manager.get_session(session_id)
+        if session.status not in {SessionStatus.HANDOFF_PENDING, SessionStatus.HUMAN_ACTIVE}:
+            raise SessionManagerError(
+                f"Cannot send human reply in status: {session.status}"
+            )
+
+        if session.active_task_id:
+            session = await dispatch_queue._abandon_active_task(
+                session,
+                requested_by=payload.employee_id,
+                reason="human_reply",
+            )
+
+        if session.status == SessionStatus.HANDOFF_PENDING:
+            session = await manager.update_session_status(
+                session_id=session_id,
+                new_status=SessionStatus.HUMAN_ACTIVE,
+                claimed_by=payload.employee_id,
+                reason="human_reply_auto_claim",
+            )
+
+        await outgoing_dispatcher.deliver_human_reply(session, payload.content)
+        updated_session, message = await manager.append_human_message(
+            session_id=session_id,
+            content=payload.content,
+            actor_id=payload.employee_id,
+            metadata={"delivery_status": "sent"},
+        )
+        return HumanReplyResponse(
+            ok=True,
+            session=updated_session,
+            message=message,
+            detail="人工回复已发送",
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except SessionManagerError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except DispatchQueueError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"人工回复发送失败：{exc}") from exc
 

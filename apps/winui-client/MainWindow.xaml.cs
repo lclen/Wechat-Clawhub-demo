@@ -125,7 +125,7 @@ public sealed partial class MainWindow : Window
         catch (Exception exception)
         {
             AppLog.Error("WebView2 initialization failed.", exception);
-            ShowFailure($"WebView2 初始化失败：{exception.Message}");
+            ShowFailure($"WebView2 初始化失败：{exception.Message}。请确认系统已安装 Microsoft Edge WebView2 Runtime。");
         }
     }
 

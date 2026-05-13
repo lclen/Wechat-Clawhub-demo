@@ -349,7 +349,7 @@ LocalNodeStatusResponse.model_rebuild()
 def apply_machine_role(profile: LauncherProfile, machine_role: LauncherMachineRole) -> LauncherProfile:
     if machine_role == LauncherMachineRole.GATEWAY:
         profile.enable_gateway = True
-        profile.enable_local_node = True
+        profile.enable_local_node = False
     elif machine_role == LauncherMachineRole.NODE:
         profile.enable_gateway = False
         profile.enable_local_node = True

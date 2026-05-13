@@ -479,6 +479,9 @@ class Worker:
         task = self._register_retry_task
         if task is None:
             return
+        if task is asyncio.current_task():
+            self._register_retry_task = None
+            return
         if task.done():
             self._register_retry_task = None
             return

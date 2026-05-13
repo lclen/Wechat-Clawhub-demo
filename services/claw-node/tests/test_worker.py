@@ -81,6 +81,33 @@ class WorkerHeartbeatRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(worker._polling_task)
         await worker._stop_gateway_loops()
 
+    async def test_register_retry_task_does_not_cancel_itself_after_success(self) -> None:
+        settings = NodeSettings(
+            CLAW_NODE_ID="local-node",
+            CLAW_GATEWAY_BASE_URL="http://127.0.0.1:8300",
+            CLAW_NODE_TOKEN="",
+            CLAW_LOCAL_DIRECT_AUTH="true",
+            CLAW_OPENAI_BASE_URL="https://example.com/v1",
+            CLAW_OPENAI_API_KEY="test-key",
+            CLAW_OPENAI_MODEL="test-model",
+            CLAW_TASK_STREAM_RECONNECT_SECONDS=1,
+        )
+
+        worker = Worker(settings)
+        worker._register_with_gateway = AsyncMock()
+        worker._sync_channel_states_from_gateway = AsyncMock()
+
+        retry_task = asyncio.current_task()
+        worker._register_retry_task = retry_task
+        await worker._ensure_gateway_loops_started()
+
+        worker._register_with_gateway.assert_awaited_once()
+        self.assertIsNone(worker._register_retry_task)
+        self.assertIsNotNone(worker._heartbeat_task)
+        self.assertIsNotNone(worker._polling_task)
+        self.assertFalse(retry_task.cancelled())
+        await worker._stop_gateway_loops()
+
     async def test_worker_without_inference_backend_stays_discoverable(self) -> None:
         settings = NodeSettings(
             CLAW_NODE_ID="node-local-1",

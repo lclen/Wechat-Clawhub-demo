@@ -177,7 +177,7 @@ export function buildLauncherStartPayload(
 ): LauncherStartRequest {
   const dispatchModeEnabled = options?.dispatchModeEnabled ?? (launcherStatus?.profile.dispatch_mode_enabled ?? false);
   const enableNodeCacheRedis = options?.enableNodeCacheRedis
-    ?? ((launcherStatus?.profile.node_cache_policy !== "disabled") && launcherRoleUsesLocalNode(machineRole) && !dispatchModeEnabled);
+    ?? (((launcherStatus?.profile.node_cache_policy ?? "disabled") !== "disabled") && launcherRoleUsesLocalNode(machineRole) && !dispatchModeEnabled);
   const requestedNodeId = options?.localNodeId?.trim() || launcherStatus?.profile.local_node_id?.trim() || DEFAULT_REMOTE_WORKER_NODE_ID;
   const localNodeId = machineRole === "node"
     ? (LEGACY_WORKER_NODE_IDS.has(requestedNodeId) ? DEFAULT_REMOTE_WORKER_NODE_ID : requestedNodeId)

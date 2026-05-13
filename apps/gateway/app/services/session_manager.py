@@ -117,6 +117,65 @@ class SessionManager:
         self._transcript_writer.append_message(message)
         return session
 
+    async def append_role_message(
+        self,
+        *,
+        session_id: str,
+        role: MessageRole,
+        content: str,
+        actor_id: str | None = None,
+        node_id: str | None = None,
+        metadata: dict[str, str] | None = None,
+    ) -> tuple[SessionRecord, MessageRecord]:
+        session = await self.get_session(session_id)
+        message = MessageRecord(
+            message_id=f"msg_{uuid4().hex}",
+            session_id=session.session_id,
+            channel=session.channel,
+            user_id=session.user_id,
+            role=role,
+            content=content,
+            created_at=self._utcnow(),
+            actor_id=actor_id,
+            node_id=node_id,
+            metadata=metadata or {},
+        )
+        session = await self._append_message(session, message)
+        self._transcript_writer.append_message(message)
+        return session, message
+
+    async def append_human_message(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        actor_id: str,
+        metadata: dict[str, str] | None = None,
+    ) -> tuple[SessionRecord, MessageRecord]:
+        return await self.append_role_message(
+            session_id=session_id,
+            role=MessageRole.HUMAN,
+            content=content,
+            actor_id=actor_id,
+            metadata=metadata,
+        )
+
+    async def append_system_notice(
+        self,
+        *,
+        session_id: str,
+        content: str,
+        actor_id: str = "gateway",
+        metadata: dict[str, str] | None = None,
+    ) -> tuple[SessionRecord, MessageRecord]:
+        return await self.append_role_message(
+            session_id=session_id,
+            role=MessageRole.SYSTEM,
+            content=content,
+            actor_id=actor_id,
+            metadata=metadata,
+        )
+
     async def ensure_session(self, *, channel: str, user_id: str, agent_id: str | None) -> SessionRecord:
         return await self._get_or_create_session(channel=channel, user_id=user_id, agent_id=agent_id)
 
@@ -374,6 +433,8 @@ class SessionManager:
                 "reply_context_token": "",
                 "handoff_ticket_id": "",
                 "claimed_by": "",
+                "handoff_requested_at": "",
+                "handoff_expires_at": "",
                 "message_count": "0",
                 "last_message_at": now.isoformat(),
                 "last_dispatch_at": "",
@@ -498,6 +559,8 @@ class SessionManager:
         last_dispatch_raw = raw.get("last_dispatch_at") or None
         slot_bound_at_raw = raw.get("slot_bound_at") or None
         slot_expires_at_raw = raw.get("slot_expires_at") or None
+        handoff_requested_at_raw = raw.get("handoff_requested_at") or None
+        handoff_expires_at_raw = raw.get("handoff_expires_at") or None
         return SessionRecord(
             session_id=raw["session_id"],
             channel=raw["channel"],
@@ -516,6 +579,8 @@ class SessionManager:
             reply_context_token=raw.get("reply_context_token") or None,
             handoff_ticket_id=raw.get("handoff_ticket_id") or None,
             claimed_by=raw.get("claimed_by") or None,
+            handoff_requested_at=self._parse_dt(handoff_requested_at_raw) if handoff_requested_at_raw else None,
+            handoff_expires_at=self._parse_dt(handoff_expires_at_raw) if handoff_expires_at_raw else None,
             message_count=int(raw.get("message_count", "0")),
             last_message_at=self._parse_dt(raw["last_message_at"]),
             last_dispatch_at=self._parse_dt(last_dispatch_raw) if last_dispatch_raw else None,
@@ -542,7 +607,19 @@ class SessionManager:
         last_message_at: datetime | None = None,
         version: int | None = None,
         reply_context_token: str | None = None,
+        handoff_requested_at: datetime | None | object = _UNSET,
+        handoff_expires_at: datetime | None | object = _UNSET,
+        claimed_by: str | None | object = _UNSET,
+        handoff_ticket_id: str | None | object = _UNSET,
     ) -> dict[str, str]:
+        next_handoff_requested_at = (
+            session.handoff_requested_at if handoff_requested_at is _UNSET else handoff_requested_at
+        )
+        next_handoff_expires_at = (
+            session.handoff_expires_at if handoff_expires_at is _UNSET else handoff_expires_at
+        )
+        next_claimed_by = session.claimed_by if claimed_by is _UNSET else claimed_by
+        next_handoff_ticket_id = session.handoff_ticket_id if handoff_ticket_id is _UNSET else handoff_ticket_id
         return {
             "session_id": session.session_id,
             "channel": session.channel,
@@ -560,8 +637,10 @@ class SessionManager:
             "slot_bound_at": slot_bound_at.isoformat() if slot_bound_at else "",
             "slot_expires_at": slot_expires_at.isoformat() if slot_expires_at else "",
             "reply_context_token": session.reply_context_token or "" if reply_context_token is None else (reply_context_token or ""),
-            "handoff_ticket_id": session.handoff_ticket_id or "",
-            "claimed_by": session.claimed_by or "",
+            "handoff_ticket_id": next_handoff_ticket_id or "",
+            "claimed_by": next_claimed_by or "",
+            "handoff_requested_at": next_handoff_requested_at.isoformat() if next_handoff_requested_at else "",
+            "handoff_expires_at": next_handoff_expires_at.isoformat() if next_handoff_expires_at else "",
             "message_count": str(session.message_count if message_count is None else message_count),
             "last_message_at": (
                 session.last_message_at if last_message_at is None else last_message_at
@@ -585,6 +664,8 @@ class SessionManager:
         new_status: SessionStatus,
         claimed_by: str | None = None,
         handoff_ticket_id: str | None = None,
+        handoff_requested_at: datetime | None | object = _UNSET,
+        handoff_expires_at: datetime | None | object = _UNSET,
         reason: str = "",
     ) -> SessionRecord:
         """
@@ -624,13 +705,14 @@ class SessionManager:
             routing_mode=session.routing_mode,
             slot_bound_at=session.slot_bound_at,
             slot_expires_at=session.slot_expires_at,
+            claimed_by=claimed_by,
+            handoff_requested_at=handoff_requested_at,
+            handoff_expires_at=handoff_expires_at,
+            handoff_ticket_id=session.handoff_ticket_id if handoff_ticket_id is None else handoff_ticket_id,
         )
 
         # 更新状态相关字段
         meta["status"] = new_status.value
-        meta["claimed_by"] = claimed_by or ""
-        if handoff_ticket_id is not None:
-            meta["handoff_ticket_id"] = handoff_ticket_id
 
         # 写入 Redis
         try:
@@ -649,6 +731,8 @@ class SessionManager:
                 "to_status": new_status.value,
                 "claimed_by": claimed_by or "",
                 "handoff_ticket_id": handoff_ticket_id or "",
+                "handoff_requested_at": meta.get("handoff_requested_at", ""),
+                "handoff_expires_at": meta.get("handoff_expires_at", ""),
                 "reason": reason,
             },
         )

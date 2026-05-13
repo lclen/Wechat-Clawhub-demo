@@ -178,6 +178,36 @@ class OutgoingDispatcher:
         finally:
             await self.clear_processing_indicator(session)
 
+    async def deliver_human_reply(self, session: SessionRecord, content: str) -> None:
+        started_at = time.perf_counter()
+        try:
+            await self._send_text(session, content)
+            logger.info(
+                "[handoff] human_reply_sent session=%s channel=%s chars=%s send_ms=%.0f",
+                session.session_id,
+                session.channel,
+                len(content),
+                (time.perf_counter() - started_at) * 1000,
+            )
+        except Exception as exc:
+            self._transcript_writer.append_event(
+                session_id=session.session_id,
+                event_type=f"{session.channel}_human_reply_send_failed",
+                actor_type="system",
+                actor_id="gateway",
+                payload=await self._build_channel_error_payload(session.channel, exc),
+            )
+            logger.exception(
+                "[handoff] human_reply_failed session=%s channel=%s chars=%s send_ms=%.0f",
+                session.session_id,
+                session.channel,
+                len(content),
+                (time.perf_counter() - started_at) * 1000,
+            )
+            raise
+        finally:
+            await self.clear_processing_indicator(session)
+
     async def _send_reply(self, session: SessionRecord, content: str) -> None:
         if session.channel == "wechat":
             await self._wechat_bot.send_markdown(
@@ -209,6 +239,8 @@ class OutgoingDispatcher:
                 text=content,
                 context_token=session.reply_context_token,
             )
+            return
+        raise RuntimeError(f"Unsupported outgoing text channel: {session.channel}")
 
 
 def render_markdown_to_plain_text(content: str) -> str:

@@ -219,24 +219,28 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
           const runtimeRole = launcherMachineRoleValue(launcherSt);
           const gatewayShouldRun = launcherShouldRunGateway(launcherSt);
           if (!gatewayShouldRun) {
-            if (runtimeRole === "node") {
-              try {
-                const localProfile = await withTimeout(
-                  requestJson<SetupProfileResponse>("/local/setup/profile"),
-                  LOCAL_BOOTSTRAP_TIMEOUT_MS,
-                  "local setup profile",
+            try {
+              const localProfile = await withTimeout(
+                requestJson<SetupProfileResponse>("/local/setup/profile"),
+                LOCAL_BOOTSTRAP_TIMEOUT_MS,
+                "local setup profile",
+              );
+              if (!cancelled && (localProfile.setup_completed || localProfile.completed_roles.length)) {
+                applyLocalProfile(
+                  localProfile,
+                  runtimeRole === "console"
+                    ? "当前为控制台角色，已恢复目标网关配置。"
+                    : "当前为节点角色，网关运行在远端机器上。",
                 );
-                if (!cancelled) {
-                  applyLocalProfile(localProfile, "当前为节点角色，网关运行在远端机器上。");
-                }
-              } catch {
-                // ignore launcher-only setup bootstrap errors
+                return;
               }
-            } else {
-              setWorkspace(initialUiState.workspace ?? "quick_setup");
-              setSetupMode("role");
-              setNotice(runtimeRole === "console" ? "当前为控制台角色，本机不托管网关；请选择并连接目标网关。" : "当前机器未托管本地网关，请先选择角色并完成连接。");
+            } catch {
+              // ignore launcher-only setup bootstrap errors
             }
+            if (cancelled) return;
+            setWorkspace(initialUiState.workspace ?? "quick_setup");
+            setSetupMode("role");
+            setNotice(runtimeRole === "console" ? "当前为控制台角色，本机不托管网关；请选择并连接目标网关。" : "当前机器未托管本地网关，请先选择角色并完成连接。");
             return;
           }
         }

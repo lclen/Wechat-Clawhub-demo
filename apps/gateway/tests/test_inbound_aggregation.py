@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueueError
 from app.models.session import InboundMessageRequest, MessageRecord, MessageRole, SessionRecord, SessionStatus
-from app.services.inbound_aggregation import InboundAggregationService, PendingInboundBatch
+from app.services.inbound_aggregation import InboundAggregationService, PendingInboundBatch, is_handoff_request
 
 
 class InboundAggregationServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -30,14 +30,20 @@ class InboundAggregationServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         await self.service.shutdown()
 
-    def _build_session(self, *, session_id: str = "wechat:user-1", active_task_id: str | None = None) -> SessionRecord:
+    def _build_session(
+        self,
+        *,
+        session_id: str = "wechat:user-1",
+        active_task_id: str | None = None,
+        status: SessionStatus = SessionStatus.BOT_ACTIVE,
+    ) -> SessionRecord:
         now = datetime.now(UTC)
         return SessionRecord(
             session_id=session_id,
             channel="wechat",
             user_id="wechat-user",
             agent_id="agent-1",
-            status=SessionStatus.BOT_ACTIVE,
+            status=status,
             active_task_id=active_task_id,
             reply_context_token="ctx-1",
             message_count=1,
@@ -235,6 +241,68 @@ class InboundAggregationServiceTests(unittest.IsolatedAsyncioTestCase):
             message=message,
             exc=unittest.mock.ANY,
         )
+
+    async def test_handoff_request_enters_pending_and_skips_ai_dispatch(self) -> None:
+        session = self._build_session()
+        pending_session = self._build_session(status=SessionStatus.HANDOFF_PENDING)
+        notice_session = self._build_session(status=SessionStatus.HANDOFF_PENDING)
+        message = self._build_message(message_id="msg-1", content="我要转人工")
+        self.session_manager.ingest_inbound_message.return_value = (session, message)
+        self.session_manager.get_session.return_value = session
+        self.session_manager.update_session_status.return_value = pending_session
+        self.outgoing_dispatcher.deliver_system_notice.return_value = True
+        self.session_manager.append_system_notice.return_value = (notice_session, Mock())
+
+        result = await self.service.ingest_text_message(
+            InboundMessageRequest(channel="wechat", user_id="wechat-user", content="我要转人工")
+        )
+
+        self.assertEqual(result.batch_state, SessionStatus.HANDOFF_PENDING.value)
+        self.dispatch_queue.enqueue_for_inbound.assert_not_awaited()
+        self.session_manager.update_session_status.assert_awaited_once()
+        self.assertEqual(
+            self.session_manager.update_session_status.await_args.kwargs["new_status"],
+            SessionStatus.HANDOFF_PENDING,
+        )
+        self.outgoing_dispatcher.deliver_system_notice.assert_awaited_once_with(
+            pending_session,
+            self.settings.handoff_waiting_notice,
+            event_type="handoff_waiting_notice_failed",
+        )
+        self.session_manager.append_system_notice.assert_awaited_once()
+
+    async def test_handoff_intent_ignores_ai_phrase(self) -> None:
+        self.assertFalse(is_handoff_request("人工智能是什么"))
+        self.assertFalse(is_handoff_request("AI人工智能相关问题"))
+        self.assertTrue(is_handoff_request("帮我联系人工客服"))
+
+    async def test_human_active_inbound_is_recorded_without_ai_dispatch(self) -> None:
+        session = self._build_session(status=SessionStatus.HUMAN_ACTIVE)
+        message = self._build_message(message_id="msg-1", content="还在吗")
+        self.session_manager.ingest_inbound_message.return_value = (session, message)
+        self.session_manager.get_session.return_value = session
+
+        result = await self.service.ingest_text_message(
+            InboundMessageRequest(channel="wechat", user_id="wechat-user", content="还在吗")
+        )
+
+        self.assertEqual(result.batch_state, SessionStatus.HUMAN_ACTIVE.value)
+        self.dispatch_queue.enqueue_for_inbound.assert_not_awaited()
+        self.outgoing_dispatcher.send_progress_notice.assert_not_awaited()
+
+    async def test_handoff_phrase_during_human_active_does_not_reopen_pending(self) -> None:
+        session = self._build_session(status=SessionStatus.HUMAN_ACTIVE)
+        message = self._build_message(message_id="msg-1", content="转人工")
+        self.session_manager.ingest_inbound_message.return_value = (session, message)
+        self.session_manager.get_session.return_value = session
+
+        result = await self.service.ingest_text_message(
+            InboundMessageRequest(channel="wechat", user_id="wechat-user", content="转人工")
+        )
+
+        self.assertEqual(result.batch_state, SessionStatus.HUMAN_ACTIVE.value)
+        self.session_manager.update_session_status.assert_not_awaited()
+        self.dispatch_queue.enqueue_for_inbound.assert_not_awaited()
 
 
 if __name__ == "__main__":

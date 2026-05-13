@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     dispatch_task_timeout_seconds: int = Field(default=120, ge=30, le=3600)
     session_slot_idle_timeout_seconds: int = Field(default=600, ge=60, le=86_400)
     inbound_text_quiet_window_seconds: float = Field(default=3.0, ge=0.1, le=30.0)
+    handoff_timeout_seconds: int = Field(default=600, ge=30, le=86_400)
+    handoff_waiting_notice: str = "正在等待员工接入，请稍候。"
+    handoff_timeout_notice: str = "当前员工人手不足，请稍后再试，我将继续为您提供 AI 协助。"
     recent_message_limit: int = Field(default=20, ge=1, le=200)
     transcript_dir: Path = Field(default=Path("data/transcripts"))
     identity_dir: Path = Field(default=Path("data/identity"))

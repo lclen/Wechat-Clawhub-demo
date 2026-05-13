@@ -98,6 +98,26 @@ class WorkerModelEnvMigrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["gateway"]["builtin_model_name"], "")
         self.assertEqual(payload["console"]["gateway_base_url"], "http://192.168.0.17:8300")
 
+    async def test_local_setup_profile_console_role_restores_remote_gateway(self) -> None:
+        app = create_app()
+        with tempfile.TemporaryDirectory() as tempdir:
+            app.state.profile = LauncherProfile(
+                workdir=tempdir,
+                gateway_base_url="http://192.168.0.17:8300",
+                enable_gateway=False,
+                enable_local_node=False,
+                bootstrap_completed=True,
+            )
+            route = next(item for item in app.routes if getattr(item, "path", "") == "/local/setup/profile")
+            response = await route.endpoint()
+            payload = json.loads(response.body.decode("utf-8"))
+
+        self.assertEqual(payload["recommended_workspace"], "sessions")
+        self.assertTrue(payload["setup_completed"])
+        self.assertEqual(payload["completed_roles"], ["console_only"])
+        self.assertEqual(payload["preferred_gateway_base_url"], "http://192.168.0.17:8300")
+        self.assertEqual(payload["console"]["gateway_base_url"], "http://192.168.0.17:8300")
+
     async def test_migrate_worker_model_config_copies_openai_template_when_node_env_is_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tempdir:
             root = Path(tempdir)

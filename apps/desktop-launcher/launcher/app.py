@@ -246,17 +246,24 @@ def create_app() -> FastAPI:
 
     @app.get("/local/setup/profile")
     async def local_setup_profile() -> JSONResponse:
-        """Minimal setup profile for worker-role machines without a local gateway."""
+        """Minimal setup profile for machines that do not call the local gateway API."""
         import logging
         logger = logging.getLogger(__name__)
         logger.info("=== local_setup_profile called ===")
         p = app.state.profile
         runtime_model = derive_runtime_model(p)
-        role = "worker_node" if runtime_model.machine_role == "node" else None
+        role_by_machine_role = {
+            "gateway": "gateway_host",
+            "gateway_console": "gateway_host_console",
+            "node": "worker_node",
+            "console": "console_only",
+        }
+        role = role_by_machine_role.get(str(runtime_model.machine_role))
         completed_roles = [role] if role else []
         preferred_gateway_base_url = str(getattr(p, "gateway_base_url", "") or "").strip()
+        recommended_workspace = "sessions" if role == "console_only" else "connection" if completed_roles else "quick_setup"
         result = {
-            "recommended_workspace": "connection" if completed_roles else "quick_setup",
+            "recommended_workspace": recommended_workspace,
             "setup_completed": bool(completed_roles),
             "completed_roles": completed_roles,
             "available_roles": ["gateway_host", "gateway_host_console", "worker_node", "console_only"],
@@ -287,9 +294,8 @@ def create_app() -> FastAPI:
             },
             "console": {"gateway_base_url": preferred_gateway_base_url},
             "last_task": None,
-            "code_reload_test": "Code reloaded successfully",  # Test marker
         }
-        logger.info(f"Returning profile with test marker")
+        logger.info("Returning local setup profile for role=%s", role or "unconfigured")
         return JSONResponse(result)
 
     @app.post("/local/bootstrap/set-gateway-url", response_model=LauncherStatusResponse)

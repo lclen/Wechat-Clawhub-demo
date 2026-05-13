@@ -14,6 +14,7 @@ from app.dispatch.scheduler import DispatchScheduler
 from app.services.node_auth import NodeAuthService
 from app.services.gateway_summary_service import GatewaySummaryService
 from app.services.gateway_summary_stream import GatewaySummaryStreamBroker
+from app.services.handoff_timeout_service import HandoffTimeoutService
 from app.services.inbound_aggregation import InboundAggregationService
 from app.services.node_diagnostics_stream import NodeDiagnosticsStreamBroker
 from app.services.node_stream import NodeStreamBroker
@@ -112,6 +113,16 @@ async def lifespan(app: FastAPI):
         snapshot_service=gateway_summary_snapshot,
     )
     summary_task = asyncio.create_task(_gateway_summary_loop(gateway_summary_service), name="gateway-summary-loop")
+    handoff_timeout_service = HandoffTimeoutService(
+        store=redis_store,
+        session_manager=session_manager,
+        outgoing_dispatcher=outgoing_dispatcher,
+        settings=settings,
+    )
+    handoff_timeout_task = asyncio.create_task(
+        handoff_timeout_service.run(),
+        name="handoff-timeout-loop",
+    )
 
     await setup_service.load_persisted_node_diagnostics()
 
@@ -127,6 +138,7 @@ async def lifespan(app: FastAPI):
     app.state.gateway_summary_snapshot_service = gateway_summary_snapshot
     app.state.session_overview_snapshot_service = session_overview_snapshot
     app.state.gateway_summary_service = gateway_summary_service
+    app.state.handoff_timeout_service = handoff_timeout_service
     app.state.dispatch_queue = dispatch_queue
     app.state.inbound_aggregation = inbound_aggregation
     app.state.node_auth = node_auth
@@ -141,8 +153,11 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         summary_task.cancel()
+        handoff_timeout_task.cancel()
         with suppress(asyncio.CancelledError):
             await summary_task
+        with suppress(asyncio.CancelledError):
+            await handoff_timeout_task
         await inbound_aggregation.shutdown()
         await public_entry_service.close()
         await wechat_bot.shutdown()

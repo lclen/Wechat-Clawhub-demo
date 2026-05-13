@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import type { FormEvent, RefObject } from "react";
 import { InfoRow } from "../Connection/ConnectionUi";
 import { MessageContent } from "./MessageContent";
 import { EmptyState, SectionHeader, SignalBadge } from "../../shared/ConsolePrimitives";
@@ -37,6 +37,7 @@ type SessionsWorkspaceProps = {
   sessionBindingOptions: Array<{ node_id: string; label: string }>;
   messages: MessageRecord[];
   messagesLoaded: boolean;
+  humanReplyDraft: string;
   typingState: string;
   channelReleaseHint: string;
   latestUserMessage: MessageRecord | null;
@@ -51,6 +52,9 @@ type SessionsWorkspaceProps = {
   onGoToQuickSetup: () => void;
   onChangeFilter: (filter: SessionFilter) => void;
   onSelectSession: (sessionId: string) => void;
+  onChangeHumanReplyDraft: (content: string) => void;
+  onSendHumanReply: (sessionId: string) => void;
+  onReleaseSessionToAi: (sessionId: string) => void;
   onMessageScroll: () => void;
   onOpenInspector: () => void;
   onCloseInspector: () => void;
@@ -79,6 +83,7 @@ export function SessionsWorkspace({
   sessionBindingOptions,
   messages,
   messagesLoaded,
+  humanReplyDraft,
   typingState,
   channelReleaseHint,
   latestUserMessage,
@@ -93,6 +98,9 @@ export function SessionsWorkspace({
   onGoToQuickSetup,
   onChangeFilter,
   onSelectSession,
+  onChangeHumanReplyDraft,
+  onSendHumanReply,
+  onReleaseSessionToAi,
   onMessageScroll,
   onOpenInspector,
   onCloseInspector,
@@ -101,6 +109,18 @@ export function SessionsWorkspace({
   onRestoreSessionAuto,
 }: SessionsWorkspaceProps) {
   const consoleStatusTone = !sessionsLoaded ? "neutral" : systemStatus ? "good" : "warn";
+  const handoffConsoleVisible = canBindSessions && (
+    selectedSession?.status === "handoff_pending" || selectedSession?.status === "human_active"
+  );
+  const humanReplyBusy = busyKey === "session-human-reply";
+  const releaseBusy = busyKey === "session-release-human";
+  const humanReplyDisabled = !selectedSession || humanReplyBusy || !humanReplyDraft.trim();
+  const handoffRemainingLabel = formatHandoffRemaining(selectedSession, now);
+  const handleHumanReplySubmit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!selectedSession || humanReplyDisabled) return;
+    onSendHumanReply(selectedSession.session_id);
+  };
 
   return (
     <section className="session-workspace-shell">
@@ -176,25 +196,76 @@ export function SessionsWorkspace({
                 {!selectedSession ? <EmptyState title="选择一个会话后" detail="这里会显示完整聊天内容。" /> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载聊天内容…</div> : !messages.length ? <EmptyState title="当前会话还没有消息" /> : messages.map((message, index) => {
                   const replyDurationLabel = getReplyDurationLabel(messages, index);
                   const rowTone = message.role === "user" ? "user" : message.role === "system" ? "system" : "assistant";
+                  const systemNotice = getSystemNoticePresentation(message);
                   return (
                     <div key={message.message_id}>
                       {showDateDivider(messages, index) ? <div className="date-divider">{formatDayLabel(message.created_at)}</div> : null}
-                      <div className={`message-row message-row-${rowTone}`}>
-                        <div className={`message-bubble message-bubble-${message.role}`}>
-                          <div className="message-role-line">
-                            <span className="message-role">{roleLabel(message.role)}</span>
-                            {message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}
-                            {replyDurationLabel ? <span className="message-reply-duration">{replyDurationLabel}</span> : null}
-                            <span>{formatTimeLabel(message.created_at, true)}</span>
+                      {systemNotice ? (
+                        <div className={`message-row message-row-system message-row-system-notice ${systemNotice.tone === "warning" ? "is-warning" : ""}`}>
+                          <div className="system-notice-card">
+                            <div className="system-notice-rail" aria-hidden="true" />
+                            <div className="system-notice-body">
+                              <div className="system-notice-title-line">
+                                <span className="system-notice-label">{systemNotice.label}</span>
+                                <span className="system-notice-time">{formatTimeLabel(message.created_at, true)}</span>
+                              </div>
+                              <div className="system-notice-content"><MessageContent content={message.content} /></div>
+                            </div>
                           </div>
-                          <div className="message-content"><MessageContent content={message.content} /></div>
                         </div>
-                      </div>
+                      ) : (
+                        <div className={`message-row message-row-${rowTone}`}>
+                          <div className={`message-bubble message-bubble-${message.role}`}>
+                            <div className="message-role-line">
+                              <span className="message-role">{roleLabel(message.role)}</span>
+                              {message.node_id || message.actor_id ? <span className="message-role-meta">{message.node_id || message.actor_id}</span> : null}
+                              {replyDurationLabel ? <span className="message-reply-duration">{replyDurationLabel}</span> : null}
+                              <span>{formatTimeLabel(message.created_at, true)}</span>
+                            </div>
+                            <div className="message-content"><MessageContent content={message.content} /></div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
                 {typingState && selectedSession ? <div className="message-row message-row-assistant"><div className="message-bubble message-bubble-typing"><div className="typing-line"><span className="typing-dots" aria-hidden="true"><span /><span /><span /></span><span>{typingState}</span></div></div></div> : null}
               </div>
+              {handoffConsoleVisible && selectedSession ? (
+                <form className="human-reply-console" onSubmit={handleHumanReplySubmit}>
+                  <div className="human-reply-console-head">
+                    <div>
+                      <div className="section-kicker">人工接管</div>
+                      <strong>
+                        {selectedSession.status === "handoff_pending"
+                          ? `待接管，发送即接管${handoffRemainingLabel ? ` · ${handoffRemainingLabel}` : ""}`
+                          : `人工接管中${selectedSession.claimed_by ? ` · ${selectedSession.claimed_by}` : ""}`}
+                      </strong>
+                    </div>
+                    {selectedSession.status === "human_active" ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={releaseBusy}
+                        onClick={() => onReleaseSessionToAi(selectedSession.session_id)}
+                      >
+                        {releaseBusy ? "释放中…" : "释放给 AI"}
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="human-reply-composer">
+                    <textarea
+                      value={humanReplyDraft}
+                      onChange={(event) => onChangeHumanReplyDraft(event.target.value)}
+                      placeholder="输入人工回复，发送后会直接回到用户微信。"
+                      rows={3}
+                    />
+                    <button type="submit" className="primary-button" disabled={humanReplyDisabled}>
+                      {humanReplyBusy ? "发送中…" : selectedSession.status === "handoff_pending" ? "发送并接管" : "发送人工回复"}
+                    </button>
+                  </div>
+                </form>
+              ) : null}
             </section>
           </div>
         </div>
@@ -235,4 +306,26 @@ export function SessionsWorkspace({
       </div>
     </section>
   );
+}
+
+function formatHandoffRemaining(session: SessionRecord | null, now: number) {
+  if (!session?.handoff_expires_at) return "";
+  const expiresAt = new Date(session.handoff_expires_at).getTime();
+  if (!Number.isFinite(expiresAt)) return "";
+  const remainingMs = expiresAt - now;
+  if (remainingMs <= 0) return "已超时，等待系统恢复";
+  const remainingMinutes = Math.ceil(remainingMs / 60000);
+  return `剩余 ${remainingMinutes} 分钟`;
+}
+
+function getSystemNoticePresentation(message: MessageRecord) {
+  if (message.role !== "system") return null;
+  const eventType = message.metadata.event_type || "";
+  if (eventType === "handoff_waiting_notice") {
+    return { label: "接管通知", tone: "info" };
+  }
+  if (eventType === "handoff_timeout_notice") {
+    return { label: "接管超时", tone: "warning" };
+  }
+  return { label: "系统通知", tone: "info" };
 }

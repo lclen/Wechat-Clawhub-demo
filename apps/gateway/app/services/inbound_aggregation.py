@@ -4,16 +4,31 @@ import asyncio
 import contextlib
 import json
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueue, DispatchQueueError
-from app.models.session import InboundMessageRequest, MessageRecord, MessageRole, SessionRecord
+from app.models.session import InboundMessageRequest, MessageRecord, MessageRole, SessionRecord, SessionStatus
 from app.services.outgoing_dispatcher import OutgoingDispatcher
 from app.services.session_manager import SessionManager
 from app.services.transcript_writer import TranscriptWriter
+
+HANDOFF_REQUEST_PHRASES = (
+    "转人工",
+    "人工客服",
+    "找人工",
+    "真人客服",
+    "联系人工",
+    "人工接管",
+    "我要人工",
+)
+HANDOFF_FALSE_POSITIVE_PHRASES = (
+    "人工智能",
+    "ai人工智能",
+    "AI人工智能",
+)
 
 
 @dataclass
@@ -81,6 +96,56 @@ class InboundAggregationService:
         lock = self._session_locks.setdefault(session.session_id, asyncio.Lock())
         async with lock:
             existing = self._batches.get(session.session_id)
+            if is_handoff_request(message.content):
+                if existing is not None:
+                    self._cancel_batch_timer(existing)
+                    self._batches.pop(session.session_id, None)
+                if session.status == SessionStatus.HUMAN_ACTIVE:
+                    self._record_event(
+                        session_id=session.session_id,
+                        event_type="inbound_ai_dispatch_suppressed",
+                        payload={
+                            "message_id": message.message_id,
+                            "status": session.status.value,
+                            "reason": "handoff_already_human_active",
+                        },
+                    )
+                    return InboundAggregationResult(
+                        session=session,
+                        message=message,
+                        task_id=None,
+                        batch_id=f"handoff_{uuid4().hex}",
+                        batch_state=session.status.value,
+                    )
+                session = await self._enter_handoff_pending(session, message)
+                return InboundAggregationResult(
+                    session=session,
+                    message=message,
+                    task_id=None,
+                    batch_id=f"handoff_{uuid4().hex}",
+                    batch_state=SessionStatus.HANDOFF_PENDING.value,
+                )
+
+            if session.status in {SessionStatus.HANDOFF_PENDING, SessionStatus.HUMAN_ACTIVE}:
+                if existing is not None:
+                    self._cancel_batch_timer(existing)
+                    self._batches.pop(session.session_id, None)
+                self._record_event(
+                    session_id=session.session_id,
+                    event_type="inbound_ai_dispatch_suppressed",
+                    payload={
+                        "message_id": message.message_id,
+                        "status": session.status.value,
+                    },
+                )
+                return InboundAggregationResult(
+                    session=session,
+                    message=message,
+                    task_id=None,
+                    batch_id=f"handoff_{uuid4().hex}",
+                    batch_state=session.status.value,
+                )
+
             if existing is not None and self._should_reset_existing_batch(existing, session):
                 self._cancel_batch_timer(existing)
                 self._batches.pop(session.session_id, None)
@@ -166,6 +231,50 @@ class InboundAggregationService:
                 batch_id=batch.batch_id,
                 batch_state=batch.dispatch_state,
             )
+
+    async def _enter_handoff_pending(self, session: SessionRecord, message: MessageRecord) -> SessionRecord:
+        if session.active_task_id:
+            session = await self._dispatch_queue._abandon_active_task(
+                session,
+                requested_by=message.actor_id or message.user_id,
+                reason="handoff_requested",
+            )
+        requested_at = self._utcnow()
+        expires_at = requested_at + timedelta(seconds=self._settings.handoff_timeout_seconds)
+        if session.status != SessionStatus.HANDOFF_PENDING:
+            session = await self._session_manager.update_session_status(
+                session_id=session.session_id,
+                new_status=SessionStatus.HANDOFF_PENDING,
+                claimed_by=None,
+                handoff_requested_at=requested_at,
+                handoff_expires_at=expires_at,
+                reason="user_requested_handoff",
+            )
+        delivered = await self._outgoing_dispatcher.deliver_system_notice(
+            session,
+            self._settings.handoff_waiting_notice,
+            event_type="handoff_waiting_notice_failed",
+        )
+        session, _ = await self._session_manager.append_system_notice(
+            session_id=session.session_id,
+            content=self._settings.handoff_waiting_notice,
+            actor_id="gateway",
+            metadata={
+                "event_type": "handoff_waiting_notice",
+                "delivery_status": "sent" if delivered else "failed",
+                "source_message_id": message.message_id,
+            },
+        )
+        self._record_event(
+            session_id=session.session_id,
+            event_type="handoff_requested",
+            payload={
+                "message_id": message.message_id,
+                "notice_delivery_status": "sent" if delivered else "failed",
+                "handoff_expires_at": expires_at.isoformat(),
+            },
+        )
+        return session
 
     async def _dispatch_batch_after_quiet_window(self, session_id: str, batch_id: str) -> None:
         latest_message: MessageRecord | None = None
@@ -373,3 +482,12 @@ class InboundAggregationService:
 
     def _utcnow(self) -> datetime:
         return datetime.now(UTC)
+
+
+def is_handoff_request(content: str) -> bool:
+    normalized = "".join(content.split()).lower()
+    if not normalized:
+        return False
+    if any(phrase.lower() in normalized for phrase in HANDOFF_FALSE_POSITIVE_PHRASES):
+        return False
+    return any(phrase.lower() in normalized for phrase in HANDOFF_REQUEST_PHRASES)

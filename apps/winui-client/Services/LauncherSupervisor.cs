@@ -74,8 +74,9 @@ public sealed class LauncherSupervisor : IDisposable
                 using StringContent content = new("{}", Encoding.UTF8, "application/json");
                 await httpClient.PostAsync(LauncherStopUri, content);
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                AppLog.Error("Failed to stop owned launcher through local API.", exception);
             }
         }
 
@@ -87,8 +88,9 @@ public sealed class LauncherSupervisor : IDisposable
                 process.Kill(entireProcessTree: true);
                 await process.WaitForExitAsync();
             }
-            catch (Exception)
+            catch (Exception exception)
             {
+                AppLog.Error("Failed to kill owned launcher process tree.", exception);
             }
         }
 

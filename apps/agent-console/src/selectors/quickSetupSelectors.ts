@@ -16,14 +16,14 @@ export function resolveEffectiveRole(
   runtimeMachineRole?: LauncherMachineRole | null,
 ): SetupRole | null {
   if (currentRole) return currentRole;
-  if (completedRoles.includes("gateway_host_console")) return "gateway_host_console";
-  if (completedRoles.includes("gateway_host")) return "gateway_host";
-  if (completedRoles.includes("worker_node")) return "worker_node";
-  if (completedRoles.includes("console_only")) return "console_only";
   if (runtimeMachineRole === "gateway_console") return "gateway_host_console";
   if (runtimeMachineRole === "gateway") return "gateway_host";
   if (runtimeMachineRole === "node") return "worker_node";
   if (runtimeMachineRole === "console") return "console_only";
+  if (completedRoles.includes("gateway_host_console")) return "gateway_host_console";
+  if (completedRoles.includes("gateway_host")) return "gateway_host";
+  if (completedRoles.includes("worker_node")) return "worker_node";
+  if (completedRoles.includes("console_only")) return "console_only";
   return null;
 }
 

@@ -305,6 +305,7 @@ export function App() {
   const [messageHistoryStart, setMessageHistoryStart] = useState<number>(0);
   const [messageHasMoreBefore, setMessageHasMoreBefore] = useState(false);
   const [messageHistoryLoading, setMessageHistoryLoading] = useState(false);
+  const [humanReplyDraft, setHumanReplyDraft] = useState("");
   const [gatewaySummaryStreamActive, setGatewaySummaryStreamActive] = useState(false);
   const [qr, setQr] = useState<QrStart | null>(null);
   const [qrImageSrc, setQrImageSrc] = useState("");
@@ -1193,6 +1194,8 @@ export function App() {
     upsertSessionInView,
     refreshSessionDetail,
     switchSessionNode,
+    sendHumanReply,
+    releaseSessionToAi,
     persistSessionScrollState,
   } = useSessionConsoleController({
     requestJson,
@@ -1221,6 +1224,9 @@ export function App() {
     refreshGatewaySummarySnapshot,
     saveUiStateCache,
   });
+  useEffect(() => {
+    setHumanReplyDraft("");
+  }, [selectedSessionId]);
   useSessionWorkspaceEffects({
     requestJson,
     workspace,
@@ -1377,10 +1383,10 @@ export function App() {
   const currentRoleDisplay = useMemo(
     () => setupRole
       ? roleName(setupRole)
-      : (setupProfile?.completed_roles.length
-          ? setupProfile.completed_roles.map(roleName).join(" / ")
-          : effectiveRole
-            ? roleName(effectiveRole)
+      : effectiveRole
+        ? roleName(effectiveRole)
+        : (setupProfile?.completed_roles.length
+            ? setupProfile.completed_roles.map(roleName).join(" / ")
             : "未选择"),
     [effectiveRole, setupProfile?.completed_roles, setupRole],
   );
@@ -2654,6 +2660,7 @@ export function App() {
             sessionBindingOptions={sessionBindingOptions}
             messages={messages}
             messagesLoaded={messagesLoaded}
+            humanReplyDraft={humanReplyDraft}
             typingState={typingState}
             channelReleaseHint={channelReleaseHint}
             latestUserMessage={latestUserMessage}
@@ -2668,6 +2675,13 @@ export function App() {
             onGoToQuickSetup={() => setWorkspace("quick_setup")}
             onChangeFilter={setSessionFilter}
             onSelectSession={setSelectedSessionId}
+            onChangeHumanReplyDraft={setHumanReplyDraft}
+            onSendHumanReply={(sessionId) => {
+              void sendHumanReply(sessionId, humanReplyDraft).then((result) => {
+                if (result?.ok) setHumanReplyDraft("");
+              });
+            }}
+            onReleaseSessionToAi={(sessionId) => void releaseSessionToAi(sessionId)}
             onMessageScroll={handleMessageStreamScroll}
             onOpenInspector={() => setInspectorOpen(true)}
             onCloseInspector={() => setInspectorOpen(false)}

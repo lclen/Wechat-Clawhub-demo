@@ -6,7 +6,7 @@ import {
   launcherShouldRunGateway,
   runningLauncherComponents,
 } from "../selectors/launcherSelectors";
-import { isGatewayRole, setupRoleToLauncherMachineRole } from "../selectors/quickSetupSelectors";
+import { isGatewayRole, launcherRoleUsesLocalNode, setupRoleToLauncherMachineRole } from "../selectors/quickSetupSelectors";
 import { resolveWorkerNodeId } from "../selectors/quickSetupSelectors";
 import type { Dispatch, SetStateAction } from "react";
 import type {
@@ -184,7 +184,8 @@ export function useLauncherController(options: UseLauncherControllerOptions) {
       const defaultMachineRole: LauncherMachineRole = effectiveRole
         ? setupRoleToLauncherMachineRole(effectiveRole)
         : (launcherMachineRoleValue(launcherStatus) || "gateway_console");
-      const enableNodeCacheRedis = overrides?.enableNodeCacheRedis ?? (launcherStatus?.profile.node_cache_policy !== "disabled");
+      const enableNodeCacheRedis = overrides?.enableNodeCacheRedis
+        ?? (((launcherStatus?.profile.node_cache_policy ?? "disabled") !== "disabled") && launcherRoleUsesLocalNode(defaultMachineRole) && !gatewayDispatchModeEnabled);
       const status = await withBusy(
         "launcher-start",
         () =>
@@ -266,12 +267,14 @@ export function useLauncherController(options: UseLauncherControllerOptions) {
 
     try {
       const restarted = await withBusy("launcher-gateway-restart", async () => {
-        const shouldRunBuiltinLocalNode = !(currentLauncherStatus?.profile.dispatch_mode_enabled ?? false);
+        const dispatchModeEnabled = currentLauncherStatus?.profile.dispatch_mode_enabled ?? false;
+        const shouldRunBuiltinLocalNode = launcherRoleUsesLocalNode(machineRole) && !dispatchModeEnabled;
         const restartPayload: LauncherStartRequest = {
+          machine_role: machineRole,
           enable_gateway: true,
           enable_local_node: shouldRunBuiltinLocalNode,
-          enable_node_cache_redis: currentLauncherStatus?.profile.node_cache_policy !== "disabled",
-          dispatch_mode_enabled: currentLauncherStatus?.profile.dispatch_mode_enabled ?? false,
+          enable_node_cache_redis: ((currentLauncherStatus?.profile.node_cache_policy ?? "disabled") !== "disabled") && shouldRunBuiltinLocalNode,
+          dispatch_mode_enabled: dispatchModeEnabled,
           redis_source: currentLauncherStatus?.profile.redis_source || "mirror",
           node_cache_redis_source: currentLauncherStatus?.profile.node_cache_redis_source || "mirror",
           local_node_id: currentLauncherStatus?.profile.local_node_id || (machineRole === "node" ? workerNodeId : "local-node"),

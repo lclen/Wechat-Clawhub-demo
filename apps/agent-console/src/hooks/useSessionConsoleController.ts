@@ -3,10 +3,13 @@ import type { Dispatch, MutableRefObject, RefObject, SetStateAction } from "reac
 import type {
   AppUiStateCache,
   GatewaySummaryResponse,
+  HumanReplyRequest,
+  HumanReplyResponse,
   MessageRecord,
   SessionMessageCacheEntry,
   SessionMessagesResponse,
   SessionRecord,
+  SessionReleaseResponse,
   SessionSwitchAction,
   SessionSwitchRequest,
   SessionSwitchResponse,
@@ -333,6 +336,83 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     }
   }, [refreshGatewaySummarySnapshot, refreshSessionDetail, requestJson, sessionRemoteGatewayBaseUrl, setNotice, shouldUseRemoteGatewayApi, upsertSessionInView, withBusy]);
 
+  const sendHumanReply = useCallback(async (sessionId: string, content: string) => {
+    const trimmedContent = content.trim();
+    if (!trimmedContent) {
+      setNotice("请输入人工回复内容。");
+      return null;
+    }
+    const remoteGateway = shouldUseRemoteGatewayApi ? sessionRemoteGatewayBaseUrl.trim() : "";
+    if (shouldUseRemoteGatewayApi && !remoteGateway) {
+      setNotice("远端网关地址为空，无法发送人工回复。");
+      return null;
+    }
+    if (!shouldUseRemoteGatewayApi && !shouldUseLocalGatewayApi) {
+      setNotice("当前没有可用网关，无法发送人工回复。");
+      return null;
+    }
+    const endpoint = remoteGateway
+      ? `${remoteGateway}/api/sessions/${encodeURIComponent(sessionId)}/human-reply`
+      : `/api/sessions/${encodeURIComponent(sessionId)}/human-reply`;
+    try {
+      const payload: HumanReplyRequest = {
+        content: trimmedContent,
+        employee_id: "console",
+      };
+      const result = await withBusy(
+        "session-human-reply",
+        () => requestJson<HumanReplyResponse>(endpoint, {
+          method: "POST",
+          body: JSON.stringify(payload),
+        }),
+      );
+      upsertSessionInView(result.session);
+      await Promise.all([
+        refreshSessionDetail(sessionId),
+        refreshGatewaySummarySnapshot(),
+      ]);
+      setNotice(result.detail || "人工回复已发送。");
+      return result;
+    } catch (error) {
+      setNotice(`人工回复失败：${(error as Error).message}`);
+      return null;
+    }
+  }, [refreshGatewaySummarySnapshot, refreshSessionDetail, requestJson, sessionRemoteGatewayBaseUrl, setNotice, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, upsertSessionInView, withBusy]);
+
+  const releaseSessionToAi = useCallback(async (sessionId: string) => {
+    const remoteGateway = shouldUseRemoteGatewayApi ? sessionRemoteGatewayBaseUrl.trim() : "";
+    if (shouldUseRemoteGatewayApi && !remoteGateway) {
+      setNotice("远端网关地址为空，无法释放会话。");
+      return null;
+    }
+    if (!shouldUseRemoteGatewayApi && !shouldUseLocalGatewayApi) {
+      setNotice("当前没有可用网关，无法释放会话。");
+      return null;
+    }
+    const endpoint = remoteGateway
+      ? `${remoteGateway}/api/sessions/${encodeURIComponent(sessionId)}/release`
+      : `/api/sessions/${encodeURIComponent(sessionId)}/release`;
+    try {
+      const result = await withBusy(
+        "session-release-human",
+        () => requestJson<SessionReleaseResponse>(endpoint, {
+          method: "POST",
+          body: JSON.stringify({ reason: "console_release_to_ai" }),
+        }),
+      );
+      upsertSessionInView(result.session);
+      await Promise.all([
+        refreshSessionDetail(sessionId),
+        refreshGatewaySummarySnapshot(),
+      ]);
+      setNotice(result.detail || "已释放给 AI。");
+      return result;
+    } catch (error) {
+      setNotice(`释放会话失败：${(error as Error).message}`);
+      return null;
+    }
+  }, [refreshGatewaySummarySnapshot, refreshSessionDetail, requestJson, sessionRemoteGatewayBaseUrl, setNotice, shouldUseLocalGatewayApi, shouldUseRemoteGatewayApi, upsertSessionInView, withBusy]);
+
   return {
     scrollMessagesToBottom,
     handleMessageStreamScroll,
@@ -345,6 +425,8 @@ export function useSessionConsoleController(options: UseSessionConsoleController
     upsertSessionInView,
     refreshSessionDetail,
     switchSessionNode,
+    sendHumanReply,
+    releaseSessionToAi,
     persistSessionScrollState,
   };
 }

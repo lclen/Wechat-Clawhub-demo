@@ -67,6 +67,8 @@ class SessionRecord(BaseModel):
     reply_context_token: str | None = None
     handoff_ticket_id: str | None = None
     claimed_by: str | None = None
+    handoff_requested_at: datetime | None = None
+    handoff_expires_at: datetime | None = None
     message_count: int = 0
     last_message_at: datetime
     last_dispatch_at: datetime | None = None
@@ -151,4 +153,16 @@ class SessionReleaseRequest(BaseModel):
 class SessionReleaseResponse(BaseModel):
     ok: bool = True
     session: SessionRecord
+    detail: str = ""
+
+
+class HumanReplyRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=8000)
+    employee_id: str = Field(default="console", min_length=1, max_length=128)
+
+
+class HumanReplyResponse(BaseModel):
+    ok: bool = True
+    session: SessionRecord
+    message: MessageRecord | None = None
     detail: str = ""
