@@ -1,4 +1,4 @@
-const ORIGIN_BASE_URL = "http://47.97.222.122:5200";
+const DEFAULT_ORIGIN_BASE_URL = "http://47.97.222.122:5200";
 
 const PROXY_PREFIXES = [
   "/api/public-entry/",
@@ -25,7 +25,8 @@ export async function onRequest(context: EventContext<Env, string, unknown>): Pr
     });
   }
 
-  const upstreamUrl = new URL(`${ORIGIN_BASE_URL}${requestUrl.pathname}`);
+  const originBaseUrl = normalizeOriginBaseUrl(context.env.ORIGIN_BASE_URL || DEFAULT_ORIGIN_BASE_URL);
+  const upstreamUrl = new URL(`${originBaseUrl}${requestUrl.pathname}`);
   upstreamUrl.search = requestUrl.search;
 
   const upstreamRequest = new Request(upstreamUrl, context.request);
@@ -51,3 +52,7 @@ function shouldProxyPath(pathname: string): boolean {
 }
 
 type Env = Record<string, never>;
+
+function normalizeOriginBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
