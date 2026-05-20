@@ -168,6 +168,10 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
     let retryTimer = 0;
     const init = async () => {
       let launcherSt: LauncherStatusResponse | null = null;
+      const scheduleRuntimeRetry = () => {
+        window.clearTimeout(retryTimer);
+        retryTimer = window.setTimeout(() => void init(), retryPollMs);
+      };
       const applyLocalProfile = (localProfile: SetupProfileResponse, notice: string) => {
         setSetupProfile(localProfile);
         const initialWorkspace = localProfile.setup_completed
@@ -199,6 +203,7 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
             );
             if (!cancelled && (localProfile.setup_completed || localProfile.completed_roles.length)) {
               applyLocalProfile(localProfile, "已恢复本机角色配置，运行态状态正在后台同步。");
+              scheduleRuntimeRetry();
               return;
             }
           } catch {
@@ -300,7 +305,7 @@ export function useGatewayRuntimeController(options: UseGatewayRuntimeController
           const isRemoteGatewayRole = runtimeRole === "node" || runtimeRole === "console" || localManaged === false;
           setNotice(isRemoteGatewayRole ? (runtimeRole === "console" ? "当前为控制台角色，本机不托管网关。" : "当前为节点角色，网关运行在远端机器上。") : "正在等待主网关启动…");
           if (!isRemoteGatewayRole) {
-            retryTimer = window.setTimeout(() => void init(), retryPollMs);
+            scheduleRuntimeRetry();
           }
         }
       }

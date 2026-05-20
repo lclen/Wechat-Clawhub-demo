@@ -1,0 +1,13 @@
+{
+  "name": "wechat-claw-hub-public-entry-cloudflare",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloudflare Pages proxy deployment for the WeChat Claw Hub public entry page.",
+  "scripts": {
+    "deploy": "wrangler pages deploy public",
+    "dev": "wrangler pages dev public"
+  },
+  "devDependencies": {
+    "wrangler": "^4.93.0"
+  }
+}

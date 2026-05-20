@@ -151,6 +151,9 @@ export function summarizeGatewayRuntime(
   systemStatus: SystemStatus | null,
   modelStatus: ModelStatus | null,
 ) {
+  if (!launcherStatus) {
+    return { value: "读取中", detail: "正在读取桌面启动器运行态。", tone: "warn" as const };
+  }
   if (!launcherShouldRunGateway(launcherStatus)) {
     return { value: "远端网关", detail: "当前机器不托管主网关。", tone: "warn" as const };
   }
