@@ -1,4 +1,4 @@
-/entry http://192.168.0.17:8300/entry 200
-/api/public-entry/* http://192.168.0.17:8300/api/public-entry/:splat 200
-/api/setup/public-entry http://192.168.0.17:8300/api/setup/public-entry 200
+/entry http://47.97.222.122:5200/entry 200
+/api/public-entry/* http://47.97.222.122:5200/api/public-entry/:splat 200
+/api/setup/public-entry http://47.97.222.122:5200/api/setup/public-entry 200
 / /entry 302

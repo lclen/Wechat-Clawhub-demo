@@ -14,11 +14,9 @@
 当前 `_redirects` 指向：
 
 ```text
-http://192.168.0.17:8300
+http://47.97.222.122:5200
 ```
 
-这个地址只在你的局域网内可访问。Netlify 云端一般访问不到局域网 IP，所以生产环境需要把 `_redirects` 目标改成公网可访问的源站，例如：
+这个地址是公网可访问的 gateway 源站。Netlify 会把 `https://<site>.netlify.app/entry` 代理到这个 HTTP 源站。
 
-- ngrok / cpolar / NATAPP 生成的 HTTPS 地址
-- 已备案域名反代到 gateway
-- 其他公网可访问的 gateway 地址
+如果未来源站变更，只需要同步修改 `public/_redirects` 中的目标地址。
