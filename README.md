@@ -20,9 +20,23 @@ WeChat Claw Hub 是一个面向微信 AI 接入场景的网关系统。它把微
 
 ## 界面预览
 
-| 接入中心 | 会话观察台 |
-| --- | --- |
-| ![接入中心](tmp-connection-ui.png) | ![会话观察台](sessions-chat-first-1410.png) |
+### 接入中心
+
+网关、微信、节点和模型状态集中展示，适合日常运维和接入排查。
+
+![接入中心](tmp-connection-ui.png)
+
+### 会话观察台
+
+按 Agent 查看会话列表、当前处理状态、消息时间线和节点绑定信息。
+
+![会话观察台](tmp-sessions-ui.png)
+
+### 对话测试
+
+直接发送测试消息，验证 OpenAI 兼容模型或 Dify 配置是否能正常返回回复。
+
+![对话测试](tmp-conversation-ui.png)
 
 ## 开源版包含什么
 
