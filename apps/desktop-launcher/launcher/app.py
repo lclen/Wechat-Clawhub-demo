@@ -266,7 +266,8 @@ def create_app() -> FastAPI:
             "recommended_workspace": recommended_workspace,
             "setup_completed": bool(completed_roles),
             "completed_roles": completed_roles,
-            "available_roles": ["gateway_host", "gateway_host_console", "worker_node", "console_only"],
+            # 开源版本仅支持 gateway_host 和 gateway_host_console 角色
+            "available_roles": ["gateway_host", "gateway_host_console"],
             "preferred_gateway_base_url": preferred_gateway_base_url,
             "gateway": {
                 "redis_url": "",

@@ -112,8 +112,9 @@ class SetupProfileResponse(BaseModel):
     recommended_workspace: Literal["quick_setup", "connection", "sessions"]
     setup_completed: bool
     completed_roles: list[SetupRole]
+    # 开源版本仅支持 gateway_host 和 gateway_host_console 角色
     available_roles: list[SetupRole] = Field(
-        default_factory=lambda: ["gateway_host", "gateway_host_console", "worker_node", "console_only"]
+        default_factory=lambda: ["gateway_host", "gateway_host_console"]
     )
     preferred_gateway_base_url: str
     gateway: GatewaySetupConfig
