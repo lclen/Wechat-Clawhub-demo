@@ -13,7 +13,7 @@ from claw_node.dify_client import DifyClient
 
 
 class DifyClientTests(unittest.IsolatedAsyncioTestCase):
-    def test_conversation_key_uses_user_id_for_context_isolation(self) -> None:
+    def test_conversation_key_uses_session_id_for_context_isolation(self) -> None:
         settings = NodeSettings(
             CLAW_MODEL_PROVIDER="dify",
             CLAW_DIFY_BASE_URL="http://127.0.0.1:3000/v1",
@@ -26,7 +26,7 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
                     session_id="wechat:o9cq801txMYfPe4My5Ks_wBfUBLo@im.wechat",
                     user_id="o9cq801txMYfPe4My5Ks_wBfUBLo@im.wechat",
                 ),
-                "o9cq801txMYfPe4My5Ks_wBfUBLo@im.wechat",
+                "wechat:o9cq801txMYfPe4My5Ks_wBfUBLo@im.wechat",
             )
         finally:
             self.addAsyncCleanup(client.close)
@@ -100,7 +100,60 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
             recent_messages=[],
         )
         self.assertEqual(captured[1]["conversation_id"], "conv-1")
-        self.assertEqual(client._conversation_ids["user-1"], "conv-1")
+        self.assertEqual(client._conversation_ids["session-1"], "conv-1")
+
+    async def test_ask_does_not_reuse_conversation_id_across_session_parts(self) -> None:
+        captured: list[dict[str, object]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content.decode("utf-8"))
+            captured.append(payload)
+            return httpx.Response(
+                200,
+                json={
+                    "answer": "ok",
+                    "conversation_id": f"conv-{len(captured)}",
+                    "usage": {"total_tokens": 8},
+                },
+            )
+
+        settings = NodeSettings(
+            CLAW_MODEL_PROVIDER="dify",
+            CLAW_DIFY_BASE_URL="http://127.0.0.1:3000/v1",
+            CLAW_DIFY_API_KEY="secret",
+        )
+        client = DifyClient(settings)
+        await client._client.aclose()
+        client._client = httpx.AsyncClient(
+            base_url=settings.dify_base_url.rstrip("/"),
+            transport=httpx.MockTransport(handler),
+            headers={
+                "Authorization": f"Bearer {settings.dify_api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+
+        await client.ask(
+            session_id="wechat:user-1",
+            user_id="user-1",
+            agent_id="agent-1",
+            query="你好",
+            context_summary="",
+            recent_messages=[],
+        )
+        await client.ask(
+            session_id="wechat:user-1:part-2",
+            user_id="user-1",
+            agent_id="agent-1",
+            query="新会话",
+            context_summary="",
+            recent_messages=[],
+        )
+
+        self.assertNotIn("conversation_id", captured[0])
+        self.assertNotIn("conversation_id", captured[1])
+        self.assertEqual(client._conversation_ids["wechat:user-1"], "conv-1")
+        self.assertEqual(client._conversation_ids["wechat:user-1:part-2"], "conv-2")
 
     async def test_ask_recovers_conversation_id_from_local_cache(self) -> None:
         captured: list[dict[str, object]] = []
@@ -148,8 +201,8 @@ class DifyClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(answer, "ok")
         self.assertEqual(usage["dify_conversation_id"], "conv-cache")
         self.assertEqual(captured[0]["conversation_id"], "conv-cache")
-        local_cache.get_dify_conversation_id.assert_awaited_once_with("user-cache")
-        local_cache.store_dify_conversation_id.assert_awaited_once_with("user-cache", "conv-cache")
+        local_cache.get_dify_conversation_id.assert_awaited_once_with("session-cache")
+        local_cache.store_dify_conversation_id.assert_awaited_once_with("session-cache", "conv-cache")
 
     async def test_ask_falls_back_to_streaming_for_agent_chat_app(self) -> None:
         requests_seen: list[str] = []

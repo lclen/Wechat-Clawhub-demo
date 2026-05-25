@@ -69,11 +69,15 @@ class SessionManager:
     def _session_summary_key(self, session_id: str) -> str:
         return f"wch:session:{session_id}:summary"
 
+    def _active_session_key(self, channel: str, user_id: str) -> str:
+        return f"wch:session-active:{channel}:{user_id}"
+
     async def ingest_inbound_message(self, payload: InboundMessageRequest) -> tuple[SessionRecord, MessageRecord]:
         session = await self.ensure_session(
             channel=payload.channel,
             user_id=payload.user_id,
             agent_id=payload.agent_id,
+            rotate_if_needed=True,
         )
         now = self._utcnow()
         message = MessageRecord(
@@ -176,8 +180,63 @@ class SessionManager:
             metadata=metadata,
         )
 
-    async def ensure_session(self, *, channel: str, user_id: str, agent_id: str | None) -> SessionRecord:
-        return await self._get_or_create_session(channel=channel, user_id=user_id, agent_id=agent_id)
+    async def ensure_session(
+        self,
+        *,
+        channel: str,
+        user_id: str,
+        agent_id: str | None,
+        rotate_if_needed: bool = False,
+    ) -> SessionRecord:
+        session_id = await self._resolve_active_session_id(channel, user_id)
+        session = await self._get_or_create_session(
+            channel=channel,
+            user_id=user_id,
+            agent_id=agent_id,
+            session_id=session_id,
+        )
+        await self._store.set(self._active_session_key(channel, user_id), session.session_id)
+        if rotate_if_needed:
+            rotated = await self._rotate_session_if_needed(session, agent_id=agent_id)
+            if rotated.session_id != session.session_id:
+                return rotated
+        return session
+
+    async def create_new_session_for_user(
+        self,
+        *,
+        channel: str,
+        user_id: str,
+        agent_id: str | None,
+        reason: str,
+    ) -> SessionRecord:
+        source = await self.ensure_session(channel=channel, user_id=user_id, agent_id=agent_id)
+        next_part = await self._next_session_part(channel, user_id)
+        session_id = build_session_id(channel, user_id, part=next_part)
+        while await self._store.hgetall(self._session_meta_key(session_id)):
+            next_part += 1
+            session_id = build_session_id(channel, user_id, part=next_part)
+        session = await self._get_or_create_session(
+            channel=channel,
+            user_id=user_id,
+            agent_id=agent_id or source.agent_id,
+            session_id=session_id,
+        )
+        await self._store.set(self._active_session_key(channel, user_id), session.session_id)
+        event_type = "session_new_command_created" if reason == "new_command" else "session_rotated"
+        self._transcript_writer.append_event(
+            session_id=session.session_id,
+            event_type=event_type,
+            actor_type="system",
+            actor_id="gateway",
+            payload={
+                "rotated_from_session_id": source.session_id,
+                "rotation_reason": reason,
+                "rotation_message_limit": str(self._settings.session_rotation_message_limit),
+            },
+        )
+        await self._publish_overview_if_needed()
+        return session
 
     async def list_sessions(self) -> list[SessionRecord]:
         started = perf_counter()
@@ -405,8 +464,81 @@ class SessionManager:
         await self._publish_overview_if_needed()
         return parsed
 
-    async def _get_or_create_session(self, *, channel: str, user_id: str, agent_id: str | None) -> SessionRecord:
-        session_id = build_session_id(channel, user_id)
+    async def _resolve_active_session_id(self, channel: str, user_id: str) -> str:
+        base_session_id = build_session_id(channel, user_id)
+        try:
+            active_session_id = str(await self._store.get(self._active_session_key(channel, user_id)) or "").strip()
+            if active_session_id and await self._store.hgetall(self._session_meta_key(active_session_id)):
+                return active_session_id
+            return base_session_id
+        except RedisError as exc:
+            raise SessionManagerError("Failed to resolve active session") from exc
+
+    async def _rotate_session_if_needed(self, session: SessionRecord, *, agent_id: str | None) -> SessionRecord:
+        limit = self._settings.session_rotation_message_limit
+        if limit <= 0 or session.message_count < limit:
+            return session
+        if not self._can_open_new_session(session):
+            self._transcript_writer.append_event(
+                session_id=session.session_id,
+                event_type="session_rotation_skipped",
+                actor_type="system",
+                actor_id="gateway",
+                payload={
+                    "rotation_reason": "message_limit",
+                    "rotation_message_limit": str(limit),
+                    "status": session.status.value,
+                    "active_task_id": session.active_task_id or "",
+                    "queue_status": session.queue_status.value,
+                    "claimed_by": session.claimed_by or "",
+                    "handoff_ticket_id": session.handoff_ticket_id or "",
+                },
+            )
+            return session
+        return await self.create_new_session_for_user(
+            channel=session.channel,
+            user_id=session.user_id,
+            agent_id=agent_id or session.agent_id,
+            reason="message_limit",
+        )
+
+    def _can_open_new_session(self, session: SessionRecord) -> bool:
+        return (
+            session.status == SessionStatus.BOT_ACTIVE
+            and not session.claimed_by
+            and not session.handoff_ticket_id
+            and not session.active_task_id
+            and session.queue_status == QueueStatus.NONE
+        )
+
+    async def _next_session_part(self, channel: str, user_id: str) -> int:
+        base_session_id = build_session_id(channel, user_id)
+        max_part = 0
+        try:
+            session_ids = await self._store.smembers(self.ACTIVE_SESSIONS_KEY)
+        except RedisError as exc:
+            raise SessionManagerError("Failed to compute next session part") from exc
+        for session_id in session_ids:
+            if session_id == base_session_id:
+                max_part = max(max_part, 1)
+                continue
+            prefix = f"{base_session_id}:part-"
+            if not session_id.startswith(prefix):
+                continue
+            suffix = session_id[len(prefix):]
+            if suffix.isdigit():
+                max_part = max(max_part, int(suffix))
+        return max(1, max_part) + 1
+
+    async def _get_or_create_session(
+        self,
+        *,
+        channel: str,
+        user_id: str,
+        agent_id: str | None,
+        session_id: str | None = None,
+    ) -> SessionRecord:
+        session_id = session_id or build_session_id(channel, user_id)
         now = self._utcnow()
         try:
             raw = await self._store.hgetall(self._session_meta_key(session_id))

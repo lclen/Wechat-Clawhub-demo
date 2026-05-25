@@ -251,8 +251,11 @@ class DifyClient:
         }
 
     def _conversation_key(self, *, session_id: str, user_id: str) -> str:
-        del session_id
-        return self._dify_user_id(user_id)
+        del user_id
+        normalized = str(session_id).strip()
+        if not normalized:
+            raise ValueError("Dify session_id must not be empty")
+        return normalized
 
     def _dify_user_id(self, user_id: str) -> str:
         normalized = str(user_id).strip()

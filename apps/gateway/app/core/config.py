@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     handoff_waiting_notice: str = "正在等待员工接入，请稍候。"
     handoff_timeout_notice: str = "当前员工人手不足，请稍后再试，我将继续为您提供 AI 协助。"
     recent_message_limit: int = Field(default=20, ge=1, le=200)
+    session_rotation_message_limit: int = Field(default=50, ge=0, le=10000)
     transcript_dir: Path = Field(default=Path("data/transcripts"))
     identity_dir: Path = Field(default=Path("data/identity"))
     memory_dir: Path = Field(default=Path("data/memory"))

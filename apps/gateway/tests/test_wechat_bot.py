@@ -20,6 +20,7 @@ from app.access.wechat_bot import (
 )
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueueError
+from app.models.session import QueueStatus, SessionStatus
 
 
 class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -326,6 +327,84 @@ class WeChatBotServiceTests(unittest.IsolatedAsyncioTestCase):
         payload = self.inbound_aggregation.ingest_text_message.await_args.args[0]
         self.assertEqual(payload.content, INBOUND_IMAGE_PLACEHOLDER_TEXT)
         self.assertEqual(payload.metadata["wechat_media_placeholder"], "true")
+
+    async def test_handle_raw_message_new_command_creates_new_session_without_dispatch(self) -> None:
+        session = Mock(
+            session_id="wechat:wechat-user:part-2",
+            assigned_node_id=None,
+            reply_context_token="ctx-new",
+        )
+        current_session = Mock(
+            session_id="wechat:wechat-user",
+            status=SessionStatus.BOT_ACTIVE,
+            claimed_by=None,
+            handoff_ticket_id=None,
+            reply_context_token="ctx-old",
+        )
+        self.session_manager.ensure_session.return_value = current_session
+        self.session_manager.create_new_session_for_user.return_value = session
+        self.service.send_text = AsyncMock(return_value="sent-1")  # type: ignore[method-assign]
+        raw = {
+            "message_id": "wx-msg-new",
+            "message_type": 1,
+            "from_user_id": "wechat-user",
+            "context_token": "ctx-raw",
+            "item_list": [{"type": 1, "text_item": {"text": " /NEW "}}],
+        }
+
+        await self.service._handle_raw_message(raw)
+
+        self.session_manager.create_new_session_for_user.assert_awaited_once_with(
+            channel="wechat",
+            user_id="wechat-user",
+            agent_id=self.service._static_agent_id,
+            reason="new_command",
+        )
+        self.service.send_text.assert_awaited_once_with(
+            user_id="wechat-user",
+            text="已为你开启新的会话，上下文已重置。你可以直接发送新的问题。",
+            context_token="ctx-raw",
+        )
+        self.session_manager.append_bot_message.assert_awaited_once_with(
+            session_id="wechat:wechat-user:part-2",
+            content="已为你开启新的会话，上下文已重置。你可以直接发送新的问题。",
+            actor_id="gateway",
+            node_id="gateway",
+            metadata={"system_action": "new_session", "rotation_reason": "new_command"},
+        )
+        self.inbound_aggregation.ingest_text_message.assert_not_awaited()
+        self.assertEqual(self.service._received_messages, 1)
+
+    async def test_handle_raw_message_new_command_is_rejected_during_handoff(self) -> None:
+        session = Mock(
+            session_id="wechat:wechat-user",
+            status=SessionStatus.HUMAN_ACTIVE,
+            claimed_by="agent",
+            handoff_ticket_id="ticket-1",
+            active_task_id=None,
+            queue_status=QueueStatus.NONE,
+            reply_context_token="ctx-session",
+        )
+        self.session_manager.ensure_session.return_value = session
+        self.service.send_text = AsyncMock(return_value="sent-1")  # type: ignore[method-assign]
+        raw = {
+            "message_id": "wx-msg-new-handoff",
+            "message_type": 1,
+            "from_user_id": "wechat-user",
+            "context_token": "ctx-raw",
+            "item_list": [{"type": 1, "text_item": {"text": "/new"}}],
+        }
+
+        await self.service._handle_raw_message(raw)
+
+        self.session_manager.create_new_session_for_user.assert_not_awaited()
+        self.service.send_text.assert_awaited_once_with(
+            user_id="wechat-user",
+            text="当前正在人工接入中，暂不能开启新会话。请结束人工服务后再试。",
+            context_token="ctx-raw",
+        )
+        self.inbound_aggregation.ingest_text_message.assert_not_awaited()
+        self.assertEqual(self.service._received_messages, 1)
 
     def test_parse_markdown_segments_extracts_images_and_text(self) -> None:
         segments = parse_markdown_segments("说明文字 ![接线图](https://example.com/a.jpg) 收尾")

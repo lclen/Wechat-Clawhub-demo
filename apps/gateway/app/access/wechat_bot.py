@@ -25,7 +25,7 @@ import httpx
 
 from app.core.config import Settings
 from app.dispatch.queue import DispatchQueueError
-from app.models.session import InboundMessageRequest, SessionSwitchAction
+from app.models.session import InboundMessageRequest, SessionStatus, SessionSwitchAction
 from app.models.wechat import WeChatStatusResponse
 from app.services.redis_store import RedisStore
 from app.services.session_manager import SessionManager, SessionManagerError
@@ -91,6 +91,9 @@ SEND_MIN_INTERVAL_SECONDS = 2.5
 TYPING_REFRESH_INTERVAL_SECONDS = 4.0
 TYPING_STALE_THRESHOLD_SECONDS = 1_800
 SWITCH_COMMANDS = {"切换节点", "/switch"}
+NEW_SESSION_COMMANDS = {"/new"}
+NEW_SESSION_CONFIRM_TEXT = "已为你开启新的会话，上下文已重置。你可以直接发送新的问题。"
+NEW_SESSION_HANDOFF_REJECT_TEXT = "当前正在人工接入中，暂不能开启新会话。请结束人工服务后再试。"
 INBOUND_IMAGE_PLACEHOLDER_TEXT = "请结合这张图片理解并回答用户意图。"
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((.*?)\)", re.DOTALL)
 STANDALONE_URL_RE = re.compile(r"^\s*(https?://\S+)\s*$", re.IGNORECASE)
@@ -1319,6 +1322,10 @@ class WeChatBotService:
             await self._handle_switch_command(user_id=user_id, context_token=context_token)
             self._received_messages += 1
             return
+        if normalized_text in NEW_SESSION_COMMANDS:
+            await self._handle_new_session_command(user_id=user_id, context_token=context_token)
+            self._received_messages += 1
+            return
         logger.info(
             "[wechat] inbound user_id=%s message_id=%s preview=%s",
             user_id,
@@ -1407,6 +1414,42 @@ class WeChatBotService:
             actor_id="gateway",
             node_id=session.assigned_node_id or "gateway",
             metadata={"system_action": "switch_node"},
+        )
+
+    async def _handle_new_session_command(self, *, user_id: str, context_token: str) -> None:
+        session = await self._session_manager.ensure_session(
+            channel="wechat",
+            user_id=user_id,
+            agent_id=self._static_agent_id,
+        )
+        if (
+            session.status != SessionStatus.BOT_ACTIVE
+            or session.claimed_by
+            or session.handoff_ticket_id
+        ):
+            await self.send_text(
+                user_id=user_id,
+                text=NEW_SESSION_HANDOFF_REJECT_TEXT,
+                context_token=context_token or session.reply_context_token,
+            )
+            return
+        session = await self._session_manager.create_new_session_for_user(
+            channel="wechat",
+            user_id=user_id,
+            agent_id=self._static_agent_id,
+            reason="new_command",
+        )
+        await self.send_text(
+            user_id=user_id,
+            text=NEW_SESSION_CONFIRM_TEXT,
+            context_token=context_token or session.reply_context_token,
+        )
+        await self._session_manager.append_bot_message(
+            session_id=session.session_id,
+            content=NEW_SESSION_CONFIRM_TEXT,
+            actor_id="gateway",
+            node_id=session.assigned_node_id or "gateway",
+            metadata={"system_action": "new_session", "rotation_reason": "new_command"},
         )
 
     async def _parse_inbound_message(
