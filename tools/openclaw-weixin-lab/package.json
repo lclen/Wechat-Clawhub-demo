@@ -1,0 +1,11 @@
+{
+  "name": "openclaw-weixin-lab",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Isolated lab for inspecting @tencent-weixin/openclaw-weixin behavior.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@tencent-weixin/openclaw-weixin": "^2.4.1"
+  }
+}

@@ -1,0 +1,93 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e7]:
+      - generic [ref=e8]: Wechat Hub
+      - heading "运维指挥台" [level=2] [ref=e9]
+      - paragraph [ref=e10]: 接入、纳管与运行态。
+    - generic [ref=e11]:
+      - generic [ref=e12]:
+        - generic [ref=e13]: 主网关
+        - generic [ref=e101]: 主网关
+      - generic [ref=e14]: 在线 · 轮询中 · 2 节点在线
+    - tablist "Primary workspaces" [ref=e15]:
+      - button "快速配置" [ref=e16] [cursor=pointer]:
+        - generic [ref=e19]: 快速配置
+      - button "会话观察台" [ref=e102] [cursor=pointer]:
+        - generic [ref=e105]: 会话观察台
+      - button "接入中心 主网关" [ref=e106] [cursor=pointer]:
+        - generic [ref=e108]:
+          - generic [ref=e109]: 接入中心
+          - generic [ref=e110]: 主网关
+      - button "对话测试" [ref=e111] [cursor=pointer]:
+        - generic [ref=e114]: 对话测试
+      - button "日志中心" [ref=e115] [cursor=pointer]:
+        - generic [ref=e118]: 日志中心
+  - generic [ref=e20]:
+    - banner [ref=e21]:
+      - generic [ref=e22]:
+        - generic [ref=e23]: Inference Probe
+        - generic [ref=e24]: 对话测试
+      - generic [ref=e25]:
+        - generic [ref=e26]:
+          - generic [ref=e27]: 当前角色
+          - strong [ref=e28]: 主网关
+        - generic [ref=e29]:
+          - generic [ref=e30]:
+            - generic [ref=e31]: 网关
+            - strong [ref=e32]: 在线
+          - generic [ref=e33]:
+            - generic [ref=e34]: 微信
+            - strong [ref=e35]: 轮询中
+          - generic [ref=e36]:
+            - generic [ref=e37]: 节点
+            - strong [ref=e38]: 2 在线
+          - generic [ref=e39]:
+            - generic [ref=e40]: 模型
+            - strong [ref=e41]: qwen3.6-plus
+    - generic [ref=e119]:
+      - generic [ref=e120]:
+        - generic [ref=e121]:
+          - generic [ref=e122]: 端到端模型测试
+          - heading "对话测试" [level=2] [ref=e123]
+        - generic [ref=e124]:
+          - generic [ref=e125]: Launcher 在线
+          - generic [ref=e126]: 推理库 就绪
+          - generic [ref=e127]: 配置 已同步
+      - generic [ref=e137]:
+        - generic [ref=e138]:
+          - generic [ref=e139]:
+            - generic [ref=e140]:
+              - generic [ref=e141]: 指令面板
+              - heading "测试输入与链路回执" [level=3] [ref=e142]
+              - paragraph [ref=e143]: 手动选择链路并发送即时测试指令。此配置仅影响本次对话测试。
+            - generic [ref=e145]:
+              - button "同步配置" [ref=e146] [cursor=pointer]
+              - button "发起请求" [ref=e147] [cursor=pointer]
+          - generic [ref=e148]:
+            - article [ref=e149]:
+              - generic [ref=e150]: 生效后端
+              - strong [ref=e151]: Dify
+            - article [ref=e152]:
+              - generic [ref=e153]: 配置后端
+              - strong [ref=e154]: DashScope
+            - article [ref=e155]:
+              - generic [ref=e156]: 推理库
+              - strong [ref=e157]: 就绪
+          - generic [ref=e158]:
+            - generic [ref=e159]: 链路路由
+            - heading "后端 Provider 覆盖" [level=4] [ref=e160]
+          - generic [ref=e161]:
+            - button "默认配置" [ref=e162] [cursor=pointer]
+            - button "DashScope" [ref=e163] [cursor=pointer]
+            - button "Dify" [ref=e164] [cursor=pointer]
+          - generic [ref=e165]:
+            - generic [ref=e166]:
+              - generic [ref=e167]: 消息正文
+              - heading "输入测试 Prompt" [level=4] [ref=e168]
+            - textbox "在此输入你想让 AI 回答测试消息" [ref=e169]: 请用一句话回复：如果你已经收到这条测试消息，请说明当前走的是哪条推理链路。
+            - generic [ref=e170]: 提示：短文本更有利于快速验证连通性。模型回复可能受网络和配置影响。
+        - generic [ref=e171]:
+          - generic [ref=e173]:
+            - generic [ref=e174]: 工作详情
+            - heading "本次对话回执" [level=3] [ref=e175]
+          - generic [ref=e177]: 暂无待处理回执。成功向后端发起请求后，这里将展示完整的 AI 响应正文与推理开销细节。

@@ -1,0 +1,90 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e7]:
+      - generic [ref=e8]: Wechat Hub
+      - heading "运维指挥台" [level=2] [ref=e9]
+      - paragraph [ref=e10]: 先完成角色配置。
+    - generic [ref=e11]:
+      - generic [ref=e13]: 待配置
+      - generic [ref=e14]: 远端网关 · 远端网关 · 2 节点在线
+    - tablist "Primary workspaces" [ref=e15]:
+      - button "快速配置" [ref=e16] [cursor=pointer]:
+        - generic [ref=e19]: 快速配置
+    - generic [ref=e20]:
+      - generic [ref=e21]: PRIMARY
+      - strong [ref=e22]: 快速配置
+  - generic [ref=e23]:
+    - banner [ref=e24]:
+      - generic [ref=e25]:
+        - generic [ref=e26]: Bootstrap
+        - generic [ref=e27]: 快速配置
+      - generic [ref=e28]:
+        - generic [ref=e29]:
+          - generic [ref=e30]: 当前角色
+          - strong [ref=e31]: 待配置
+        - generic [ref=e32]:
+          - generic [ref=e33]:
+            - generic [ref=e34]: 网关
+            - strong [ref=e35]: 远端网关
+          - generic [ref=e36]:
+            - generic [ref=e37]: 微信
+            - strong [ref=e38]: 远端网关
+          - generic [ref=e39]:
+            - generic [ref=e40]: 节点
+            - strong [ref=e41]: 2 在线
+          - generic [ref=e42]:
+            - generic [ref=e43]: 模型
+            - strong [ref=e44]: 未配置
+    - generic [ref=e45]:
+      - generic [ref=e46]:
+        - generic [ref=e47]:
+          - generic [ref=e48]: 首次启动向导
+          - heading "先选角色，再用最短路径把本机跑起来" [level=2] [ref=e49]
+        - generic [ref=e50]: 按当前角色推进配置。
+      - generic [ref=e51]:
+        - generic [ref=e52]:
+          - generic [ref=e53]:
+            - generic [ref=e54]:
+              - generic [ref=e55]: 步骤导航
+              - heading "配置流程" [level=3] [ref=e56]
+            - generic [ref=e57]: 选择角色
+          - generic [ref=e58]:
+            - generic [ref=e59]: 0. 当前连接
+            - generic [ref=e60]: 1. 选择角色
+            - generic [ref=e61]: 2. 基础参数
+            - generic [ref=e62]: 3. 执行确认
+            - generic [ref=e63]: 4. 执行结果
+          - generic [ref=e64]:
+            - generic [ref=e65]:
+              - generic [ref=e66]: 推荐入口
+              - strong [ref=e67]: 已可直接进入联调或会话观察
+            - generic [ref=e68]:
+              - generic [ref=e69]: 当前角色
+              - strong [ref=e70]: 未选择
+            - generic [ref=e71]:
+              - generic [ref=e72]: 已完成角色
+              - strong [ref=e73]: 暂无
+            - generic [ref=e74]:
+              - generic [ref=e75]: 最近任务
+              - strong [ref=e76]: 暂无
+        - generic [ref=e78]:
+          - generic [ref=e80]:
+            - generic [ref=e81]: 角色选择
+            - heading "这台机器现在要扮演什么角色？" [level=3] [ref=e82]
+          - generic [ref=e83]:
+            - button "网关主机 保存网关基础配置，并主动搜索局域网里已经运行的可配对节点。 会写入网关 .env、刷新微信运行配置，并通过 UDP 广播搜索候选节点。" [ref=e84] [cursor=pointer]:
+              - strong [ref=e86]: 网关主机
+              - generic [ref=e87]: 保存网关基础配置，并主动搜索局域网里已经运行的可配对节点。
+              - generic [ref=e88]: 会写入网关 .env、刷新微信运行配置，并通过 UDP 广播搜索候选节点。
+            - button "网关主机+控制台 一次完成网关配置保存与控制台目标校验，适合本机同时承担主网关和运维控制台。 会先写入网关配置，再串行校验控制台目标网关地址，并把该地址保存为后续默认值。" [ref=e89] [cursor=pointer]:
+              - strong [ref=e91]: 网关主机+控制台
+              - generic [ref=e92]: 一次完成网关配置保存与控制台目标校验，适合本机同时承担主网关和运维控制台。
+              - generic [ref=e93]: 会先写入网关配置，再串行校验控制台目标网关地址，并把该地址保存为后续默认值。
+            - button "工作节点 把这台机器配置成节点，重点完成本机安装、回连主网关、凭据维护与发现响应设置。 会调用 install-claw-node.ps1，并把主网关地址、节点凭据、配对密钥和发现端口写入本机配置。" [ref=e94] [cursor=pointer]:
+              - strong [ref=e96]: 工作节点
+              - generic [ref=e97]: 把这台机器配置成节点，重点完成本机安装、回连主网关、凭据维护与发现响应设置。
+              - generic [ref=e98]: 会调用 install-claw-node.ps1，并把主网关地址、节点凭据、配对密钥和发现端口写入本机配置。
+            - button "控制台 校验控制台要连接的主网关地址，适合纯观察和接管机器。 会验证目标主网关健康状态，不会安装任何服务。" [ref=e99] [cursor=pointer]:
+              - strong [ref=e101]: 控制台
+              - generic [ref=e102]: 校验控制台要连接的主网关地址，适合纯观察和接管机器。
+              - generic [ref=e103]: 会验证目标主网关健康状态，不会安装任何服务。
