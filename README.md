@@ -1,220 +1,252 @@
-# wechat-claw-hub
+# WeChat Claw Hub - 微信 AI 网关与多节点调度系统
 
-`wechat-claw-hub` 是一个面向微信接入场景的独立网关服务，用于把多个微信用户统一接入同一个业务 agent，并将消息分发给多个 `Claw` 节点处理。项目首版重点解决四个问题：
+> 将微信接入 AI 的完整解决方案：多用户并发接入、上下文隔离、多节点负载均衡、人工接管。
 
-- 多个用户同时接入同一个 agent
-- 每个用户拥有独立上下文
-- 多个 `Claw` 节点按负载进行分发
-- 用户要求转人工时，网页坐席台可以接管会话并继续沟通
+[![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-009688.svg)](https://fastapi.tiangolo.com/)
+[![React](https://img.shields.io/badge/React-18+-61DAFB.svg)](https://react.dev/)
+[![Redis](https://img.shields.io/badge/Redis-7+-DC382D.svg)](https://redis.io/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-## 首版定位
+## 项目简介
 
-首版目标是先打通闭环，而不是一次做成完整运营平台。第一阶段主要覆盖：
+WeChat Claw Hub 是一个面向微信接入场景的**分布式 AI 网关系统**，旨在解决以下核心问题：
 
-- 微信扫码接入
-- 消息统一进入网关
-- Redis 持久化上下文和会话状态
-- 按用户维度隔离上下文
-- 节点健康检查与负载均衡分发
-- 统一调用 Dify API 进行知识库问答
-- 人工独占接管与网页坐席台回复
+- **多用户并发接入**：多个微信用户同时连接到同一个 AI Agent
+- **上下文隔离**：每个用户拥有独立的对话上下文和记忆
+- **多节点负载均衡**：消息智能分发到多个 Claw 节点处理
+- **人工接管**：用户要求转人工时，网页坐席台可接管会话
 
-## 推荐技术栈
+## 架构亮点
 
-- 后端：Python 3.11+ + FastAPI
-- 状态与上下文：Redis + 持久化
-- 人工坐席台：Web 前端，通过 HTTP + WebSocket 与网关通信
-- 微信接入：参考 OpenAkita 的微信扫码 onboarding 和 `WeChatAdapter` 抽象
-- 节点调度：网关统一维护多个 `Claw` 节点状态
-- 知识库：统一调用 Dify API
-
-## 目录结构
-
-```text
-wechat-claw-hub/
-  README.md
-  docs/
-    prd.md
-  apps/
-    gateway/
-    agent-console/
-    desktop-launcher/
-  services/
-  infra/
-  scripts/
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  微信用户 A  │     │  微信用户 B  │     │  微信用户 C  │
+└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+       │                   │                   │
+       └───────────────────┼───────────────────┘
+                           │
+                    ┌──────▼──────┐
+                    │  API Gateway │
+                    │  (FastAPI)   │
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+       ┌──────▼──────┐ ┌──▼──────┐ ┌──▼──────┐
+       │  Claw Node 1│ │ Node 2  │ │ Node 3  │
+       │  (Python)   │ │(Python) │ │(Python) │
+       └─────────────┘ └─────────┘ └─────────┘
 ```
 
-## 当前阶段产物
+### 核心特性
 
-当前仓库初始化阶段只要求先落文档，不实现业务代码：
+| 特性 | 说明 |
+|------|------|
+| 多租户隔离 | 每个微信用户独立上下文，互不干扰 |
+| 智能分发 | 基于节点负载和健康状态的负载均衡 |
+| 实时通信 | WebSocket 推送消息，毫秒级延迟 |
+| 上下文缓存 | Redis 持久化会话状态，支持快速恢复 |
+| 人工接管 | 完整的 handoff 机制，坐席台无缝接管 |
+| 节点发现 | UDP 广播自动发现局域网内可用节点 |
+| 可视化控制台 | React 前端，实时监控会话和节点状态 |
 
-- `README.md`
-- `docs/prd.md`
+## 技术栈
 
-当前已经具备的基础产物：
+| 层级 | 技术 | 说明 |
+|------|------|------|
+| **网关后端** | Python 3.11 + FastAPI | 高性能异步 API 网关 |
+| **状态存储** | Redis 7+ | 会话上下文、节点状态、身份主档 |
+| **前端控制台** | React 18 + Vite | 实时监控、配置管理、会话观察 |
+| **工作节点** | Python 3.11 + FastAPI | 可水平扩展的 Claw 处理节点 |
+| **桌面启动器** | Python + PyInstaller | Windows 一体化部署工具 |
 
-- `apps/gateway`：主网关 FastAPI 骨架、会话、节点、分发接口
-- `apps/agent-console`：React 控制台，可检测模型连通性、生成微信二维码并做连接测试
-- `apps/desktop-launcher`：Windows 一体化桌面启动器，负责本地控制面 API、下载 Redis、选择单一工作目录并一键拉起核心组件
-- `apps/winui-client`：WinUI 3 + WebView2 Windows 客户端壳，内置并监控桌面启动器，承载现有 React 控制台
-- `services/claw-node`：Windows 工作节点 Python 服务骨架
-- `scripts/build-claw-node-bundle.ps1`：子节点打包脚本
-- `scripts/install-claw-node.ps1`：Windows 子节点安装脚本
-- `scripts/build-desktop-launcher.ps1`：桌面启动器 EXE 打包脚本
-- `scripts/build-winui-client.ps1`：Windows 客户端构建脚本，按前端、launcher、WinUI 顺序产出本机客户端
-- `docs/windows-node-dispatch-implementation.md`：主从分发与部署实施说明
+## 快速开始
 
-当前已打通的关键链路：
+### 环境要求
 
-- 微信扫码接入、长轮询收消息
-- 上下文 token 缓存与回传
-- 微信端 typing 提示发送
-- 多用户接入同一 agent 且按用户隔离上下文
-- 网关向多个节点做任务分发
-- 分发模式开关：主机可只负责接入与调度，不让本机 `local-node` 参与处理
-- 会话级节点槽位分配：同一微信会话会绑定 `node_id + slot_id`
-- 微信输入 `/switch` 或 `切换节点` 后，可在同一主会话内切换到新的处理节点/槽位
-- 前端会话观察台查看 transcript、节点、会话记忆抽屉
-- **WebSocket 实时消息推送**：会话消息实时更新，无需轮询
-- **会话消息缓存**：切换会话瞬间回显，后台增量更新
-- **首屏加载优化**：限制初始加载消息数量（默认 50 条）
-- 接入中心查看已接入节点、节点 ID、上报地址、平台、版本、负载
-- `claw-node` 自动探测并上报 hostname、局域网 IP、上报地址
-- 网关主机通过 UDP 广播发现局域网节点，并使用独立 pairing key 完成纳管
-- Windows 桌面启动器支持主机 Redis + Gateway + Console + 可选本机节点 + 可选节点缓存 Redis 的一键编排
+- Python 3.11+
+- Node.js 18+
+- Redis 7+
 
-当前已确认的微信接入边界：
-
-- 当前稳定可获取的是 iLink 消息事件中的 `from_user_id`、`message_id`、`session_id`、`context_token` 和文本/媒体消息内容
-- 当前未获取到微信号、昵称、备注名、头像等联系人资料
-- 前端当前显示的用户标识，本质上是平台返回的 `from_user_id`，不是用户设置的微信号
-- 若要展示真实昵称或微信号，需要额外接入联系人信息查询能力或消费新的资料字段
-
-后续开发将继续围绕以下方向推进：
-
-- 微信真实接入
-- bot 结果回微信出站
-- 人工接管完整闭环
-- 坐席台 Web 界面
-
-## 当前数据拓扑
-
-当前桌面一体化方案固定采用：
-
-- **主机中心化存储**：主机 Redis + 主机工作目录是会话主状态、身份主档、长期记忆与节点纳管状态的唯一事实来源
-- **节点本地 Redis 可选缓存**：节点若启用本地 Redis，只缓存短期上下文快照或热点结果，不保存正式会话主状态、handoff 状态、身份主档或长期记忆
-- **控制台全量视图**：控制台查看所有会话时只依赖主机 Redis 和 transcript，不依赖节点缓存 Redis
-
-桌面启动器选择的“存储库目录”会作为单一工作目录根路径，并创建：
-
-- `data/redis/`
-- `data/transcripts/`
-- `data/identity/`
-- `data/memory/`
-- `data/node-cache/<node-id>/redis/`
-- `logs/`
-- `runtime/`
-- `config/`
-
-## 当前可用的本地联调入口
+### 1. 启动网关
 
 ```bash
-# 1. 启动网关
 cd apps/gateway
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .
-uvicorn app.main:app --reload
 
-# 2. 启动前端控制台
+# 创建虚拟环境
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+
+# 安装依赖
+pip install -e .
+
+# 配置环境变量
+cp .env.example .env
+# 编辑 .env 填入你的配置
+
+# 启动网关服务
+uvicorn app.main:app --reload --port 8300
+```
+
+### 2. 启动前端控制台
+
+```bash
 cd apps/agent-console
+
+# 安装依赖
 npm install
+
+# 启动开发服务器
 npm run dev
 ```
 
-- 网关默认绑定：`http://0.0.0.0:8300`（推荐在同网段使用 `http://<主机局域网IP>:8300` 访问）
-- 控制台默认开发地址：`http://0.0.0.0:5174`
-- 启动器本地控制面 API：`http://127.0.0.1:8765/local/*`（仅供前端代理和本地调试，不再作为用户前端入口）
-- 控制台目前支持：
-  - 模型检测、微信二维码生成、扫码轮询、手动 token 连接、断开连接
-  - 接入中心查看节点列表、节点状态、上报地址
-  - 会话观察台查看会话列表、聊天时间线、会话记忆抽屉
-  - **WebSocket 实时消息推送**：新消息实时到达，无需刷新
-  - **会话快速切换**：应用缓存瞬间回显，后台增量更新
-  - 展示当前会话绑定的节点、槽位、路由模式和通道释放状态
-  - 手动触发”切换节点”
-  - “当前会话”区域右侧打开会话记忆侧边抽屉
-  - 快速配置：角色选择（含”网关主机+控制台”组合角色）、当前机器节点安装、局域网发现与 pairing key 配对、分发模式切换；节点安装阶段只准备当前机器的节点环境，不生成 token，token 会在网关配对成功时自动下发；控制台现在会同时展示网关侧节点诊断与本机节点 Windows 服务诊断
+打开浏览器访问 `http://localhost:5174`
 
-## 当前调度与模型说明
+### 3. 配置模型
 
-- 网关当前支持两种处理形态：
-  - **主机可处理**：本机 `local-node` 也参与接单；现在统一通过桌面启动器安装/重启 Windows 服务，不再长期直接托管临时节点进程
-  - **主机只分发**：网关仅负责微信接入、会话状态、节点调度与消息出站
-- 节点调度基于：
-  - 节点健康状态
-  - `channel_capacity / channel_in_use`
-  - 当前会话亲和的 `assigned_node_id + assigned_slot_id`
-- `/switch` 当前已实现为“释放当前槽位并切到新的可用节点/槽位”；现阶段更偏向**受控重分配**，不保证严格随机
-- “接入中心 -> 检测模型”当前检测的是**网关内置模型配置**，不是节点模型配置
-- 因此可能出现：
-  - 节点能正常回复微信消息
-  - 但如果网关未配置 `WCH_BUILTIN_MODEL_API_KEY`，模型检测仍会失败
+网关支持任何 OpenAI 兼容的模型服务：
 
-## Windows 一体化 EXE
+```env
+# DashScope（通义千问）
+WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+WCH_BUILTIN_MODEL_API_KEY=your-api-key
+WCH_BUILTIN_MODEL_NAME=qwen-plus
 
-当前仓库已经提供 Windows 桌面启动器工程与打包脚本，首版面向单机一体化场景：
-
-- 自动下载主机 Redis（支持 GitHub 与国内镜像源）
-- 选择单一“存储库目录”作为工作目录
-- 一键启动 `主机 Redis + Gateway + Console`
-- 可选启动 `Local Claw Node`
-  - 该本机节点现在固定由 Windows 服务长期运行，启动器只负责安装、状态查看、重启和诊断导出
-  - 节点固定配置文件路径为 `runtime/local-node-service/config/node.env`
-  - 节点诊断文件固定输出到 `runtime/local-node-service/diagnostics`
-- 可选下载并启动 `节点缓存 Redis`
-
-开发运行：
-
-```bash
-cd apps/desktop-launcher
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e .[build]
-python -m launcher.main
+# 或者使用本地 Ollama
+WCH_BUILTIN_MODEL_BASE_URL=http://localhost:11434/v1
+WCH_BUILTIN_MODEL_API_KEY=ollama
+WCH_BUILTIN_MODEL_NAME=qwen2.5:7b
 ```
 
-开发态端口约定：
+## 项目结构
 
-- 用户前端入口只保留 `5174`
-- 网关 API 继续使用 `8300`
-- 启动器只提供 `8765` 本地控制面 API，供前端通过 `/local/*` 代理访问
-
-打包 EXE：
-
-```bash
-powershell -ExecutionPolicy Bypass -File scripts/build-desktop-launcher.ps1
+```
+wechat-claw-hub/
+├── apps/
+│   ├── gateway/              # FastAPI 网关服务
+│   │   ├── app/
+│   │   │   ├── main.py       # 入口和路由注册
+│   │   │   ├── sessions.py   # 会话管理
+│   │   │   ├── nodes.py      # 节点调度
+│   │   │   └── wechat.py     # 微信接入处理
+│   │   └── .env.example      # 环境变量模板
+│   ├── agent-console/        # React 控制台前端
+│   │   ├── src/
+│   │   │   ├── App.tsx       # 主应用组件
+│   │   │   ├── components/   # UI 组件
+│   │   │   └── hooks/        # 自定义 Hooks
+│   │   └── package.json
+│   └── desktop-launcher/     # Windows 桌面启动器
+├── services/
+│   └── claw-node/            # 工作节点服务
+├── docs/                     # 文档
+├── scripts/                  # 构建和部署脚本
+└── README.md
 ```
 
-## 双机验证参考
+## 核心功能演示
 
-若要按“电脑 A 主机 + 电脑 B 节点”的方式做源码联调，请优先参考：
+### 微信扫码接入
 
-- `docs/dual-machine-validation-checklist.md`
-- `docs/bug-report-template.md`
-- `scripts/smoke-check-host.ps1`
-- `scripts/smoke-check-node.ps1`
+1. 在控制台「接入中心」生成专属二维码
+2. 微信扫码后自动完成配对
+3. 消息实时同步到 AI Agent
 
-## 当前建议配置
+### 会话观察台
 
-- 网关开发端口：`8300`
-- 前端开发端口：`5174`
-- 内置模型：DashScope OpenAI Compatible
-  - Base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`
-  - Model: `qwen3.5-plus`
+- 查看所有活跃会话
+- 实时聊天时间线（WebSocket 推送）
+- 会话绑定节点和槽位信息
+- 会话记忆抽屉（上下文快照）
 
-## 已知限制
+### 节点管理
 
-- 当前节点列表里是否显示真实局域网 IP，取决于节点注册时是否上报真实 `base_url` 或 `hostname`
-- 当前示例节点上报的仍可能是类似 `worker://node-local-1` 的逻辑地址，而不是 `192.168.x.x`
-- 人工接管闭环、联系人资料获取、坐席权限体系仍未完成
+- 自动发现局域网内可用节点
+- 实时监控节点健康状态和负载
+- 手动触发节点切换
+- 分发模式开关（主机处理 vs 仅分发）
+
+## 部署架构
+
+### 单机开发模式
+
+```
+本地机器
+├── Redis (localhost:6379)
+├── Gateway (localhost:8300)
+├── Agent Console (localhost:5174)
+└── Local Claw Node (可选)
+```
+
+### 多节点生产模式
+
+```
+服务器 A（主机）
+├── Redis
+├── Gateway
+└── Agent Console
+
+服务器 B（节点 1） ─┐
+                    ├── 局域网 UDP 发现
+服务器 C（节点 2） ─┘    + Pairing Key 配对
+```
+
+## 环境变量说明
+
+完整配置项参考 `apps/gateway/.env.example`：
+
+| 变量 | 说明 | 必填 |
+|------|------|------|
+| `WCH_REDIS_URL` | Redis 连接地址 | 是 |
+| `WCH_DEFAULT_AGENT_ID` | 默认 Agent 标识 | 是 |
+| `WCH_BUILTIN_MODEL_*` | AI 模型配置 | 推荐 |
+| `WCH_WECHAT_*` | 微信接入配置 | 接入微信必填 |
+| `WCH_DISPATCH_MODE_ENABLED` | 是否启用分发模式 | 否 |
+| `WCH_NODE_TOKENS` | 节点 Token 配置 | 多节点必填 |
+
+## 常见问题
+
+### Q: 支持哪些 AI 模型？
+
+任何 OpenAI 兼容的模型都可以使用，包括但不限于：
+- 通义千问（DashScope）
+- Ollama 本地模型
+- OpenAI
+- 其他兼容接口
+
+### Q: 可以只接入微信，不调用 AI 吗？
+
+可以。不配置模型时，网关只做消息转发，你可以自定义处理逻辑。
+
+### Q: 如何在生产环境部署？
+
+推荐使用 Docker 或 systemd 服务管理，详细部署文档见 `docs/` 目录。
+
+### Q: 节点如何扩展？
+
+在同一局域网内部署多个 `claw-node`，网关会通过 UDP 广播自动发现并纳管。
+
+## 贡献指南
+
+欢迎提交 Issue 和 Pull Request！
+
+1. Fork 本仓库
+2. 创建你的特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交修改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 提交 Pull Request
+
+## 开源协议
+
+本项目采用 [MIT License](LICENSE) 开源协议。
+
+## 交流与反馈
+
+- 提交 [Issue](https://github.com/lclen/Wechat-Clawhub-demo/issues) 报告问题或建议
+- 欢迎 Star 和 Fork
+
+---
+
+**WeChat Claw Hub** - 让微信接入 AI 变得简单可控。

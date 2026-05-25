@@ -1,29 +1,52 @@
+# Environment variables
 .env
 .env.*
+!.env.example
+
+# Python
 .venv/
-node_modules/
 __pycache__/
 *.pyc
-*.tsbuildinfo
-dist/
-data/
-/logs/
-runtime/
-config/
-diagnostics/
-build/
-bin/
-obj/
-*.log
-*.spec
 *.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.coverage
-apps/agent-console/vite.config.js
-apps/agent-console/vite.config.d.ts
-/.graphify*
+
+# Node
+node_modules/
+*.tsbuildinfo
+
+# Build outputs
+dist/
+build/
+bin/
+obj/
+
+# Data and logs
+data/
+/logs/
+*.log
+
+# Runtime and config (local machine specific)
+runtime/
+config/
+diagnostics/
+
+# IDE
+.vscode/
+.idea/
+
+# Dev tools
+.graphify*
 /graphify-out/cache/
 /graphify-out/.graphify_python
 /apps/**/graphify-out/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+tmp-*.log
+tmp-*.png
+*.spec
