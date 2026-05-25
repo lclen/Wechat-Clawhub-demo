@@ -1,6 +1,6 @@
 # WeChat Claw Hub - 微信 AI 网关与多节点调度系统
 
-> 将微信接入 AI 的完整解决方案：多用户并发接入、上下文隔离、多节点负载均衡、人工接管。
+> 将微信接入 AI 的完整解决方案：多用户并发接入、上下文隔离、多节点负载均衡、Dify 知识库集成、人工接管。
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-009688.svg)](https://fastapi.tiangolo.com/)
@@ -13,16 +13,17 @@
 
 WeChat Claw Hub 是一个面向微信接入场景的**分布式 AI 网关系统**，旨在解决以下核心问题：
 
-- **多用户并发接入**：多个微信用户同时连接到同一个 AI Agent
+- **多用户并发接入**：多个微信用户/公众号同时连接到同一个 AI Agent
 - **上下文隔离**：每个用户拥有独立的对话上下文和记忆
 - **多节点负载均衡**：消息智能分发到多个 Claw 节点处理
-- **人工接管**：用户要求转人工时，网页坐席台可接管会话
+- **Dify 知识库集成**：统一调用 Dify API 进行知识库问答
+- **人工接管**：用户要求转人工时，网页坐席台可接管会话并继续沟通
 
 ## 架构亮点
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  微信用户 A  │     │  微信用户 B  │     │  微信用户 C  │
+│  微信用户 A  │     │  微信用户 B  │     │  微信公众号  │
 └──────┬──────┘     └──────┬──────┘     └──────┬──────┘
        │                   │                   │
        └───────────────────┼───────────────────┘
@@ -38,29 +39,74 @@ WeChat Claw Hub 是一个面向微信接入场景的**分布式 AI 网关系统*
        │  Claw Node 1│ │ Node 2  │ │ Node 3  │
        │  (Python)   │ │(Python) │ │(Python) │
        └─────────────┘ └─────────┘ └─────────┘
+              │
+       ┌──────▼──────┐     ┌─────────────┐
+       │   Dify API  │     │   Redis 7+  │
+       │  知识库问答  │     │  会话/状态  │
+       └─────────────┘     └─────────────┘
 ```
 
-### 核心特性
+## 核心特性
+
+### 微信接入
 
 | 特性 | 说明 |
 |------|------|
-| 多租户隔离 | 每个微信用户独立上下文，互不干扰 |
-| 智能分发 | 基于节点负载和健康状态的负载均衡 |
-| 实时通信 | WebSocket 推送消息，毫秒级延迟 |
-| 上下文缓存 | Redis 持久化会话状态，支持快速恢复 |
-| 人工接管 | 完整的 handoff 机制，坐席台无缝接管 |
+| 多通道支持 | 微信个人号（ilink）+ 微信公众号（官方 API） |
+| 扫码接入 | 自动生成专属配对二维码，长轮询确认 |
+| 消息收发 | 文本/媒体消息，自动 typing 提示 |
+| 公众号能力 | stable access token、IP 白名单、客服消息 |
+
+### AI 模型与知识库
+
+| 特性 | 说明 |
+|------|------|
+| 多模型支持 | 任何 OpenAI 兼容接口（DashScope、Ollama、OpenAI 等） |
+| Dify 集成 | 统一调用 Dify API 进行知识库问答 |
+| 模型参数调优 | temperature、top_p、thinking、search 等 |
+| 多模态 | 支持图片理解和多模态输入 |
+| 节点级模型 | 每个工作节点可配置独立模型 |
+
+### 分布式调度
+
+| 特性 | 说明 |
+|------|------|
+| 负载均衡 | 基于 `channel_capacity / channel_in_use` 的智能分发 |
+| 会话亲和 | 同一微信会话绑定 `node_id + slot_id` |
 | 节点发现 | UDP 广播自动发现局域网内可用节点 |
-| 可视化控制台 | React 前端，实时监控会话和节点状态 |
+| 配对机制 | pairing key 安全配对，token 自动下发 |
+| 健康检查 | 实时监控节点心跳和负载状态 |
+| 分发模式 | 主机可同时处理，或只做接入与调度 |
+
+### 人工接管
+
+| 特性 | 说明 |
+|------|------|
+| 转人工请求 | 用户发送特定指令触发 handoff |
+| 独占接管 | 坐席台独占会话，AI 暂停回复 |
+| 超时恢复 | handoff 超时自动恢复 AI 处理 |
+| 人机协同 | 完整 transcript 记录所有交互 |
+
+### 实时通信与可视化
+
+| 特性 | 说明 |
+|------|------|
+| WebSocket 推送 | 会话消息实时更新，毫秒级延迟 |
+| 会话观察台 | 查看所有活跃会话、聊天时间线 |
+| 节点诊断 | 配对、注册、心跳、鉴权全链路可视化 |
+| 配置管理 | 前端配置 Dify、模型、微信参数并即时生效 |
+| 日志流 | 节点安装和运行日志实时回传 |
 
 ## 技术栈
 
 | 层级 | 技术 | 说明 |
 |------|------|------|
 | **网关后端** | Python 3.11 + FastAPI | 高性能异步 API 网关 |
-| **状态存储** | Redis 7+ | 会话上下文、节点状态、身份主档 |
+| **状态存储** | Redis 7+ | 会话上下文、节点状态、身份主档、transcript |
 | **前端控制台** | React 18 + Vite | 实时监控、配置管理、会话观察 |
 | **工作节点** | Python 3.11 + FastAPI | 可水平扩展的 Claw 处理节点 |
 | **桌面启动器** | Python + PyInstaller | Windows 一体化部署工具 |
+| **微信公众号** | 官方 API + AES 加密 | 稳定 access token、客服消息 |
 
 ## 快速开始
 
@@ -104,9 +150,11 @@ npm run dev
 
 打开浏览器访问 `http://localhost:5174`
 
-### 3. 配置模型
+### 3. 配置模型和知识库
 
-网关支持任何 OpenAI 兼容的模型服务：
+网关支持两种 AI 集成方式：
+
+#### 方式一：直接调用 OpenAI 兼容模型
 
 ```env
 # DashScope（通义千问）
@@ -120,6 +168,45 @@ WCH_BUILTIN_MODEL_API_KEY=ollama
 WCH_BUILTIN_MODEL_NAME=qwen2.5:7b
 ```
 
+#### 方式二：集成 Dify 知识库
+
+```env
+WCH_DIFY_BASE_URL=http://your-dify-server:3000/v1
+WCH_DIFY_API_KEY=app-your-dify-api-key
+```
+
+配置后，网关会自动将用户消息转发到 Dify 进行知识库问答。
+
+### 4. 接入微信
+
+#### 个人号接入（ilink 平台）
+
+```env
+WCH_WECHAT_TOKEN=your-wechat-token
+WCH_WECHAT_BASE_URL=https://ilinkai.weixin.qq.com
+```
+
+在控制台「接入中心」生成专属二维码，扫码即可完成配对。
+
+#### 公众号接入
+
+```env
+WCH_WECHAT_MP_APP_ID=wx75c8444580959962
+WCH_WECHAT_MP_APP_SECRET=your-mp-app-secret
+WCH_WECHAT_MP_TOKEN=your-mp-token
+WCH_WECHAT_MP_ENCODING_AES_KEY=your-encoding-aes-key
+```
+
+网关已内置公众号回调接收和消息解密逻辑。
+
+### 5. 添加工作节点
+
+在同一局域网内，启动 Claw Node 后，网关会自动通过 UDP 广播发现节点。
+
+在控制台「接入中心」使用以下任一方式配对：
+- **UDP 扫描发现**：自动发现局域网内的节点
+- **手动配对**：输入节点地址和 pairing key
+
 ## 项目结构
 
 ```
@@ -128,45 +215,78 @@ wechat-claw-hub/
 │   ├── gateway/              # FastAPI 网关服务
 │   │   ├── app/
 │   │   │   ├── main.py       # 入口和路由注册
-│   │   │   ├── sessions.py   # 会话管理
-│   │   │   ├── nodes.py      # 节点调度
-│   │   │   └── wechat.py     # 微信接入处理
+│   │   │   ├── api/routes/   # API 路由
+│   │   │   │   ├── sessions.py    # 会话接口
+│   │   │   │   ├── nodes.py       # 节点接口
+│   │   │   │   ├── wechat.py      # 微信接入接口
+│   │   │   │   └── system.py      # 系统状态接口
+│   │   │   ├── core/         # 核心配置和生命周期
+│   │   │   ├── services/     # 业务服务
+│   │   │   │   ├── session_manager.py    # 会话管理
+│   │   │   │   ├── node_registry.py      # 节点注册表
+│   │   │   │   ├── setup_service.py      # 配置和配对服务
+│   │   │   │   ├── outgoing_dispatcher.py # 消息分发
+│   │   │   │   ├── handoff_timeout_service.py # 人工接管超时
+│   │   │   │   └── redis_store.py        # Redis 存储抽象
+│   │   │   ├── dispatch/     # 分发调度
+│   │   │   │   ├── scheduler.py          # 调度器
+│   │   │   │   └── queue.py              # 队列
+│   │   │   ├── models/       # 数据模型
+│   │   │   └── access/       # 微信接入层
+│   │   │       ├── wechat_bot.py         # 个人号接入
+│   │   │       └── wechat_official_account.py # 公众号接入
 │   │   └── .env.example      # 环境变量模板
 │   ├── agent-console/        # React 控制台前端
 │   │   ├── src/
 │   │   │   ├── App.tsx       # 主应用组件
 │   │   │   ├── components/   # UI 组件
+│   │   │   │   ├── Workspaces/
+│   │   │   │   │   ├── Connection/   # 接入中心工作区
+│   │   │   │   │   ├── Sessions/     # 会话观察台
+│   │   │   │   │   └── QuickSetup/   # 快速配置
+│   │   │   │   └── shared/   # 共享组件
 │   │   │   └── hooks/        # 自定义 Hooks
 │   │   └── package.json
 │   └── desktop-launcher/     # Windows 桌面启动器
 ├── services/
 │   └── claw-node/            # 工作节点服务
-├── docs/                     # 文档
 ├── scripts/                  # 构建和部署脚本
+├── docs/                     # 文档
 └── README.md
 ```
 
-## 核心功能演示
+## API 接口
 
-### 微信扫码接入
+### 系统状态
 
-1. 在控制台「接入中心」生成专属二维码
-2. 微信扫码后自动完成配对
-3. 消息实时同步到 AI Agent
+- `GET /api/system/status` - 网关健康检查
 
-### 会话观察台
+### 模型
 
-- 查看所有活跃会话
-- 实时聊天时间线（WebSocket 推送）
-- 会话绑定节点和槽位信息
-- 会话记忆抽屉（上下文快照）
+- `GET /api/models/builtin/status` - 模型状态
+- `POST /api/models/builtin/check` - 模型连通性检测
+
+### 微信接入
+
+- `POST /api/wechat/onboard/start` - 启动扫码接入
+- `POST /api/wechat/onboard/poll` - 轮询确认接入状态
+- `GET /api/wechat/mp/callback` - 微信公众号回调验证
+- `POST /api/wechat/mp/callback` - 微信公众号消息接收
 
 ### 节点管理
 
-- 自动发现局域网内可用节点
-- 实时监控节点健康状态和负载
-- 手动触发节点切换
-- 分发模式开关（主机处理 vs 仅分发）
+- `GET /api/nodes` - 节点列表
+- `POST /api/nodes/register` - 节点注册
+- `POST /api/nodes/{node_id}/heartbeat` - 节点心跳
+- `POST /api/nodes/{node_id}/pull-task` - 拉取任务
+- `POST /api/nodes/{node_id}/task-result` - 提交任务结果
+
+### 会话管理
+
+- `GET /api/sessions` - 会话列表
+- `GET /api/sessions/{session_id}` - 会话详情
+- `GET /api/sessions/{session_id}/messages` - 会话消息
+- `POST /api/messages/inbound` - 接收入站消息
 
 ## 部署架构
 
@@ -201,10 +321,13 @@ wechat-claw-hub/
 |------|------|------|
 | `WCH_REDIS_URL` | Redis 连接地址 | 是 |
 | `WCH_DEFAULT_AGENT_ID` | 默认 Agent 标识 | 是 |
-| `WCH_BUILTIN_MODEL_*` | AI 模型配置 | 推荐 |
+| `WCH_BUILTIN_MODEL_*` | AI 模型配置（OpenAI 兼容） | 推荐 |
+| `WCH_DIFY_*` | Dify 知识库配置 | 可选 |
 | `WCH_WECHAT_*` | 微信接入配置 | 接入微信必填 |
+| `WCH_WECHAT_MP_*` | 微信公众号配置 | 公众号接入必填 |
 | `WCH_DISPATCH_MODE_ENABLED` | 是否启用分发模式 | 否 |
 | `WCH_NODE_TOKENS` | 节点 Token 配置 | 多节点必填 |
+| `WCH_PUBLIC_ENTRY_*` | 公共入口配置 | 可选 |
 
 ## 常见问题
 
@@ -213,8 +336,20 @@ wechat-claw-hub/
 任何 OpenAI 兼容的模型都可以使用，包括但不限于：
 - 通义千问（DashScope）
 - Ollama 本地模型
-- OpenAI
+- OpenAI API
 - 其他兼容接口
+
+### Q: Dify 如何使用？
+
+配置 `WCH_DIFY_BASE_URL` 和 `WCH_DIFY_API_KEY` 后，网关会自动将用户消息转发到 Dify 进行知识库问答。可以与内置模型同时使用。
+
+### Q: 人工接管如何工作？
+
+1. 用户发送转人工指令（如 `/handoff`）
+2. 会话状态变为 `HANDOFF_PENDING`
+3. 网页坐席台接管会话
+4. 若坐席超时未响应，系统自动恢复 AI 处理
+5. 完整 transcript 记录所有交互
 
 ### Q: 可以只接入微信，不调用 AI 吗？
 
