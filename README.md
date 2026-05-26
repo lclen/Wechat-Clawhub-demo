@@ -188,7 +188,9 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5174`，进入控制台后选择“网关”或“网关+控制台”角色完成配置。控制台会连接 `http://localhost:8300`，如果你的网关不在本机，请在控制台环境变量里设置 `WCH_CONSOLE_GATEWAY_BASE_URL`。
+默认集成入口是 `http://localhost:8765`。如果你是直接运行前端源码开发服务，则 Vite 会监听 `http://localhost:5174`，并把 `/api` 代理到 `http://localhost:8300`、把 `/local` 代理到 `http://localhost:8765`。
+
+进入控制台后选择“网关”或“网关+控制台”角色完成配置。如果你的网关不在本机，请在控制台环境变量里设置 `WCH_CONSOLE_GATEWAY_BASE_URL`。
 
 ### 5. 配置模型或 Dify
 
@@ -220,7 +222,7 @@ WCH_DIFY_API_KEY=app-your-dify-api-key
 个人号扫码接入依赖 ilink 平台。推荐在控制台完成，避免手动复制 token：
 
 1. 确认网关已启动，并且 `.env` 中设置了 `WCH_WECHAT_BASE_URL=https://ilinkai.weixin.qq.com`。
-2. 打开控制台 `http://localhost:5174`，进入“接入中心”。
+2. 打开控制台 `http://localhost:8765`，进入“接入中心”。源码开发时也可以使用 Vite 地址 `http://localhost:5174`。
 3. 在“接入能力”中选择“微信接入”，点击“开始扫码”或“刷新二维码”。
 4. 使用微信扫码确认登录，保持控制台页面打开，等待轮询状态变为已连接。
 5. 扫码成功后，网关会保存当前 token；后续重启会优先复用已保存 token。
