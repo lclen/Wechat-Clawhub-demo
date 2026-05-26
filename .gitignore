@@ -36,6 +36,18 @@ diagnostics/
 .vscode/
 .idea/
 
+# AI assistant metadata
+.agent/
+.agents/
+.claude/
+.codex/
+.kiro/
+.playwright-mcp/
+AGENTS.md
+CLAUDE.md
+skills-lock.json
+screenshot-*.png
+
 # Dev tools
 .graphify*
 /graphify-out/cache/

@@ -1,6 +1,0 @@
-[mcp_servers.chrome-devtools]
-args = [
-    "-y",
-    "@modelcontextprotocol/server-chrome-devtools",
-]
-command = "npx"
