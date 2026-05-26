@@ -24,19 +24,19 @@ WeChat Claw Hub 是一个面向微信 AI 接入场景的网关系统。它把微
 
 网关、微信、节点和模型状态集中展示，适合日常运维和接入排查。
 
-![接入中心](tmp-connection-ui.png)
+![接入中心](docs/assets/readme/connection-center.png)
 
 ### 会话观察台
 
 按 Agent 查看会话列表、当前处理状态、消息时间线和节点绑定信息。
 
-![会话观察台](tmp-sessions-ui.png)
+![会话观察台](docs/assets/readme/sessions-workspace.png)
 
 ### 对话测试
 
 直接发送测试消息，验证 OpenAI 兼容模型或 Dify 配置是否能正常返回回复。
 
-![对话测试](tmp-conversation-ui.png)
+![对话测试](docs/assets/readme/conversation-test.png)
 
 ## 开源版包含什么
 
@@ -134,7 +134,32 @@ Dify   OpenAI 兼容模型   Redis
 WCH_REDIS_URL=redis://127.0.0.1:6379/0
 ```
 
-### 2. 启动网关
+### 2. 配置网关环境变量
+
+复制网关环境变量模板，然后至少确认 Redis、模型或 Dify、微信接入地址：
+
+```bash
+cd apps/gateway
+cp .env.example .env
+```
+
+最低可用配置示例：
+
+```env
+WCH_REDIS_URL=redis://127.0.0.1:6379/0
+
+# 二选一：OpenAI 兼容模型或 Dify
+WCH_BUILTIN_MODEL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+WCH_BUILTIN_MODEL_API_KEY=your-api-key
+WCH_BUILTIN_MODEL_NAME=qwen-plus
+
+# 微信个人号扫码接入使用 ilink 平台
+WCH_WECHAT_BASE_URL=https://ilinkai.weixin.qq.com
+```
+
+如果暂时没有模型 Key，也可以先启动网关和控制台，只做微信接入与会话观察联调。
+
+### 3. 启动网关
 
 ```bash
 cd apps/gateway
@@ -143,7 +168,6 @@ python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 pip install -e .
-cp .env.example .env
 
 uvicorn app.main:app --reload --port 8300
 ```
@@ -153,8 +177,9 @@ uvicorn app.main:app --reload --port 8300
 - `http://localhost:8300/`
 - `http://localhost:8300/docs`
 - `http://localhost:8300/api/system/status`
+- `http://localhost:8300/api/system/summary`
 
-### 3. 启动控制台
+### 4. 启动控制台
 
 ```bash
 cd apps/agent-console
@@ -163,9 +188,9 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5174`，进入控制台后选择“网关”或“网关+控制台”角色完成配置。
+打开 `http://localhost:5174`，进入控制台后选择“网关”或“网关+控制台”角色完成配置。控制台会连接 `http://localhost:8300`，如果你的网关不在本机，请在控制台环境变量里设置 `WCH_CONSOLE_GATEWAY_BASE_URL`。
 
-### 4. 配置模型或 Dify
+### 5. 配置模型或 Dify
 
 直接调用 OpenAI 兼容模型：
 
@@ -190,12 +215,20 @@ WCH_DIFY_BASE_URL=http://your-dify-server:3000/v1
 WCH_DIFY_API_KEY=app-your-dify-api-key
 ```
 
-### 5. 接入微信
+### 6. 微信扫码接入
 
-个人号接入：
+个人号扫码接入依赖 ilink 平台。推荐在控制台完成，避免手动复制 token：
+
+1. 确认网关已启动，并且 `.env` 中设置了 `WCH_WECHAT_BASE_URL=https://ilinkai.weixin.qq.com`。
+2. 打开控制台 `http://localhost:5174`，进入“接入中心”。
+3. 在“接入能力”中选择“微信接入”，点击“开始扫码”或“刷新二维码”。
+4. 使用微信扫码确认登录，保持控制台页面打开，等待轮询状态变为已连接。
+5. 扫码成功后，网关会保存当前 token；后续重启会优先复用已保存 token。
+6. 进入“会话观察台”发送微信消息，确认会话列表和聊天时间线开始更新。
+
+如果你已经有可用 token，也可以直接写入环境变量：
 
 ```env
-WCH_WECHAT_BASE_URL=https://ilinkai.weixin.qq.com
 WCH_WECHAT_TOKEN=your-wechat-token
 ```
 
