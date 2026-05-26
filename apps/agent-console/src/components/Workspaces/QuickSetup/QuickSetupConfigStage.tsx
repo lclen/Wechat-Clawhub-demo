@@ -200,12 +200,12 @@ export function QuickSetupConfigStage({
             ) : null}
           </label>
           <label>
-            <span>配对密鑰</span>
+            <span>配对密钥</span>
             <div className="field-with-action">
               <input type={workerPairingKeyVisible ? "text" : "password"} value={workerSetup.pairing_key} onChange={(event) => onUpdateWorkerSetup("pairing_key", event.target.value)} placeholder="节点与网关需保持一致" autoComplete="new-password" />
               <button type="button" className="ghost-button" onClick={onToggleWorkerPairingKeyVisible}>{workerPairingKeyVisible ? "隐藏" : "显示"}</button>
             </div>
-            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>配对密鑰由你自己设定，网关管理员在配对时需要输入相同的密鑰</div>
+            <div style={{ fontSize: 12, color: "var(--muted)", marginTop: 4 }}>配对密钥由你自己设定，网关管理员在配对时需要输入相同的密钥</div>
           </label>
           <label><span>安装目录</span><input value={workerSetup.install_dir} onChange={(event) => onUpdateWorkerSetup("install_dir", event.target.value)} /></label>
           <label><span>发现响应端口</span><input type="number" value={workerSetup.discovery_port} onChange={(event) => onUpdateWorkerSetup("discovery_port", Number(event.target.value) || 9531)} /></label>

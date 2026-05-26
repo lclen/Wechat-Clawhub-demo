@@ -337,7 +337,7 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
       label: "会话观察台",
       kicker: "Console Focus",
       description: "",
-      heroTitle: "会话列表与聊天",
+      heroTitle: "全局会话与人工接管",
       heroDescription: "",
       primaryActionLabel: "查看会话",
     };
@@ -348,7 +348,7 @@ export function workspacePresentation(capabilities: RoleCapabilities, workspace:
       label: "会话控制台",
       kicker: "Node Session",
       description: "",
-      heroTitle: "会话列表与聊天",
+      heroTitle: "本节点会话执行流",
       heroDescription: "",
       primaryActionLabel: "查看会话",
     };

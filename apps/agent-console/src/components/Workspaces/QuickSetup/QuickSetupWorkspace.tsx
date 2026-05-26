@@ -119,37 +119,70 @@ type QuickSetupWorkspaceProps = {
 
 export function QuickSetupWorkspace(props: QuickSetupWorkspaceProps) {
   const headingCaption = props.currentRoleIsWorker
-    ? "按节点视角推进。"
+    ? "按节点视角推进配置。"
     : props.currentRoleIsConsole
-      ? "按控制台视角推进。"
+      ? "按控制台视角推进配置。"
       : "按当前角色推进配置。";
   const stepCaption = props.setupMode === "status" ? "当前连接状态" : props.setupMode === "role" ? "选择角色" : props.setupMode === "config" ? "填写参数" : props.setupMode === "preview" ? "执行前确认" : "查看结果";
+  const setupHealthyCount = props.quickSetupStatusRows.filter((item) => item.tone === "good").length;
+  const setupWarnCount = props.quickSetupStatusRows.length - setupHealthyCount;
+  const taskStatusLabel = props.setupTask?.status === "running"
+    ? "执行中"
+    : props.setupTask?.status === "succeeded"
+      ? "已完成"
+      : props.setupTask?.status === "failed"
+        ? "需处理"
+        : "待执行";
+  const stepItems = [
+    { index: "0", label: "当前连接", detail: "确认网关、微信、模型与节点状态", active: props.setupMode === "status", done: props.setupMode !== "status" },
+    { index: "1", label: "选择角色", detail: "显式选择本机职责", active: props.setupMode === "role", done: props.setupMode === "config" || props.setupMode === "preview" || props.setupMode === "result" },
+    { index: "2", label: "基础参数", detail: "只展示当前角色需要的字段", active: props.setupMode === "config", done: props.setupMode === "preview" || props.setupMode === "result" },
+    { index: "3", label: "执行确认", detail: "预览配置与服务动作", active: props.setupMode === "preview", done: props.setupMode === "result" },
+    { index: "4", label: "执行结果", detail: "查看写入结果与下一步", active: props.setupMode === "result", done: Boolean(props.setupTask && props.setupTask.status === "succeeded") },
+  ];
 
   return (
     <section className="workspace-frame quick-setup-workspace">
       <div className="workspace-heading">
-        <div><div className="section-kicker">首次启动向导</div><h2>先选角色，再用最短路径把本机跑起来</h2></div>
+        <div><div className="section-kicker">快速配置工作台</div><h2>先确认这台机器的角色，再完成最短配置链路</h2></div>
         <div className="workspace-caption">{headingCaption}</div>
       </div>
+      <div className="quick-setup-command-strip">
+        <div className="quick-setup-command-card">
+          <span>当前角色</span>
+          <strong>{props.currentRoleDisplay}</strong>
+          <small>{props.setupProfile?.recommended_workspace === "quick_setup" ? "建议先完成配置" : "可进入联调或会话观察"}</small>
+        </div>
+        <div className="quick-setup-command-card">
+          <span>健康度</span>
+          <strong>{setupHealthyCount}/{props.quickSetupStatusRows.length || 0}</strong>
+          <small>{setupWarnCount > 0 ? `${setupWarnCount} 项需要确认` : "关键状态正常"}</small>
+        </div>
+        <div className="quick-setup-command-card">
+          <span>最近任务</span>
+          <strong>{taskStatusLabel}</strong>
+          <small>{props.setupTask?.title || props.setupProfile?.last_task?.title || props.latestSetupSummary || "暂无任务"}</small>
+        </div>
+      </div>
       <div className="quick-setup-layout">
-        <section className="surface">
+        <section className="surface quick-setup-rail">
           <div className="section-head">
-            <div><div className="section-kicker">步骤导航</div><h3>配置流程</h3></div>
-            <span className="small-note">{stepCaption}</span>
+            <div><div className="section-kicker">FLOW</div><h3>配置流程</h3></div>
+            <span className="session-badge session-badge-human">草稿已保存</span>
           </div>
           <div className="quick-setup-steps">
-            <SetupStepPill label="0. 当前连接" active={props.setupMode === "status"} done={props.setupMode !== "status"} />
-            <SetupStepPill label="1. 选择角色" active={props.setupMode === "role"} done={props.setupMode === "config" || props.setupMode === "preview" || props.setupMode === "result"} />
-            <SetupStepPill label="2. 基础参数" active={props.setupMode === "config"} done={props.setupMode === "preview" || props.setupMode === "result"} />
-            <SetupStepPill label="3. 执行确认" active={props.setupMode === "preview"} done={props.setupMode === "result"} />
-            <SetupStepPill label="4. 执行结果" active={props.setupMode === "result"} done={Boolean(props.setupTask && props.setupTask.status === "succeeded")} />
+            {stepItems.map((item) => (
+              <SetupStepPill
+                key={item.label}
+                index={item.index}
+                label={item.label}
+                detail={item.detail}
+                active={item.active}
+                done={item.done}
+              />
+            ))}
           </div>
-          <div className="info-stack">
-            <InfoRow label="推荐入口" value={props.setupProfile?.recommended_workspace === "quick_setup" ? "当前仍建议先完成快速配置" : "已可直接进入联调或会话观察"} multiline />
-            <InfoRow label="当前角色" value={props.currentRoleDisplay} multiline />
-            <InfoRow label="已完成角色" value={props.setupProfile?.completed_roles.length ? props.setupProfile.completed_roles.map(roleName).join(" / ") : "暂无"} multiline />
-            <InfoRow label="最近任务" value={props.setupTask?.title || props.setupProfile?.last_task?.title || "暂无"} multiline />
-          </div>
+          <p className="quick-setup-rail-note">当前阶段：{stepCaption}。每一步只保留当前角色真正需要处理的动作。</p>
         </section>
 
         <div className="quick-setup-main">
@@ -288,6 +321,29 @@ export function QuickSetupWorkspace(props: QuickSetupWorkspaceProps) {
             </section>
           ) : null}
         </div>
+        <aside className="surface quick-setup-sidecar">
+          <div className="section-head">
+            <div><div className="section-kicker">运行摘要</div><h3>健康度</h3></div>
+            <button type="button" className="ghost-button" onClick={props.onRefreshStatus} disabled={props.busyKey !== null}>刷新</button>
+          </div>
+          <div className="quick-setup-health-list">
+            {props.quickSetupStatusRows.map((item) => (
+              <div key={item.title} className={`quick-setup-health-item quick-setup-health-${item.tone}`}>
+                <div>
+                  <strong>{item.title}</strong>
+                  <span>{item.detail}</span>
+                </div>
+                <b>{item.value}</b>
+              </div>
+            ))}
+          </div>
+          <div className="quick-setup-sidecar-summary">
+            <InfoRow label="微信入口" value={props.wechatBaseUrl || "-"} multiline />
+            <InfoRow label="网关运行" value={props.gatewayRuntimeText} multiline />
+            <InfoRow label="节点概览" value={props.nodeSummaryText} multiline />
+            <InfoRow label="最近任务" value={props.latestSetupSummary} multiline />
+          </div>
+        </aside>
       </div>
     </section>
   );

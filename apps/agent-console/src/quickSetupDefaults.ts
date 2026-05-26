@@ -22,8 +22,8 @@ export const FILTERS: { key: SessionFilter; label: string }[] = [
 // 开源版本仅支持 gateway_host 和 gateway_host_console 角色
 // worker_node 和 console_only 为商业版功能
 export const DEFAULT_SETUP_ROLES: SetupRole[] = ["gateway_host", "gateway_host_console"];
-// export const DEFAULT_REMOTE_WORKER_NODE_ID = "claw-node-1";
-// export const LEGACY_WORKER_NODE_IDS = new Set(["claw-node-local-1"]);
+export const DEFAULT_REMOTE_WORKER_NODE_ID = "claw-node-1";
+export const LEGACY_WORKER_NODE_IDS = new Set(["claw-node-local-1"]);
 
 export const DEFAULT_GATEWAY_SETUP: GatewaySetupConfig = {
   redis_url: "redis://localhost:6379/0",

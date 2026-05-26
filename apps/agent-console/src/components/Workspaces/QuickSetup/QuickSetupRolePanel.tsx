@@ -21,7 +21,13 @@ export function QuickSetupRolePanel({
 }: QuickSetupRolePanelProps) {
   return (
     <section className="surface">
-      <div className="section-head"><div><div className="section-kicker">角色选择</div><h3>这台机器现在要扮演什么角色？</h3></div></div>
+      <div className="section-head">
+        <div>
+          <div className="section-kicker">选择本机角色</div>
+          <h3>先决定这台机器承担哪一段链路</h3>
+        </div>
+        <span className="small-note">选择后只展示该角色需要填写的参数</span>
+      </div>
       <div className="role-card-grid">
         {availableRoles.map((role) => (
           <button key={role} type="button" className={`role-card ${selectedRole === role ? "role-card-active" : ""}`} onClick={() => onSelectRole(role)}>
@@ -30,7 +36,10 @@ export function QuickSetupRolePanel({
               {completedRoles.has(role) ? <span className="session-badge session-badge-human">已配置</span> : null}
             </div>
             <div className="role-card-copy">{roleDescription(role)}</div>
-            <div className="role-card-meta">{roleAction(role)}</div>
+            <div className="role-card-meta">
+              <span>{roleAction(role)}</span>
+              <span className="role-card-arrow">继续</span>
+            </div>
           </button>
         ))}
       </div>

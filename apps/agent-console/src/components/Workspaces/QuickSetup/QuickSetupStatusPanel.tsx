@@ -58,14 +58,24 @@ export function QuickSetupStatusPanel({
   onConfirmReconfigure,
   onCancelReconfigure,
 }: QuickSetupStatusPanelProps) {
+  const healthyCount = statusRows.filter((item) => item.tone === "good").length;
+  const warnCount = statusRows.length - healthyCount;
+
   return (
-    <section className="surface">
+    <section className="surface quick-setup-status-command">
       <div className="section-head">
         <div><div className="section-kicker">当前连接状态</div><h3>先确认当前主机和连接状态</h3></div>
         <div className="inline-actions">
           <button type="button" className="ghost-button" onClick={onRefreshStatus} disabled={busyKey !== null}>{busyKey === "reconfigure-disconnect-wechat" ? "处理中..." : "刷新状态"}</button>
           <button type="button" onClick={onToggleReconfigureConfirm} disabled={busyKey !== null}>{reconfigureConfirmOpen ? "收起确认" : "重新配置"}</button>
         </div>
+      </div>
+      <div className="quick-setup-status-overview">
+        <div>
+          <span>健康度</span>
+          <strong>{healthyCount}/{statusRows.length || 0}</strong>
+        </div>
+        <p>{warnCount > 0 ? `${warnCount} 项仍需要确认，建议先处理黄色状态后再继续。` : "关键连接与配置状态正常，可以继续下一步。"}</p>
       </div>
       <div className="status-grid">
         {statusRows.map((item) => (

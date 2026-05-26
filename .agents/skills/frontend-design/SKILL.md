@@ -39,4 +39,19 @@ Interpret creatively and make unexpected choices that feel genuinely designed fo
 
 **IMPORTANT**: Match implementation complexity to the aesthetic vision. Maximalist designs need elaborate code with extensive animations and effects. Minimalist or refined designs need restraint, precision, and careful attention to spacing, typography, and subtle details. Elegance comes from executing the vision well.
 
+## Console and Operations UI Refactor Lessons
+
+Use these checks when improving dashboards, admin panels, setup flows, or operations consoles:
+
+- **Start with information architecture, not paint**: List every repeated status, duplicated button, and competing navigation pattern before changing colors. Collapse duplicate status cards into one authoritative place.
+- **Prefer capability-focused panels over long waterfalls**: For dense workspaces, use a primary capability switcher and render only the active task panel. Keep secondary/rare actions behind progressive disclosure.
+- **Make navigation operational**: Step rails, flow chips, and matrix cards should be clickable and should select the same underlying state. Avoid visual-only navigation that duplicates a checklist elsewhere.
+- **Separate similar but different jobs**: Split flows like “admin login QR” and “public user entry QR” into distinct panels, copy, and actions so users do not confuse internal setup with external sharing.
+- **Free forms from narrow sidebars**: Inputs, scan results, pairing forms, and diagnostic lists need enough width to breathe. Sidebars are best for summaries, context, and compact tools.
+- **Use truthful runtime copy**: If a service is paused, cooling down, retrying, or degraded, do not label it “running” just because a token exists. Make the state label match the operational truth.
+- **Derive links from configured state**: Never ship stale hardcoded fallback URLs in production UI. Prefer `accessUrl`, then derive from `baseUrl`, otherwise show a disabled/empty state.
+- **Extract repeated operational widgets**: If a status/assessment/control block appears in two views, make it a shared component before styling it. Shared logic prevents drift in labels, disabled states, and calculations.
+- **Measure the layout in the browser**: Validate `scrollWidth`, column widths, panel heights, and active panel count at target viewport sizes. “No horizontal scroll” is necessary but not enough; avoid 300px main work columns.
+- **Animate long-running actions centrally**: Restart, install, upgrade, scan, pair, and pressure-test actions should expose one busy state and one consistent loading overlay or in-card progress state.
+
 Remember: Claude is capable of extraordinary creative work. Don't hold back, show what can truly be created when thinking outside the box and committing fully to a distinctive vision.

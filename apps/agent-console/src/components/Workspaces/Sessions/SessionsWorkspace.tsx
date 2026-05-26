@@ -1,7 +1,8 @@
 import type { FormEvent, RefObject } from "react";
 import { InfoRow } from "../Connection/ConnectionUi";
 import { MessageContent } from "./MessageContent";
-import { EmptyState, SectionHeader, SignalBadge } from "../../shared/ConsolePrimitives";
+import { EmptyState, MetricCard, SectionHeader, SignalBadge } from "../../shared/ConsolePrimitives";
+import type { SessionThreadGroup } from "../../../selectors/consoleSelectors";
 import type { MessageRecord, SessionFilter, SessionRecord } from "../../../types";
 import {
   formatDayLabel,
@@ -27,12 +28,14 @@ type SessionsWorkspaceProps = {
   currentGatewayBaseUrl: string;
   sessionsLoaded: boolean;
   sessions: SessionRecord[];
-  filteredSessions: SessionRecord[];
+  sessionThreads: SessionThreadGroup[];
+  filteredSessionThreads: SessionThreadGroup[];
   sessionFilter: SessionFilter;
   filters: { key: SessionFilter; label: string }[];
   counts: Record<SessionFilter | "all", number>;
   selectedSessionId: string | null;
   selectedSession: SessionRecord | null;
+  selectedSessionThread: SessionThreadGroup | null;
   sessionManualNodeId: string;
   sessionBindingOptions: Array<{ node_id: string; label: string }>;
   messages: MessageRecord[];
@@ -73,12 +76,14 @@ export function SessionsWorkspace({
   currentGatewayBaseUrl,
   sessionsLoaded,
   sessions,
-  filteredSessions,
+  sessionThreads,
+  filteredSessionThreads,
   sessionFilter,
   filters,
   counts,
   selectedSessionId,
   selectedSession,
+  selectedSessionThread,
   sessionManualNodeId,
   sessionBindingOptions,
   messages,
@@ -109,6 +114,45 @@ export function SessionsWorkspace({
   onRestoreSessionAuto,
 }: SessionsWorkspaceProps) {
   const consoleStatusTone = !sessionsLoaded ? "neutral" : systemStatus ? "good" : "warn";
+  const isConsoleOnlySessionView = effectiveRole === "console_only";
+  const sessionScope = currentRoleIsWorker
+    ? {
+        kicker: "节点会话",
+        listTitle: "本节点任务",
+        metricLabel: "本节点线程",
+        emptyTitle: "当前筛选条件下还没有本节点会话",
+        defaultSummary: "节点端只显示分配到当前节点的会话，用于观察执行链路、回复耗时和通道状态。",
+        permissionLabel: "接管权限",
+        permissionValue: "只读",
+        permissionDetail: "节点端不处理人工接管",
+        baselineValue: systemStatus?.redis_ok ? "网关可达" : "待连接",
+        baselineDetail: "仅看本节点任务流",
+      }
+    : isConsoleOnlySessionView
+      ? {
+          kicker: "控制台会话",
+          listTitle: "微信用户",
+          metricLabel: "用户线程",
+          emptyTitle: "当前筛选条件下还没有用户线程",
+          defaultSummary: "从左侧选择用户后，这里会串联历史会话，并展示聊天、路由和人工接管状态。",
+          permissionLabel: "坐席接管",
+          permissionValue: canBindSessions ? "可接管" : "只读",
+          permissionDetail: canBindSessions ? "可处理待接管会话" : "仅观察会话状态",
+          baselineValue: systemStatus?.redis_ok ? "网关在线" : "待连接",
+          baselineDetail: wechatRuntimeSummaryValue,
+        }
+      : {
+          kicker: "微信通道",
+          listTitle: "微信用户",
+          metricLabel: "用户线程",
+          emptyTitle: "当前筛选条件下还没有用户线程",
+          defaultSummary: "从左侧选择用户后，这里会串联历史会话，并展示聊天、路由、节点绑定与人工接管状态。",
+          permissionLabel: "坐席接管",
+          permissionValue: canBindSessions ? "可接管" : "只读",
+          permissionDetail: canBindSessions ? "可绑定节点和接管会话" : "仅观察会话状态",
+          baselineValue: systemStatus?.redis_ok ? "Redis 在线" : "待连接",
+          baselineDetail: `${wechatRuntimeSummaryValue} · 节点 ${systemStatus?.active_nodes ?? 0}`,
+        };
   const handoffConsoleVisible = canBindSessions && (
     selectedSession?.status === "handoff_pending" || selectedSession?.status === "human_active"
   );
@@ -116,6 +160,17 @@ export function SessionsWorkspace({
   const releaseBusy = busyKey === "session-release-human";
   const humanReplyDisabled = !selectedSession || humanReplyBusy || !humanReplyDraft.trim();
   const handoffRemainingLabel = formatHandoffRemaining(selectedSession, now);
+  const selectedSessionStatusLabel = selectedSession
+    ? typingState || channelReleaseHint || getSessionBadgeLabel(selectedSession, latestBotMessage?.created_at)
+    : "未选中";
+  const selectedThreadTotalMessages = selectedSessionThread?.totalMessageCount ?? selectedSession?.message_count ?? 0;
+  const selectedThreadSegmentCount = selectedSessionThread?.sessions.length ?? 0;
+  const selectedSegmentIndex = selectedSessionThread && selectedSession
+    ? selectedSessionThread.sessions.findIndex((session) => session.session_id === selectedSession.session_id) + 1
+    : 0;
+  const selectedSessionSummary = selectedSession
+    ? `${selectedSessionThread && selectedSessionThread.sessions.length > 1 ? `已串联 ${selectedSessionThread.sessions.length} 段历史 · ` : ""}${selectedSession.context_summary || sessionPreview(selectedSession, latestBotMessage?.created_at)}`
+    : sessionScope.defaultSummary;
   const handleHumanReplySubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedSession || humanReplyDisabled) return;
@@ -128,7 +183,7 @@ export function SessionsWorkspace({
         <div className="session-console-topbar-copy">
           <div className="session-console-topbar-head">
             <div>
-              <div className="section-kicker">微信通道</div>
+              <div className="section-kicker">{sessionScope.kicker}</div>
               <h3>{heroTitle}</h3>
             </div>
             <SignalBadge tone={consoleStatusTone}>
@@ -136,69 +191,95 @@ export function SessionsWorkspace({
             </SignalBadge>
           </div>
         </div>
-        <div className="session-console-topbar-meta">
-          <span>{wechatRuntimeSummaryValue}</span>
-          <span>节点 {systemStatus?.active_nodes ?? 0}</span>
-          <span>会话 {sessions.length}</span>
-          <span>筛选 {filteredSessions.length}</span>
-          <span>Redis {systemStatus ? (systemStatus.redis_ok ? "在线" : "不可用") : "待连接"}</span>
+        <div className="session-console-topbar-metrics">
+          <MetricCard label={sessionScope.metricLabel} value={String(counts.all)} detail={`${filteredSessionThreads.length} 个匹配当前筛选`} tone="accent" />
+          <MetricCard label="处理中" value={String(counts.processing)} detail="排队或节点执行中" tone={counts.processing ? "warning" : "healthy"} />
+          <MetricCard label={sessionScope.permissionLabel} value={currentRoleIsWorker ? sessionScope.permissionValue : String(counts.human)} detail={currentRoleIsWorker ? sessionScope.permissionDetail : (counts.human ? "需要坐席关注" : sessionScope.permissionDetail)} tone={!currentRoleIsWorker && counts.human ? "warning" : "healthy"} />
+          <MetricCard label="运行基线" value={sessionScope.baselineValue} detail={sessionScope.baselineDetail} tone={systemStatus?.redis_ok ? "healthy" : "warning"} />
           {effectiveRole === "console_only" && sessionsLoaded && systemStatus === null ? (
-            <button type="button" className="ghost-button" onClick={onGoToQuickSetup}>快速配置</button>
+            <button type="button" className="ghost-button session-topbar-config-button" onClick={onGoToQuickSetup}>快速配置</button>
           ) : null}
         </div>
       </section>
       <div className="workspace-frame session-workspace">
         <aside className="session-rail surface session-rail-command">
           <div className="rail-heading session-list-heading">
-            <SectionHeader
-              kicker="会话列表"
-              title="微信会话"
-              actions={<span className="count-badge session-list-count">{filteredSessions.length}/{sessions.length}</span>}
-              className="session-list-section-header"
-            />
+              <SectionHeader
+                kicker="会话列表"
+                title={sessionScope.listTitle}
+                actions={<span className="count-badge session-list-count">{filteredSessionThreads.length}/{sessionThreads.length}</span>}
+                className="session-list-section-header"
+              />
           </div>
           <div className="filter-row" role="tablist" aria-label="Session filters">
             {filters.map((item) => <button key={item.key} type="button" className={`filter-chip ${sessionFilter === item.key ? "filter-chip-active" : ""}`} onClick={() => onChangeFilter(item.key)}>{item.label} {counts[item.key]}</button>)}
           </div>
-          {selectedSession ? (
-            <div className="session-rail-context">
-              <div className="session-rail-context-top">
-                <span className={`session-badge session-badge-${sessionBadgeTone(selectedSession)}`}>
-                  {typingState || channelReleaseHint || getSessionBadgeLabel(selectedSession, latestBotMessage?.created_at)}
-                </span>
-                <button type="button" className="memory-inline-trigger" onClick={onOpenInspector}>记忆</button>
-              </div>
-              <div className="session-rail-context-title">{formatSessionName(selectedSession.user_id)}</div>
-              <div className="session-rail-context-meta">{selectedSession.message_count} 条 · {formatTimeAgo(selectedSession.last_message_at, now)}</div>
-            </div>
-          ) : null}
           <div className="session-list">
-            {!sessionsLoaded ? <EmptyState title="正在读取会话列表…" /> : !filteredSessions.length ? <EmptyState title="当前筛选条件下还没有会话" /> : filteredSessions.map((session) => (
-              <button key={session.session_id} type="button" className={`session-card ${session.session_id === selectedSessionId ? "session-card-active" : ""}`} onClick={() => onSelectSession(session.session_id)} title={`${session.user_id}\n${session.session_id}`}>
+            {!sessionsLoaded ? <EmptyState title="正在读取会话列表…" /> : !filteredSessionThreads.length ? <EmptyState title={sessionScope.emptyTitle} /> : filteredSessionThreads.map((thread) => {
+              const session = thread.latestSession;
+              const selected = selectedSessionThread?.threadKey === thread.threadKey;
+              return (
+              <button key={thread.threadKey} type="button" className={`session-card session-thread-card ${selected ? "session-card-active" : ""}`} onClick={() => onSelectSession(session.session_id)} title={`${thread.displayUserId}\n${thread.sessions.map((item) => item.session_id).join("\n")}`}>
                 <div className="session-card-top">
                   <div className="session-card-title-wrap">
-                    <div className="session-card-title">{formatSessionName(session.user_id)}</div>
+                    <div className="session-card-title">{formatSessionName(thread.displayUserId)}</div>
+                    <div className="session-card-thread-id">{formatWechatIdentity(thread.displayUserId)}</div>
                   </div>
                   <span className={`session-badge session-badge-${sessionBadgeTone(session)}`}>{getSessionBadgeLabel(session)}</span>
                 </div>
                 <div className="session-card-preview">{sessionPreview(session)}</div>
-                <div className="session-card-meta"><span>{formatTimeAgo(session.last_message_at, now)}</span><span>{session.message_count} 条</span></div>
+                <div className="session-thread-meta">
+                  <span>{formatTimeAgo(thread.lastMessageAt, now)}</span>
+                  <span>{thread.totalMessageCount} 条</span>
+                  <span>{thread.sessions.length} 段</span>
+                </div>
+                <div className="session-thread-segments" aria-label="历史会话片段">
+                  {thread.sessions.slice(-4).map((segment, index) => (
+                    <span key={segment.session_id} className={segment.session_id === session.session_id ? "is-current" : ""}>
+                      {thread.sessions.length - Math.min(thread.sessions.length, 4) + index + 1}
+                    </span>
+                  ))}
+                </div>
               </button>
-            ))}
+            );})}
           </div>
         </aside>
 
         <div className="chat-column">
           <div className="chat-column-shell">
             <section className="surface transcript-surface">
+              <header className="session-transcript-header">
+                <div className="session-transcript-title">
+                  <div className="section-kicker">Live Transcript</div>
+                  <h3>{selectedSessionThread ? formatSessionName(selectedSessionThread.displayUserId) : "选择一个用户"}</h3>
+                  <p>{selectedSessionSummary}</p>
+                </div>
+                <div className="session-transcript-actions">
+                  <SignalBadge tone={getSessionSignalTone(selectedSession, latestBotMessage?.created_at)}>
+                    {selectedSessionStatusLabel}
+                  </SignalBadge>
+                  <button type="button" className="ghost-button" onClick={onOpenInspector} disabled={!selectedSession}>
+                    会话记忆
+                  </button>
+                </div>
+                <div className="session-transcript-facts">
+                  <div><span>连续消息</span><strong>{selectedSession ? selectedThreadTotalMessages : "-"}</strong></div>
+                  <div><span>历史片段</span><strong>{selectedSession ? `${selectedSegmentIndex || 1}/${selectedThreadSegmentCount || 1}` : "-"}</strong></div>
+                  <div><span>当前节点</span><strong>{selectedSession?.assigned_node_id || "未绑定"}</strong></div>
+                  <div><span>路由模式</span><strong>{selectedSession ? (selectedSession.routing_mode === "manual" ? "手动绑定" : "自动分配") : "-"}</strong></div>
+                </div>
+              </header>
 
               <div ref={messagesRef as RefObject<HTMLDivElement>} className="message-stream" onScroll={onMessageScroll}>
-                {!selectedSession ? <EmptyState title="选择一个会话后" detail="这里会显示完整聊天内容。" /> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载聊天内容…</div> : !messages.length ? <EmptyState title="当前会话还没有消息" /> : messages.map((message, index) => {
+                {!selectedSession ? <EmptyState title="选择一个用户后" detail="这里会按时间串联该用户所有历史会话。" /> : !messagesLoaded ? <div className="empty-state"><span className="loading-spinner" />正在加载该用户全部历史…</div> : !messages.length ? <EmptyState title="当前用户还没有消息" /> : messages.map((message, index) => {
                   const replyDurationLabel = getReplyDurationLabel(messages, index);
                   const rowTone = message.role === "user" ? "user" : message.role === "system" ? "system" : "assistant";
                   const systemNotice = getSystemNoticePresentation(message);
+                  const showSegmentDivider = shouldShowSegmentDivider(messages, index, selectedSessionThread);
+                  const segmentSession = selectedSessionThread?.sessions.find((session) => session.session_id === message.session_id) ?? null;
                   return (
                     <div key={message.message_id}>
+                      {showSegmentDivider && segmentSession ? <SessionSegmentDivider thread={selectedSessionThread} session={segmentSession} now={now} /> : null}
                       {showDateDivider(messages, index) ? <div className="date-divider">{formatDayLabel(message.created_at)}</div> : null}
                       {systemNotice ? (
                         <div className={`message-row message-row-system message-row-system-notice ${systemNotice.tone === "warning" ? "is-warning" : ""}`}>
@@ -292,8 +373,9 @@ export function SessionsWorkspace({
               {selectedSession?.context_summary || "当前还没有摘要，先通过最近消息与当前绑定状态帮助你判断会话运行态。"}
             </div>
             <div className="memory-meta-block">
-              <InfoRow label="当前用户" value={selectedSession ? formatWechatIdentity(selectedSession.user_id) : "未选中会话"} multiline />
-              <InfoRow label="会话 ID" value={selectedSession?.session_id || "-"} multiline />
+              <InfoRow label="当前用户" value={selectedSessionThread ? formatWechatIdentity(selectedSessionThread.displayUserId) : "未选中用户"} multiline />
+              <InfoRow label="历史片段" value={selectedSessionThread ? `${selectedSessionThread.sessions.length} 段 · ${selectedSessionThread.totalMessageCount} 条消息` : "-"} multiline />
+              <InfoRow label="当前会话 ID" value={selectedSession?.session_id || "-"} multiline />
               <InfoRow label="当前节点" value={selectedSession?.assigned_node_id || "未绑定"} />
               <InfoRow label="当前槽位" value={selectedSession?.assigned_slot_id || "未占用"} />
               <InfoRow label="路由模式" value={selectedSession ? (selectedSession.routing_mode === "manual" ? "手动绑定" : "自动分配") : "-"} />
@@ -318,6 +400,14 @@ function formatHandoffRemaining(session: SessionRecord | null, now: number) {
   return `剩余 ${remainingMinutes} 分钟`;
 }
 
+function getSessionSignalTone(session: SessionRecord | null, latestReplyAt?: string | null): "good" | "warn" | "info" | "neutral" {
+  if (!session) return "neutral";
+  const tone = sessionBadgeTone(session, latestReplyAt);
+  if (tone === "typing") return "info";
+  if (tone === "human" || tone === "queued") return "warn";
+  return "good";
+}
+
 function getSystemNoticePresentation(message: MessageRecord) {
   if (message.role !== "system") return null;
   const eventType = message.metadata.event_type || "";
@@ -328,4 +418,28 @@ function getSystemNoticePresentation(message: MessageRecord) {
     return { label: "接管超时", tone: "warning" };
   }
   return { label: "系统通知", tone: "info" };
+}
+
+function shouldShowSegmentDivider(messages: MessageRecord[], index: number, thread: SessionThreadGroup | null) {
+  if (!thread || thread.sessions.length <= 1) return false;
+  if (!messages[index]) return false;
+  return index === 0 || messages[index - 1]?.session_id !== messages[index].session_id;
+}
+
+function SessionSegmentDivider({ thread, session, now }: { thread: SessionThreadGroup | null; session: SessionRecord; now: number }) {
+  const index = thread ? thread.sessions.findIndex((item) => item.session_id === session.session_id) : -1;
+  const segmentNumber = index >= 0 ? index + 1 : 1;
+  const segmentCount = thread?.sessions.length ?? 1;
+  const reason = segmentNumber === 1
+    ? "首次会话"
+    : session.message_count >= 50
+      ? "上一段达到 50 条后自动续接"
+      : "用户 /new 或自动新开后续接";
+  return (
+    <div className="session-segment-divider">
+      <span>会话片段 {segmentNumber}/{segmentCount}</span>
+      <strong>{reason}</strong>
+      <em>{formatTimeAgo(session.created_at, now)}</em>
+    </div>
+  );
 }

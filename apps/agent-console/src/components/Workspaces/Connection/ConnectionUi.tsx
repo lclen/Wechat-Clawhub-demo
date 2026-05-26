@@ -11,8 +11,28 @@ export function StatusChip({ label, value, tone }: { label: string; value: strin
   );
 }
 
-export function SetupStepPill({ label, active, done }: { label: string; active?: boolean; done?: boolean }) {
-  return <div className={`setup-step-pill ${active ? "setup-step-pill-active" : ""} ${done ? "setup-step-pill-done" : ""}`}>{label}</div>;
+export function SetupStepPill({
+  index,
+  label,
+  detail,
+  active,
+  done,
+}: {
+  index?: string;
+  label: string;
+  detail?: string;
+  active?: boolean;
+  done?: boolean;
+}) {
+  return (
+    <div className={`setup-step-pill ${active ? "setup-step-pill-active" : ""} ${done ? "setup-step-pill-done" : ""}`}>
+      {index ? <span className="setup-step-index">{index}</span> : null}
+      <span className="setup-step-copy">
+        <strong>{label}</strong>
+        {detail ? <small>{detail}</small> : null}
+      </span>
+    </div>
+  );
 }
 
 export function Metric({ title, value }: { title: string; value: string }) {

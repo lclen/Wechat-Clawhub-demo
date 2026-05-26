@@ -79,12 +79,14 @@ import {
 import {
   buildNodeChannelOverview,
   buildSessionBindingOptions,
-  buildSessionCounts,
+  buildSessionThreadCounts,
+  buildSessionThreadGroups,
   countAvailableDispatchNodes,
-  filterSessions,
+  filterSessionThreadGroups,
   findLatestMessageByRole,
   selectCurrentNode,
   selectCurrentSession,
+  selectSessionThreadGroup,
 } from "./selectors/consoleSelectors";
 import {
   describeTaskStreamHealth,
@@ -299,6 +301,11 @@ export function App() {
       : initialSummaryState.sessions[0] ?? null,
   );
   const [messages, setMessages] = useState<MessageRecord[]>([]);
+  const [sessionThreadMessageSnapshot, setSessionThreadMessageSnapshot] = useState<{
+    threadKey: string;
+    messagesBySessionId: Record<string, MessageRecord[]>;
+    loaded: boolean;
+  } | null>(null);
   const [sessionsLoaded, setSessionsLoaded] = useState(initialSummaryState.sessions.length > 0);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
   const [messageCursor, setMessageCursor] = useState<number>(0);
@@ -1363,16 +1370,96 @@ export function App() {
     setNotice(`已填入当前默认网关地址：${preferredGatewayBaseUrl}`);
   }
 
+  const sessionThreads = useMemo(() => buildSessionThreadGroups(sessions), [sessions]);
   const selectedSession = useMemo(() => selectCurrentSession(sessions, selectedSessionId, activeSession), [sessions, selectedSessionId, activeSession]);
+  const selectedSessionThread = useMemo(() => selectSessionThreadGroup(sessionThreads, selectedSessionId), [sessionThreads, selectedSessionId]);
   const selectedNode = useMemo(() => selectCurrentNode(nodes, selectedNodeId), [nodes, selectedNodeId]);
   const sessionBindingOptions = useMemo(
     () => buildSessionBindingOptions(nodes, gatewaySetup.dispatch_mode_enabled, selectedSession?.assigned_node_id),
     [gatewaySetup.dispatch_mode_enabled, nodes, selectedSession?.assigned_node_id],
   );
-  const filteredSessions = useMemo(() => filterSessions(sessions, sessionFilter, now), [sessions, sessionFilter, now]);
-  const counts = useMemo(() => buildSessionCounts(sessions, now), [sessions, now]);
-  const latestUserMessage = useMemo(() => findLatestMessageByRole(messages, "user"), [messages]);
-  const latestBotMessage = useMemo(() => findLatestMessageByRole(messages, "bot"), [messages]);
+  const selectedSessionThreadKey = selectedSessionThread?.threadKey ?? "";
+  const selectedSessionThreadIds = useMemo(
+    () => selectedSessionThread?.sessions.map((session) => session.session_id).join("\u0001") ?? "",
+    [selectedSessionThread],
+  );
+  useEffect(() => {
+    if (workspace !== "sessions" || !selectedSessionThread) {
+      setSessionThreadMessageSnapshot(null);
+      return;
+    }
+    const remoteGateway = shouldUseRemoteGatewayApi ? sessionRemoteGatewayBaseUrl.trim() : "";
+    if (shouldUseRemoteGatewayApi && !remoteGateway) return;
+    if (!shouldUseRemoteGatewayApi && !shouldUseLocalGatewayApi) return;
+
+    let cancelled = false;
+    const threadKey = selectedSessionThread.threadKey;
+    const threadSessions = selectedSessionThread.sessions;
+    setSessionThreadMessageSnapshot((current) =>
+      current?.threadKey === threadKey
+        ? { ...current, loaded: false }
+        : { threadKey, messagesBySessionId: {}, loaded: false },
+    );
+
+    void Promise.all(threadSessions.map(async (session) => {
+      const cached = getSessionMessageCache(session.session_id);
+      if (cached?.loaded) {
+        return [session.session_id, cached.messages] as const;
+      }
+      try {
+        const detail = await fetchSessionMessages(session.session_id, { remoteGateway });
+        const entry = syncSessionMessageCache(session.session_id, detail);
+        return [session.session_id, entry.messages] as const;
+      } catch (error) {
+        setNotice(`读取用户历史片段失败：${(error as Error).message}`);
+        return [session.session_id, []] as const;
+      }
+    })).then((entries) => {
+      if (cancelled) return;
+      setSessionThreadMessageSnapshot({
+        threadKey,
+        messagesBySessionId: Object.fromEntries(entries),
+        loaded: true,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    fetchSessionMessages,
+    getSessionMessageCache,
+    selectedSessionThreadKey,
+    selectedSessionThreadIds,
+    sessionRemoteGatewayBaseUrl,
+    setNotice,
+    shouldUseLocalGatewayApi,
+    shouldUseRemoteGatewayApi,
+    syncSessionMessageCache,
+    workspace,
+  ]);
+  const sessionThreadMessages = useMemo(() => {
+    if (!selectedSessionThread) return messages;
+    const messagesBySessionId = new Map<string, MessageRecord[]>();
+    if (sessionThreadMessageSnapshot?.threadKey === selectedSessionThread.threadKey) {
+      for (const [sessionId, sessionMessages] of Object.entries(sessionThreadMessageSnapshot.messagesBySessionId)) {
+        messagesBySessionId.set(sessionId, sessionMessages);
+      }
+    }
+    if (selectedSessionId && messagesLoaded) {
+      messagesBySessionId.set(selectedSessionId, messages);
+    }
+    return selectedSessionThread.sessions
+      .flatMap((session) => messagesBySessionId.get(session.session_id) ?? [])
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  }, [messages, messagesLoaded, selectedSessionId, selectedSessionThread, sessionThreadMessageSnapshot]);
+  const sessionThreadMessagesLoaded = selectedSessionThread
+    ? messagesLoaded && sessionThreadMessageSnapshot?.threadKey === selectedSessionThread.threadKey && sessionThreadMessageSnapshot.loaded
+    : messagesLoaded;
+  const filteredSessionThreads = useMemo(() => filterSessionThreadGroups(sessionThreads, sessionFilter, now), [sessionThreads, sessionFilter, now]);
+  const counts = useMemo(() => buildSessionThreadCounts(sessionThreads, now), [sessionThreads, now]);
+  const latestUserMessage = useMemo(() => findLatestMessageByRole(sessionThreadMessages, "user"), [sessionThreadMessages]);
+  const latestBotMessage = useMemo(() => findLatestMessageByRole(sessionThreadMessages, "bot"), [sessionThreadMessages]);
   const typingState = getTypingState(selectedSession, now, latestBotMessage?.created_at);
   const channelReleaseHint = getChannelReleaseHint(selectedSession, now);
   const availableDispatchNodes = useMemo(() => countAvailableDispatchNodes(nodes, gatewaySetup.dispatch_mode_enabled), [nodes, gatewaySetup.dispatch_mode_enabled]);
@@ -2340,10 +2427,11 @@ export function App() {
           { label: "节点", value: `${nodeInventorySummary.online_total} 在线`, tone: nodeInventorySummary.online_total > 0 ? "good" : "warn" },
           { label: "模型", value: modelStatus?.model || "未配置", tone: modelStatus?.configured ? "good" : "warn" },
         ];
+  const operationLoadingState = resolveOperationLoadingState(busy, setupTask);
 
   return (
     <div className="console-app-desktop">
-      <aside className="console-sidebar">
+      <aside className="console-sidebar console-sidebar-neutral">
         <div className="sidebar-brand sidebar-brand-command">
           <div className="sidebar-logo"></div>
           <div className="sidebar-brand-copy">
@@ -2377,8 +2465,8 @@ export function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-footer-note">
-          <span>PRIMARY</span>
+        <div className="sidebar-footer-note sidebar-system-card">
+          <span>当前工作区</span>
           <strong>{activeWorkspacePresentation.label}</strong>
         </div>
       </aside>
@@ -2650,16 +2738,18 @@ export function App() {
             currentGatewayBaseUrl={currentGatewayBaseUrl}
             sessionsLoaded={sessionsLoaded}
             sessions={sessions}
-            filteredSessions={filteredSessions}
+            sessionThreads={sessionThreads}
+            filteredSessionThreads={filteredSessionThreads}
             sessionFilter={sessionFilter}
             filters={FILTERS}
             counts={counts}
             selectedSessionId={selectedSessionId}
             selectedSession={selectedSession}
+            selectedSessionThread={selectedSessionThread}
             sessionManualNodeId={sessionManualNodeId}
             sessionBindingOptions={sessionBindingOptions}
-            messages={messages}
-            messagesLoaded={messagesLoaded}
+            messages={sessionThreadMessages}
+            messagesLoaded={sessionThreadMessagesLoaded}
             humanReplyDraft={humanReplyDraft}
             typingState={typingState}
             channelReleaseHint={channelReleaseHint}
@@ -2723,6 +2813,126 @@ export function App() {
         report={connectivityCheckReport}
         onClose={() => setConnectivityCheckModalOpen(false)}
       />
+      <OperationLoadingOverlay state={operationLoadingState} />
+    </div>
+  );
+}
+
+type OperationLoadingState = {
+  title: string;
+  detail: string;
+  key: string;
+} | null;
+
+const OPERATION_BUSY_COPY: Record<string, { title: string; detail: string }> = {
+  "launcher-start": {
+    title: "正在启动本地组件",
+    detail: "网关、Redis 与本机节点正在按当前角色启动，请稍候。",
+  },
+  "launcher-stop": {
+    title: "正在停止本地组件",
+    detail: "正在安全停止选中的网关、Redis 或节点进程。",
+  },
+  "launcher-install-host": {
+    title: "正在安装主机 Redis",
+    detail: "会自动尝试镜像源和官方源，通常需要 1-3 分钟。",
+  },
+  "launcher-install-node-cache": {
+    title: "正在安装节点缓存 Redis",
+    detail: "正在准备节点本地缓存运行环境，请保持窗口打开。",
+  },
+  "launcher-node-cache-toggle": {
+    title: "正在更新节点缓存策略",
+    detail: "正在切换缓存组件并刷新本地启动器状态。",
+  },
+  "launcher-gateway-restart": {
+    title: "正在重启主网关",
+    detail: "网关进程会先停止再启动，期间控制台状态会自动刷新。",
+  },
+  "local-node-start": {
+    title: "正在启动本机节点",
+    detail: "节点服务启动后会重新读取配置并回连网关。",
+  },
+  "local-node-stop": {
+    title: "正在停止本机节点",
+    detail: "正在停止 claw-node 服务并刷新节点诊断状态。",
+  },
+  "local-node-restart": {
+    title: "正在重启本机节点",
+    detail: "节点服务会重新加载模型配置、网关地址与配对凭据。",
+  },
+  "local-node-reinstall": {
+    title: "正在重装并升级节点",
+    detail: "正在更新节点运行文件与服务包装器，请不要关闭控制台。",
+  },
+  "local-node-reset": {
+    title: "正在重置节点凭据",
+    detail: "正在清理旧凭据并刷新本机节点诊断状态。",
+  },
+  "local-node-model-save": {
+    title: "正在保存节点模型配置",
+    detail: "配置保存后会同步刷新节点推理状态。",
+  },
+  "setup-gateway": {
+    title: "正在保存网关配置",
+    detail: "正在写入网关公共入口、微信和模型相关配置。",
+  },
+  "setup-gateway-console": {
+    title: "正在配置网关与控制台",
+    detail: "正在完成单机一体化配置并收敛本地运行模型。",
+  },
+  "setup-worker": {
+    title: "正在启动节点安装",
+    detail: "正在创建工作节点安装任务，完成后会进入结果页查看日志。",
+  },
+  "setup-console": {
+    title: "正在校验控制台接入",
+    detail: "正在连接目标网关并验证控制台访问配置。",
+  },
+  "dispatch-mode-toggle": {
+    title: "正在切换分发模式",
+    detail: "正在更新网关调度策略并同步本地启动器组件。",
+  },
+};
+
+function resolveOperationLoadingState(busyKey: string | null, setupTask: SetupTaskResult | null): OperationLoadingState {
+  if (busyKey && OPERATION_BUSY_COPY[busyKey]) {
+    return { key: busyKey, ...OPERATION_BUSY_COPY[busyKey] };
+  }
+  if (setupTask?.status !== "running") return null;
+  if (setupTask.kind === "node_install") {
+    return {
+      key: `setup-task-${setupTask.task_id}`,
+      title: "节点安装任务进行中",
+      detail: setupTask.summary || "正在安装或升级工作节点，最新日志会持续刷新。",
+    };
+  }
+  if (setupTask.kind === "gateway_save" || setupTask.kind === "gateway_console_setup" || setupTask.kind === "console_connect") {
+    return {
+      key: `setup-task-${setupTask.task_id}`,
+      title: setupTask.title || "配置任务进行中",
+      detail: setupTask.summary || "正在执行配置任务，请稍候。",
+    };
+  }
+  return null;
+}
+
+function OperationLoadingOverlay({ state }: { state: OperationLoadingState }) {
+  if (!state) return null;
+  return (
+    <div className="operation-loading-overlay" role="status" aria-live="polite" aria-label={state.title}>
+      <div className="operation-loading-card">
+        <div className="operation-loading-mark" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+        </div>
+        <div className="operation-loading-copy">
+          <strong>{state.title}</strong>
+          <span>{state.detail}</span>
+        </div>
+        <div className="operation-loading-key">{state.key}</div>
+      </div>
     </div>
   );
 }

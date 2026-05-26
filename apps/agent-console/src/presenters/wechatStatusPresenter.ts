@@ -33,6 +33,24 @@ export function describeWechatSessionPause(wechatStatus: WeChatStatus | null, no
   return `会话已暂停，约 ${remainingMinutes} 分钟后自动恢复（预计 ${untilLabel}）。原因：${reason}。`;
 }
 
+function isWechatSessionPauseHint(wechatStatus: WeChatStatus | null) {
+  if (!wechatStatus) {
+    return false;
+  }
+  if (wechatStatus.session_paused) {
+    return true;
+  }
+  const errorText = `${wechatStatus.session_pause_reason || ""} ${wechatStatus.last_error || ""}`.toLowerCase();
+  return errorText.includes("polling paused") || errorText.includes("session timeout");
+}
+
+function resolveWechatPauseDetail(wechatStatus: WeChatStatus, nowMs?: number) {
+  if (wechatStatus.session_paused) {
+    return describeWechatSessionPause(wechatStatus, nowMs) || "WeChat 会话已暂停，稍后会自动恢复。";
+  }
+  return wechatStatus.last_error || wechatStatus.session_pause_reason || "WeChat 会话处于暂停冷却中，稍后会自动恢复。";
+}
+
 export function resolveWechatRuntimePresentation(
   wechatStatus: WeChatStatus | null,
   options: {
@@ -85,8 +103,8 @@ export function resolveWechatRuntimePresentation(
       connectivityDetail: "当前会话已被上游判定失效，需要重新扫码恢复。",
     };
   }
-  if (wechatStatus.session_paused) {
-    const pauseDetail = describeWechatSessionPause(wechatStatus, options.nowMs) || "WeChat 会话已暂停，稍后会自动恢复。";
+  if (isWechatSessionPauseHint(wechatStatus)) {
+    const pauseDetail = resolveWechatPauseDetail(wechatStatus, options.nowMs);
     return {
       value: "暂停冷却中",
       detail: pauseDetail,

@@ -8,8 +8,6 @@ import {
   InfoList,
 } from "../../shared/ConsolePrimitives";
 
-const DEFAULT_PUBLIC_ENTRY_URL = "http://121.41.47.90:5014/entry";
-
 type PublicEntryProfile = {
   enabled: boolean;
   baseUrl: string;
@@ -60,6 +58,15 @@ type WeChatConfigCardProps = {
   onDisconnectWeChat: () => void;
 };
 
+function resolvePublicEntryUrl(profile: PublicEntryProfile) {
+  const accessUrl = profile.accessUrl.trim();
+  if (accessUrl) {
+    return accessUrl;
+  }
+  const baseUrl = profile.baseUrl.trim().replace(/\/+$/, "").replace(/\/entry$/i, "");
+  return baseUrl ? `${baseUrl}/entry` : "";
+}
+
 export function WeChatConfigCard({
   showLoginSection,
   showPublicEntrySection,
@@ -81,14 +88,32 @@ export function WeChatConfigCard({
   onConnectManualToken,
   onDisconnectWeChat,
 }: WeChatConfigCardProps) {
-  const publicEntryUrl = publicEntryProfile.accessUrl || DEFAULT_PUBLIC_ENTRY_URL;
+  const publicEntryUrl = resolvePublicEntryUrl(publicEntryProfile);
+  const publicEntryUrlLabel = publicEntryUrl || "保存公网基址后生成 /entry 链接";
+  const headerCopy = showLoginSection && !showPublicEntrySection
+    ? {
+        kicker: "微信接入",
+        title: "入口账号登录",
+        description: "这里只处理管理员扫码、Token 状态和手动直连，公共入口资料已拆到独立能力面板。",
+      }
+    : !showLoginSection && showPublicEntrySection
+      ? {
+          kicker: "公共入口",
+          title: "给外部用户的固定入口资料",
+          description: "这里维护系统托管的固定公共入口，外部用户进入后领取自己的专属 OpenClaw 配对二维码。",
+        }
+      : {
+          kicker: "固定入口",
+          title: "微信入口配置",
+          description: "把入口账号登录链路和给外部用户的固定入口资料拆开管理，避免把扫码登录二维码误当成公共用户入口。",
+        };
 
   return (
     <SurfaceCard className="wechat-command-surface" tone="strong">
       <SectionHeader
-        kicker="固定入口"
-        title="微信入口配置"
-        description="把入口账号登录链路和给外部用户的固定入口资料拆开管理，避免把扫码登录二维码误当成公共用户入口。"
+        kicker={headerCopy.kicker}
+        title={headerCopy.title}
+        description={headerCopy.description}
       />
 
       <div className="wechat-sections">
@@ -259,7 +284,7 @@ export function WeChatConfigCard({
                   detail="填写外部用户真正能访问到的公网基址，系统会自动在后面拼上 /entry。"
                 >
                   <div className="public-entry-url-line">
-                    <code>{publicEntryUrl}</code>
+                    <code>{publicEntryUrlLabel}</code>
                   </div>
                 </CommandBar>
 
@@ -324,16 +349,24 @@ export function WeChatConfigCard({
 
               <aside className="public-entry-preview">
                 <div className="public-entry-preview-frame">
-                  <a
-                    className="public-entry-open-button"
-                    href={publicEntryUrl}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    打开公共入口
-                  </a>
+                  {publicEntryUrl ? (
+                    <a
+                      className="public-entry-open-button"
+                      href={publicEntryUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      打开公共入口
+                    </a>
+                  ) : (
+                    <span className="public-entry-open-button public-entry-open-button-disabled" aria-disabled="true">
+                      等待入口链接
+                    </span>
+                  )}
                   <div className="public-entry-preview-empty">
-                    进入 {publicEntryUrl} 后，外部用户再扫码连接自己的专属 Claw。
+                    {publicEntryUrl
+                      ? `进入 ${publicEntryUrl} 后，外部用户再扫码连接自己的专属 Claw。`
+                      : "先填写公网基址并保存，系统会生成外部用户可访问的固定入口。"}
                   </div>
                 </div>
                 <div className="public-entry-preview-copy">
@@ -347,7 +380,7 @@ export function WeChatConfigCard({
                   <InfoList
                     items={[
                       { label: "公网基址", value: publicEntryProfile.baseUrl || "未设置" },
-                      { label: "入口页", value: publicEntryProfile.accessUrl || "未生成" },
+                      { label: "入口页", value: publicEntryUrl || "未生成" },
                       { label: "失败/过期", value: `${publicEntryProfile.stats.failed} / ${publicEntryProfile.stats.expired}` },
                     ]}
                   />

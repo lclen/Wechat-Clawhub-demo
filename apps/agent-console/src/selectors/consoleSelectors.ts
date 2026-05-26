@@ -51,6 +51,80 @@ export function buildSessionCounts(sessions: SessionRecord[], now: number) {
   };
 }
 
+export type SessionThreadGroup = {
+  threadKey: string;
+  channel: string;
+  userId: string;
+  displayUserId: string;
+  sessions: SessionRecord[];
+  latestSession: SessionRecord;
+  totalMessageCount: number;
+  firstMessageAt: string;
+  lastMessageAt: string;
+};
+
+export function normalizeSessionUserId(userId: string) {
+  return userId.trim().replace(/:part-\d+$/i, "");
+}
+
+export function getSessionThreadKey(session: SessionRecord) {
+  return `${session.channel}:${normalizeSessionUserId(session.user_id)}`;
+}
+
+export function sortSessionsChronologically(sessions: SessionRecord[]) {
+  return [...sessions].sort((a, b) => {
+    const aCreatedAt = new Date(a.created_at || a.last_message_at).getTime();
+    const bCreatedAt = new Date(b.created_at || b.last_message_at).getTime();
+    if (Number.isFinite(aCreatedAt) && Number.isFinite(bCreatedAt) && aCreatedAt !== bCreatedAt) {
+      return aCreatedAt - bCreatedAt;
+    }
+    return a.session_id.localeCompare(b.session_id);
+  });
+}
+
+export function buildSessionThreadGroups(sessions: SessionRecord[]) {
+  const grouped = new Map<string, SessionRecord[]>();
+  for (const session of sessions) {
+    const key = getSessionThreadKey(session);
+    grouped.set(key, [...(grouped.get(key) ?? []), session]);
+  }
+  return Array.from(grouped.entries())
+    .map(([threadKey, threadSessions]) => {
+      const chronologicalSessions = sortSessionsChronologically(threadSessions);
+      const latestSession = [...chronologicalSessions].sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())[0];
+      return {
+        threadKey,
+        channel: latestSession.channel,
+        userId: latestSession.user_id,
+        displayUserId: normalizeSessionUserId(latestSession.user_id),
+        sessions: chronologicalSessions,
+        latestSession,
+        totalMessageCount: chronologicalSessions.reduce((sum, session) => sum + Math.max(0, session.message_count), 0),
+        firstMessageAt: chronologicalSessions[0]?.created_at ?? latestSession.created_at,
+        lastMessageAt: latestSession.last_message_at,
+      } satisfies SessionThreadGroup;
+    })
+    .sort((a, b) => new Date(b.lastMessageAt).getTime() - new Date(a.lastMessageAt).getTime());
+}
+
+export function filterSessionThreadGroups(groups: SessionThreadGroup[], sessionFilter: SessionFilter, now: number) {
+  return groups.filter((group) => group.sessions.some((session) => matchesFilter(session, sessionFilter, now)));
+}
+
+export function buildSessionThreadCounts(groups: SessionThreadGroup[], now: number) {
+  return {
+    all: groups.length,
+    processing: groups.filter((group) => group.sessions.some((session) => session.queue_status !== "none" || Boolean(session.active_task_id))).length,
+    human: groups.filter((group) => group.sessions.some((session) => session.status === "human_active" || session.status === "handoff_pending")).length,
+    recent: groups.filter((group) => group.sessions.some((session) => isRecent(session, now))).length,
+  };
+}
+
+export function selectSessionThreadGroup(groups: SessionThreadGroup[], selectedSessionId: string | null) {
+  if (!selectedSessionId) return null;
+  return groups.find((group) => group.sessions.some((session) => session.session_id === selectedSessionId)) ?? null;
+}
+
 export function findLatestMessageByRole(messages: MessageRecord[], role: MessageRecord["role"]) {
   return [...messages].reverse().find((message) => message.role === role) ?? null;
 }
